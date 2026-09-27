@@ -425,6 +425,9 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     Config.autoTerminalBreakThresholdMs = it
                 }),
                 SectionHeader("Melody Settings"),
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
+                    Config.autoTerminalMelodyFirstClickDelayMs = it
+                }),
                 ToggleRow("Melody Skip", "Skips subsequent Melody rows on correct timing",
                     { Config.autoTerminalMelodySkip }, { Config.autoTerminalMelodySkip = it }),
                 ToggleRow("  ↳ Don't Skip First Row", "Waits for first row before skipping",

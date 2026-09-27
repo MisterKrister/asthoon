@@ -32,12 +32,21 @@ object AutoTerminal {
     private var firstClickPending = true
     private var currentClickDelayMs = 0L
     private val melodySkipQueue = ArrayDeque<Int>()
-    private val clickedSlots = mutableSetOf<Int>()
+    private val clickedSlotsWithTime = HashMap<Int, Long>()
+    private var lastRubixTarget: Int? = null
+    private var lastMelodyRow = -1
+    private var lastMelodyRowClickAt = 0L
 
+    private const val CLICK_TIMEOUT_MS = 350L
     private const val RUBIX_REPEAT_GUARD_MS = 70L
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
+    }
+
+    private fun isRecentlyClicked(slot: Int, now: Long): Boolean {
+        val last = clickedSlotsWithTime[slot] ?: return false
+        return now - last < CLICK_TIMEOUT_MS
     }
 
     private fun tick() {
@@ -64,7 +73,11 @@ object AutoTerminal {
 
         // Hypixel replaces the window ID after clicks; the terminal session continues.
         if (beginTerminal(cleanTitle, now)) {
-            currentClickDelayMs = nextFirstClickDelayMs()
+            currentClickDelayMs = if (type == Type.MELODY) {
+                Config.autoTerminalMelodyFirstClickDelayMs.toLong()
+            } else {
+                nextFirstClickDelayMs()
+            }
 
             // Melody party announcement
             if (type == Type.MELODY && Config.autoTerminalAnnounceMelody) {
@@ -75,29 +88,53 @@ object AutoTerminal {
             }
         }
 
-        // Delay timer check: first click delay applies ONLY to the first click from opening
-        if (!canClick(now)) return
+        // Dedicated Melody handling: does not stall behind standard click delays
+        if (type == Type.MELODY) {
+            if (firstClickPending && now - terminalOpenedAt < currentClickDelayMs) {
+                return
+            }
+            firstClickPending = false
 
-        // Process queued Melody skip clicks first if available
-        if (melodySkipQueue.isNotEmpty()) {
-            val nextSlot = melodySkipQueue.removeFirst()
-            gameMode.handleContainerInput(windowId, nextSlot, 2, ContainerInput.CLONE, player)
-            recordClick(now, nextSlot, 40L)
+            // Process queued Melody skip clicks first if available
+            if (melodySkipQueue.isNotEmpty()) {
+                if (now - lastClickAt >= 40L) {
+                    val nextSlot = melodySkipQueue.removeFirst()
+                    gameMode.handleContainerInput(windowId, nextSlot, 2, ContainerInput.CLONE, player)
+                    recordClick(now, nextSlot, 40L)
+                }
+                return
+            }
+
+            val slots = screen.menu.slots
+            val size = type.slotCount
+            if (slots.size < size) return
+            val items = slots.take(size).map { it.item }
+            val click = melodyClick(items, now) ?: return
+
+            gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
+            recordClick(now, click.slot, 40L)
             return
         }
+
+        // Delay timer check: first click delay applies ONLY to the first click from opening
+        if (!canClick(now)) return
 
         val slots = screen.menu.slots
         val size = type.slotCount
         if (slots.size < size) return
         val items = slots.take(size).map { it.item }
-        val click = nextClick(type, cleanTitle, items) ?: return
+        val click = nextClick(type, cleanTitle, items, now) ?: return
 
         // Rubix repeat guard
         if (click.slot == lastSlot && type == Type.RUBIX && now - lastClickAt < RUBIX_REPEAT_GUARD_MS) return
 
-        // Always send middle-click (CLONE) in survival: Hypixel registers the menu click
-        // while the client-side inventory never moves items or desyncs slots into air.
-        gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
+        // Rubix accepts left-click (0) and right-click (1) with PICKUP.
+        // Other terminals use middle-click (CLONE) to prevent client inventory desyncs.
+        if (type == Type.RUBIX) {
+            gameMode.handleContainerInput(windowId, click.slot, click.button, ContainerInput.PICKUP, player)
+        } else {
+            gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
+        }
 
         recordClick(now, click.slot, nextClickDelayMs())
     }
@@ -119,7 +156,7 @@ object AutoTerminal {
     internal fun recordClick(now: Long, slot: Int, delayMs: Long) {
         lastClickAt = now
         lastSlot = slot
-        clickedSlots.add(slot)
+        clickedSlotsWithTime[slot] = now
         firstClickPending = false
         currentClickDelayMs = delayMs
     }
@@ -151,9 +188,9 @@ object AutoTerminal {
         else -> null
     }
 
-    private fun nextClick(type: Type, title: String, items: List<ItemStack>): Click? = when (type) {
+    private fun nextClick(type: Type, title: String, items: List<ItemStack>, now: Long): Click? = when (type) {
         Type.NUMBERS -> items.mapIndexedNotNull { i, stack ->
-            if (i in clickedSlots) null
+            if (isRecentlyClicked(i, now)) null
             else if (stack.`is`(Items.RED_STAINED_GLASS_PANE)) i to stack.count
             else null
         }
@@ -163,7 +200,7 @@ object AutoTerminal {
             ?.let { Click(it.first) }
 
         Type.REDGREEN -> items.indices.firstOrNull { i ->
-            if (i in clickedSlots) false
+            if (isRecentlyClicked(i, now)) false
             else items[i].`is`(Items.RED_STAINED_GLASS_PANE)
         }?.let { Click(it) }
 
@@ -172,7 +209,7 @@ object AutoTerminal {
                 ?: return null
             val wanted = match.groupValues[1]
             items.indices.firstOrNull { i ->
-                if (i in clickedSlots) return@firstOrNull false
+                if (isRecentlyClicked(i, now)) return@firstOrNull false
                 val stack = items[i]
                 if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return@firstOrNull false
                 if (TerminalHelper.isSelected(stack)) return@firstOrNull false
@@ -185,7 +222,7 @@ object AutoTerminal {
                 ?: return null
             val wanted = match.groupValues[1].lowercase(java.util.Locale.ROOT)
             items.indices.firstOrNull { i ->
-                if (i in clickedSlots) return@firstOrNull false
+                if (isRecentlyClicked(i, now)) return@firstOrNull false
                 val stack = items[i]
                 if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return@firstOrNull false
                 if (TerminalHelper.isSelected(stack)) return@firstOrNull false
@@ -195,7 +232,7 @@ object AutoTerminal {
         }
 
         Type.RUBIX -> rubixClick(items)
-        Type.MELODY -> melodyClick(items)
+        Type.MELODY -> melodyClick(items, now)
     }
 
     private fun rubixClick(items: List<ItemStack>): Click? {
@@ -205,23 +242,35 @@ object AutoTerminal {
             val idx = TerminalHelper.rubixColorIndex(stack)
             if (idx >= 0) slot to idx else null
         }
-        // Wait until all 9 panes are present/synced
         if (panes.size < 9) return null
 
-        val costs = IntArray(5)
-        for (target in 0..4) {
-            for (p in panes) {
-                costs[target] += (target - p.second + 5) % 5
+        val target: Int
+        if (lastRubixTarget != null) {
+            target = lastRubixTarget!!
+        } else {
+            val costs = IntArray(5)
+            for (t in 0..4) {
+                for (p in panes) {
+                    val fwd = (t - p.second + 5) % 5
+                    val bwd = (p.second - t + 5) % 5
+                    costs[t] += minOf(fwd, bwd)
+                }
             }
+            target = costs.indices.minByOrNull { costs[it] } ?: return null
+            lastRubixTarget = target
         }
-        val target = costs.indices.minByOrNull { costs[it] } ?: return null
-        if (costs[target] == 0) return null // All 9 panes match target!
 
         val mismatch = panes.firstOrNull { it.second != target } ?: return null
-        return Click(mismatch.first)
+        val current = mismatch.second
+        val fwd = (target - current + 5) % 5
+        val bwd = (current - target + 5) % 5
+
+        // Left click (button 0) cycles forward (+1). Right click (button 1) cycles backward (-1).
+        val button = if (fwd <= bwd) 0 else 1
+        return Click(mismatch.first, button)
     }
 
-    private fun melodyClick(items: List<ItemStack>): Click? {
+    private fun melodyClick(items: List<ItemStack>, now: Long): Click? {
         val magenta = items.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
         val lime = items.indexOfFirst { it.`is`(Items.LIME_STAINED_GLASS_PANE) }
         if (magenta < 0 || lime < 0) return null
@@ -229,6 +278,9 @@ object AutoTerminal {
         val current = (lime % 9) - 1
         val buttonRow = floor(lime / 9.0).toInt() - 1
         if (current != correct || buttonRow !in 0..3) return null
+
+        // Prevent spam-clicking the same row during a single alignment window (debounce 300ms)
+        if (buttonRow == lastMelodyRow && now - lastMelodyRowClickAt < 300L) return null
 
         val clickedSlot = buttonRow * 9 + 16
 
@@ -243,6 +295,8 @@ object AutoTerminal {
             }
         }
 
+        lastMelodyRow = buttonRow
+        lastMelodyRowClickAt = now
         return Click(clickedSlot)
     }
 
@@ -300,6 +354,9 @@ object AutoTerminal {
         firstClickPending = true
         currentClickDelayMs = 0L
         melodySkipQueue.clear()
-        clickedSlots.clear()
+        clickedSlotsWithTime.clear()
+        lastRubixTarget = null
+        lastMelodyRow = -1
+        lastMelodyRowClickAt = 0L
     }
 }

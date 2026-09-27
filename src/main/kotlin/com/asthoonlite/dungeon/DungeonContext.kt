@@ -49,7 +49,10 @@ object DungeonContext {
 
     fun classColor(playerName: String?): Int {
         if (playerName == null) return PlayerClass.UNKNOWN.color
-        return playerClasses[playerName]?.color ?: PlayerClass.UNKNOWN.color
+        val direct = playerClasses[playerName]
+        if (direct != null) return direct.color
+        val match = playerClasses.entries.firstOrNull { it.key.equals(playerName, ignoreCase = true) }
+        return match?.value?.color ?: PlayerClass.UNKNOWN.color
     }
 
     private var scoreboardMissingTicks = 0
@@ -173,20 +176,34 @@ object DungeonContext {
         // Parse player classes from tab list
         val onlinePlayers = mc.connection?.onlinePlayers ?: emptyList()
         for (info in onlinePlayers) {
-            val displayName = info.tabListDisplayName?.string ?: continue
-            val text = ChatFormatting.stripFormatting(displayName) ?: continue
-            parseTabPlayerClass(text)
+            val displayName = info.tabListDisplayName?.string
+            val text = (if (displayName != null) ChatFormatting.stripFormatting(displayName) else null) ?: ""
+            if (text.isNotBlank()) {
+                parseTabPlayerClass(info.profile.name, text)
+            }
         }
     }
 
-    private fun parseTabPlayerClass(text: String) {
-        val match = tabClassPattern.find(text) ?: return
-        val name = match.groupValues[1]
-        val role = match.groupValues[2]
-        if (role.equals("DEAD", ignoreCase = true)) return
-        val playerClass = PlayerClass.from(role)
-        if (playerClass != PlayerClass.UNKNOWN) {
-            playerClasses[name] = playerClass
+    private fun parseTabPlayerClass(playerName: String, text: String) {
+        val upper = text.uppercase()
+        val detected = when {
+            upper.contains("(ARCHER") || upper.contains(" ARCHER") || upper.contains("ARCHER)") -> PlayerClass.ARCHER
+            upper.contains("(MAGE") || upper.contains(" MAGE") || upper.contains("MAGE)") -> PlayerClass.MAGE
+            upper.contains("(TANK") || upper.contains(" TANK") || upper.contains("TANK)") -> PlayerClass.TANK
+            upper.contains("(BERSERK") || upper.contains(" BERSERK") || upper.contains("BERSERK)") -> PlayerClass.BERSERK
+            upper.contains("(HEALER") || upper.contains(" HEALER") || upper.contains("HEALER)") -> PlayerClass.HEALER
+            else -> {
+                val match = tabClassPattern.find(text)
+                val role = match?.groupValues?.getOrNull(2)
+                if (role == null || role.equals("DEAD", ignoreCase = true)) null else PlayerClass.from(role)
+            }
+        }
+        if (detected != null && detected != PlayerClass.UNKNOWN) {
+            playerClasses[playerName] = detected
+            val match = tabClassPattern.find(text)
+            if (match != null) {
+                playerClasses[match.groupValues[1]] = detected
+            }
         }
     }
 

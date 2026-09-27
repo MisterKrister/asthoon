@@ -136,14 +136,14 @@ object TerminalHelper {
 
     /**
      * Maps Rubix terminal pane item types to their 0..4 color sequence index:
-     * 0: Blue, 1: Red, 2: Orange, 3: Yellow, 4: Green / Lime
+     * 0: Orange, 1: Yellow, 2: Green / Lime, 3: Blue / Cyan / Light Blue, 4: Red
      */
     fun rubixColorIndex(stack: ItemStack): Int = when (stack.item) {
-        Items.BLUE_STAINED_GLASS_PANE -> 0
-        Items.RED_STAINED_GLASS_PANE -> 1
-        Items.ORANGE_STAINED_GLASS_PANE -> 2
-        Items.YELLOW_STAINED_GLASS_PANE -> 3
-        Items.GREEN_STAINED_GLASS_PANE, Items.LIME_STAINED_GLASS_PANE -> 4
+        Items.ORANGE_STAINED_GLASS_PANE -> 0
+        Items.YELLOW_STAINED_GLASS_PANE -> 1
+        Items.GREEN_STAINED_GLASS_PANE, Items.LIME_STAINED_GLASS_PANE -> 2
+        Items.BLUE_STAINED_GLASS_PANE, Items.LIGHT_BLUE_STAINED_GLASS_PANE, Items.CYAN_STAINED_GLASS_PANE -> 3
+        Items.RED_STAINED_GLASS_PANE -> 4
         else -> -1
     }
 }

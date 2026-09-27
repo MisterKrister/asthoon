@@ -99,7 +99,9 @@ object TerminalSolver {
         val costs = IntArray(5)
         for (target in 0..4) {
             for (p in panes) {
-                costs[target] += (target - p.second + 5) % 5
+                val fwd = (target - p.second + 5) % 5
+                val bwd = (p.second - target + 5) % 5
+                costs[target] += minOf(fwd, bwd)
             }
         }
         val target = costs.indices.minByOrNull { costs[it] } ?: return null

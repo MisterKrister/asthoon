@@ -107,6 +107,7 @@ object Config {
         var autoTerminalEnabled     : Boolean = false,
         var autoTerminalRandomDelay : Boolean = false,
         var autoTerminalFirstClickDelayMs : Int = 430,
+        var autoTerminalMelodyFirstClickDelayMs : Int = 0,
         var autoTerminalClickDelayMs : Int = 180,
         var autoTerminalBreakThresholdMs : Int = 500,
         var autoTerminalMinRandomDelayMs : Int = 160,
@@ -460,6 +461,10 @@ object Config {
         get() = data.autoTerminalFirstClickDelayMs
         set(v) { data.autoTerminalFirstClickDelayMs = v.coerceIn(0, 1000); save() }
 
+    var autoTerminalMelodyFirstClickDelayMs: Int
+        get() = data.autoTerminalMelodyFirstClickDelayMs
+        set(v) { data.autoTerminalMelodyFirstClickDelayMs = v.coerceIn(0, 1000); save() }
+
     var autoTerminalClickDelayMs: Int
         get() = data.autoTerminalClickDelayMs
         set(v) { data.autoTerminalClickDelayMs = v.coerceIn(0, 1000); save() }
@@ -525,6 +530,7 @@ object Config {
         data.terminalSolverEnabled = true
         data.autoTerminalRandomDelay = true
         data.autoTerminalFirstClickDelayMs = 430
+        data.autoTerminalMelodyFirstClickDelayMs = 0
         data.autoTerminalClickDelayMs = 135
         data.autoTerminalBreakThresholdMs = 500
         data.autoTerminalMinRandomDelayMs = 120

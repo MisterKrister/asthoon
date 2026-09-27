@@ -164,12 +164,35 @@ object DungeonMapScanner {
         if (roomGap <= 0) return
         val icons = mutableListOf<PlayerIcon>()
         val mc = Minecraft.getInstance()
-        val localPlayer = mc.player
-        val onlinePlayers = mc.connection?.onlinePlayers?.filter { it.profile.name != localPlayer?.gameProfile?.name }?.toList() ?: emptyList()
+        val localPlayer = mc.player ?: return
+        val localName = localPlayer.gameProfile.name
 
-        var onlineIdx = 0
-        decorations.forEach { dec ->
-            if (dec.type().value() == MapDecorationTypes.FRAME.value()) return@forEach
+        val selfGx = (localPlayer.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize.toDouble()
+        val selfGz = (localPlayer.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize.toDouble()
+
+        val onlineTeammates = mc.connection?.onlinePlayers
+            ?.filter { !it.profile.name.equals(localName, ignoreCase = true) }
+            ?.map { it.profile.name }
+            ?.toMutableList() ?: mutableListOf()
+
+        val validDecs = decorations.filter { it.type().value() != MapDecorationTypes.FRAME.value() }
+
+        var selfDecIndex = -1
+        var minSelfDist = Double.MAX_VALUE
+        validDecs.forEachIndexed { i, dec ->
+            val gx = MathUtils.rescale((dec.x().toDouble() + 128.0) * 0.5, mapOffsetX.toDouble(), (mapOffsetX + roomGap * 6).toDouble(), 0.0, 12.0) / 2.0
+            val gz = MathUtils.rescale((dec.y().toDouble() + 128.0) * 0.5, mapOffsetZ.toDouble(), (mapOffsetZ + roomGap * 6).toDouble(), 0.0, 12.0) / 2.0
+            val dist = kotlin.math.hypot(gx - selfGx, gz - selfGz)
+            if (dist < minSelfDist) {
+                minSelfDist = dist
+                selfDecIndex = i
+            }
+        }
+
+        validDecs.forEachIndexed { i, dec ->
+            // Exclude local player's own decoration
+            if (i == selfDecIndex && minSelfDist < 0.8) return@forEachIndexed
+
             val x = MathUtils.rescale(
                 (dec.x().toDouble() + 128.0) * 0.5,
                 mapOffsetX.toDouble(), (mapOffsetX + roomGap * 6).toDouble(),
@@ -181,8 +204,8 @@ object DungeonMapScanner {
                 0.0, 12.0
             )
             val r = -(dec.rot() / 16.0 * 360.0 + 90.0) / 180.0 * PI
-            val name = dec.name().map { it.string }.orElse(null)
-                ?: onlinePlayers.getOrNull(onlineIdx++)?.profile?.name
+            val explicitName = dec.name().map { it.string }.orElse(null)
+            val name = explicitName ?: if (onlineTeammates.isNotEmpty()) onlineTeammates.removeAt(0) else null
             icons.add(PlayerIcon(x, z, r, name))
         }
         playerIcons = icons

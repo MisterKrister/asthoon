@@ -276,13 +276,51 @@ object DungeonMap : HudElement {
             drawPlayerHead(context, selfSkin, selfPx, selfPz, player.yRot.toDouble(), scale, selfColor)
         }
 
-        // Teammates from map scanner icons
+        val renderedNames = HashSet<String>()
+        renderedNames.add(player.gameProfile.name.lowercase())
+
+        // 1. Live world teammates (render distance)
+        val worldPlayers = mc.level?.players() ?: emptyList()
+        for (mate in worldPlayers) {
+            val mateName = mate.gameProfile.name
+            if (mateName.equals(player.gameProfile.name, ignoreCase = true) || mate.isSpectator) continue
+            renderedNames.add(mateName.lowercase())
+
+            val gx = ((mate.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize).toFloat()
+            val gz = ((mate.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize).toFloat()
+            if (gx < -0.5f || gx > 5.5f || gz < -0.5f || gz > 5.5f) continue
+            val tx = cellX(0) + gx * (cellW + cellGap) + cellW * 0.5f
+            val tz = cellY(0) + gz * (cellH + cellGap) + cellH * 0.5f
+            val yawDeg = mate.yRot.toDouble()
+            val skin = mate.skin
+            val mateColor = DungeonContext.classColor(mateName)
+
+            if (Config.dungeonMapPlayerHeads) {
+                drawPlayerHead(context, skin, tx, tz, yawDeg, scale, mateColor)
+            } else {
+                drawPlayerArrow(context, tx, tz, yawDeg, scale * 0.8f, mateColor, isSelf = false)
+            }
+
+            if (showNames) {
+                val shortName = mateName.take(4)
+                context.centeredText(mc.font, shortName, tx.toInt(), (tz + 7).toInt(), 0xFFFFFFFF.toInt())
+            }
+        }
+
+        // 2. Distant teammates from map packet
         for (icon in DungeonMapScanner.playerIcons) {
-            val tx = cellX(0) + (icon.x.toFloat() / 2f) * (cellW + cellGap) + cellW * 0.5f
-            val tz = cellY(0) + (icon.z.toFloat() / 2f) * (cellH + cellGap) + cellH * 0.5f
+            val iconName = icon.name
+            if (iconName != null && renderedNames.contains(iconName.lowercase())) continue
+
+            val iconGx = icon.x.toFloat() / 2f
+            val iconGz = icon.z.toFloat() / 2f
+            if (kotlin.math.hypot(iconGx - selfGx, iconGz - selfGz) < 0.4f) continue
+
+            val tx = cellX(0) + iconGx * (cellW + cellGap) + cellW * 0.5f
+            val tz = cellY(0) + iconGz * (cellH + cellGap) + cellH * 0.5f
             val yawDeg = Math.toDegrees(icon.rot)
-            val skin = getPlayerSkin(icon.name)
-            val mateColor = DungeonContext.classColor(icon.name)
+            val skin = getPlayerSkin(iconName)
+            val mateColor = DungeonContext.classColor(iconName)
 
             if (Config.dungeonMapPlayerHeads && skin != null) {
                 drawPlayerHead(context, skin, tx, tz, yawDeg, scale, mateColor)
@@ -290,8 +328,8 @@ object DungeonMap : HudElement {
                 drawPlayerArrow(context, tx, tz, yawDeg, scale * 0.8f, mateColor, isSelf = false)
             }
 
-            if (showNames && icon.name != null) {
-                val shortName = icon.name.take(4)
+            if (showNames && iconName != null) {
+                val shortName = iconName.take(4)
                 context.centeredText(mc.font, shortName, tx.toInt(), (tz + 7).toInt(), 0xFFFFFFFF.toInt())
             }
         }
@@ -325,7 +363,7 @@ object DungeonMap : HudElement {
         val hx = (x - half).toInt()
         val hz = (z - half).toInt()
 
-        context.fill(hx - 1, hz - 1, hx + headSize + 1, hz + headSize + 1, borderColor)
+        context.fill(hx - 2, hz - 2, hx + headSize + 2, hz + headSize + 2, borderColor)
         net.minecraft.client.gui.components.PlayerFaceExtractor.extractRenderState(context, skin, hx, hz, headSize)
 
         val yaw = Math.toRadians(yawDeg)
@@ -353,9 +391,9 @@ object DungeonMap : HudElement {
         color: Int,
         isSelf: Boolean
     ) {
-        val markerScale = scale * Config.dungeonMapMarkerScale * 0.5f
-        val w = (10 * markerScale).toInt().coerceAtLeast(4)
-        val h = (14 * markerScale).toInt().coerceAtLeast(6)
+        val markerScale = scale * Config.dungeonMapMarkerScale * (if (isSelf) 0.30f else 0.40f)
+        val w = (8 * markerScale).toInt().coerceIn(5, 10)
+        val h = (12 * markerScale).toInt().coerceIn(7, 14)
         val halfW = w / 2
         val halfH = h / 2
 
@@ -384,7 +422,7 @@ object DungeonMap : HudElement {
         }
 
         if (!drewTexture) {
-            val arrow = (5.0 * markerScale).coerceAtLeast(2.0)
+            val arrow = (markerScale * 4.0).coerceIn(2.0, 5.0)
             val arrowColor = if (isSelf) 0xFF00FF00.toInt() else color
             for (row in (-arrow).toInt()..arrow.toInt()) {
                 val half = ((row + arrow) * 0.45).toInt() + 1
