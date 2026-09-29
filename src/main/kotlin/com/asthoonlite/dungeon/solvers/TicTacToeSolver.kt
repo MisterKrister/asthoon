@@ -43,8 +43,6 @@ object TicTacToeSolver {
 
     var inTTT = false
         private set
-    private var hasMoved = false
-    private var lastStatus: String? = null
     var currentBestMove = -1
         private set
     private var currentBestButtonPos: BlockPos? = null
@@ -76,10 +74,8 @@ object TicTacToeSolver {
     fun reset() {
         inTTT = false
         currentBoard.fill(null)
-        hasMoved = false
         currentBestMove = -1
         currentBestButtonPos = null
-        lastStatus = null
     }
 
     private fun tick() {
@@ -131,35 +127,69 @@ object TicTacToeSolver {
             val mapId = entity.item.get(DataComponents.MAP_ID) ?: continue
             val map = level.getMapData(mapId) ?: continue
             val colors = map.colors
+            if (colors.size < 16384) continue
 
-            val jdx = colors.indexOf(114.toByte())
-            if (jdx == -1) continue
+            // Determine dominant background color
+            val freq = IntArray(256)
+            for (b in colors) {
+                freq[b.toInt() and 0xFF]++
+            }
+            var bgInt = 0
+            var maxCount = 0
+            for (i in 0..255) {
+                if (freq[i] > maxCount) {
+                    maxCount = freq[i]
+                    bgInt = i
+                }
+            }
+            val bgByte = bgInt.toByte()
+            val nonBgCount = 16384 - maxCount
 
-            val status = if (jdx == 2700) "X" else "O"
+            // If almost all pixels are background, slot is empty
+            if (nonBgCount < 300) {
+                board[idx] = null
+                continue
+            }
+
+            // Distinguish X vs O:
+            // In X, the two diagonal lines cross directly at the center (64, 64).
+            // In O, the center is completely hollow (background color).
+            var centerForeground = 0
+            for (cy in 58..69) {
+                for (cx in 58..69) {
+                    if (colors[cy * 128 + cx] != bgByte) {
+                        centerForeground++
+                    }
+                }
+            }
+
+            val status = if (centerForeground >= 20) "X" else "O"
             board[idx] = status
-            if (currentBoard[idx] != status) {
+        }
+
+        if (board != currentBoard) {
+            currentBoard = board
+            val countX = currentBoard.count { it == "X" }
+            val countO = currentBoard.count { it == "O" }
+
+            // Hypixel AI plays X, human player plays O.
+            // It is O's turn when AI has played (countX > countO) and game is not finished.
+            val isPlayerTurn = countX > countO && !isWinner(currentBoard, "X") && !isWinner(currentBoard, "O") && currentBoard.any { it == null }
+
+            if (isPlayerTurn) {
+                currentBestMove = bestMove(currentBoard, "O")
+                currentBestButtonPos = if (currentBestMove != -1) {
+                    val best = boardPos.getOrNull(currentBestMove)
+                    if (best != null) {
+                        val roomPos = room.fromComp(best.first - 1, best.third)
+                        if (roomPos != null) BlockPos(roomPos.first, best.second, roomPos.second) else null
+                    } else null
+                } else null
+            } else {
                 currentBestMove = -1
-                lastStatus = status
-                hasMoved = true
+                currentBestButtonPos = null
             }
         }
-
-        if (!hasMoved) return
-
-        currentBoard = board
-        hasMoved = false
-
-        if (lastStatus == "X" || currentBoard.filterNotNull().size == 1 || currentBestMove == -1) {
-            currentBestMove = bestMove(currentBoard, "O")
-            currentBestButtonPos = if (currentBestMove != -1) {
-                val best = boardPos.getOrNull(currentBestMove)
-                if (best != null) {
-                    val roomPos = room.fromComp(best.first - 1, best.third)
-                    if (roomPos != null) BlockPos(roomPos.first, best.second, roomPos.second) else null
-                } else null
-            } else null
-        }
-        lastStatus = null
     }
 
     private fun queueBoxes() {
@@ -234,7 +264,7 @@ object TicTacToeSolver {
         return best
     }
 
-    private fun bestMove(board: List<String?>, player: String): Int {
+    internal fun bestMove(board: List<String?>, player: String): Int {
         val maximizing = player == "X"
         var bestScore = if (maximizing) Int.MIN_VALUE else Int.MAX_VALUE
         var best = -1

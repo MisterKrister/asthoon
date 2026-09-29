@@ -2,6 +2,7 @@ package com.asthoonlite.dungeon
 
 import com.asthoonlite.dungeon.api.FloorType
 import com.asthoonlite.dungeon.map.DungeonMapScanner
+import com.asthoonlite.dungeon.solvers.TicTacToeSolver
 import net.minecraft.network.chat.Component
 import net.minecraft.world.level.LevelHeightAccessor
 import net.minecraft.world.scores.ScoreHolder
@@ -103,5 +104,18 @@ fun main() {
     check(playerCategory.invoke(StarMobESP, "Shadow Assassin") == StarMobESP.MobCategory.SHADOW_ASSASSIN)
     check(playerCategory.invoke(StarMobESP, "PartyMember") == null)
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, map dimensions/bounds, mob categories.")
+    // TicTacToe minimax test:
+    // 1. AI plays corner (0) -> player O must take center (4)
+    val boardAiCorner = listOf<String?>("X", null, null, null, null, null, null, null, null)
+    check(TicTacToeSolver.bestMove(boardAiCorner, "O") == 4) { "O must take center when X starts in corner" }
+
+    // 2. AI plays center (4) -> player O must take corner (0)
+    val boardAiCenter = listOf<String?>(null, null, null, null, "X", null, null, null, null)
+    check(TicTacToeSolver.bestMove(boardAiCenter, "O") == 0) { "O must take corner when X starts in center" }
+
+    // 3. AI threatens win at 0, 1 -> player O at 4 must block at 2
+    val boardAiWinThreat = listOf<String?>("X", "X", null, null, "O", null, null, null, null)
+    check(TicTacToeSolver.bestMove(boardAiWinThreat, "O") == 2) { "O must block X at slot 2" }
+
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, map dimensions/bounds, mob categories, tictactoe solver.")
 }

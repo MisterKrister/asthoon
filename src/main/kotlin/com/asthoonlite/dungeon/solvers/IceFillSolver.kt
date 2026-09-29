@@ -77,11 +77,11 @@ object IceFillSolver {
             PuzzleUtils.getRealCoord(BlockPos(0, 69, -8), center, rotation),
             PuzzleUtils.getRealCoord(BlockPos(0, 70, -3), center, rotation),
             PuzzleUtils.getRealCoord(BlockPos(0, 71, 4), center, rotation),
-            PuzzleUtils.getRealCoord(BlockPos(0, 71, 11), center, rotation)
+            PuzzleUtils.getRealCoord(BlockPos(0, 74, 15), center, rotation)
         )
 
         val allIceBlocks = mutableSetOf<BlockPos>()
-        for (dx in -22..22) for (dz in -22..22) for (dy in 68..73) {
+        for (dx in -22..22) for (dz in -22..22) for (dy in 66..76) {
             val pos = center.offset(dx, dy - center.y, dz)
             val state = level.getBlockState(pos)
             if (!state.`is`(Blocks.ICE) && !state.`is`(Blocks.PACKED_ICE)) continue
@@ -122,9 +122,24 @@ object IceFillSolver {
             if (i >= 3) break
             val spaces = cluster.toHashSet()
             val start = spaces.minByOrNull { it.distSqr(checkpoints[i]) } ?: continue
-            val end = spaces.minByOrNull { it.distSqr(checkpoints[i + 1]) } ?: continue
+            val endCandidate = spaces.minByOrNull { it.distSqr(checkpoints[i + 1]) } ?: continue
 
-            val puzzle = IceFillPuzzle(spaces, start, end).solve()
+            var puzzle = IceFillPuzzle(spaces, start, endCandidate).solve()
+
+            // If the initial checkpoint end didn't yield a path, try candidate exit blocks
+            // (the blocks in spaces furthest from start)
+            if (puzzle.path.isEmpty()) {
+                val candidateEnds = spaces.sortedByDescending { it.distSqr(start) }.take(5)
+                for (cand in candidateEnds) {
+                    if (cand == start || cand == endCandidate) continue
+                    val testPuzzle = IceFillPuzzle(spaces, start, cand).solve()
+                    if (testPuzzle.path.isNotEmpty()) {
+                        puzzle = testPuzzle
+                        break
+                    }
+                }
+            }
+
             if (puzzle.path.isNotEmpty()) {
                 newPaths.add(puzzle.path)
             }
@@ -260,7 +275,11 @@ object IceFillSolver {
         fun solve(): IceFillPuzzle {
             if (start !in spaces || end !in spaces) return this
             val fallback = search(stopAtFirst = true, costBound = Int.MAX_VALUE) ?: return this
-            val optimized = search(stopAtFirst = false, costBound = pathCost(fallback))
+            // Only perform full cost-minimizing search on small clusters (<= 18 blocks)
+            // to avoid combinatorial explosion on section 3 (~30 blocks)
+            val optimized = if (spaces.size <= 18) {
+                search(stopAtFirst = false, costBound = pathCost(fallback))
+            } else null
             path = (optimized ?: fallback).toMutableList()
             return this
         }

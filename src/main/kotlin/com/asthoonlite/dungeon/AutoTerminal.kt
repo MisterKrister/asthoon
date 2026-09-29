@@ -34,6 +34,7 @@ object AutoTerminal {
     private val melodySkipQueue = ArrayDeque<Int>()
     private val clickedSlotsWithTime = HashMap<Int, Long>()
     private var lastRubixTarget: Int? = null
+    private val rubixLastClickedColor = HashMap<Int, Int>()
     private var lastMelodyRow = -1
     private var lastMelodyRowClickAt = 0L
 
@@ -49,6 +50,15 @@ object AutoTerminal {
         return now - last < CLICK_TIMEOUT_MS
     }
 
+    private fun clearCarried(screen: AbstractContainerScreen<*>, player: net.minecraft.world.entity.player.Player) {
+        if (!screen.menu.carried.isEmpty) {
+            screen.menu.carried = ItemStack.EMPTY
+        }
+        if (!player.containerMenu.carried.isEmpty) {
+            player.containerMenu.carried = ItemStack.EMPTY
+        }
+    }
+
     private fun tick() {
         if (!Config.autoTerminalEnabled || !DungeonContext.inDungeon) {
             reset()
@@ -57,6 +67,9 @@ object AutoTerminal {
 
         val mc = Minecraft.getInstance()
         val screen = mc.screen as? AbstractContainerScreen<*> ?: run { reset(); return }
+        val player = mc.player ?: return
+        clearCarried(screen, player)
+
         val title = screen.title.string
         val cleanTitle = ChatFormatting.stripFormatting(title)?.trim() ?: title.trim()
         if (suppressReopenUntil > System.currentTimeMillis() && typeFor(cleanTitle) != null) {
@@ -66,7 +79,6 @@ object AutoTerminal {
         val type = typeFor(cleanTitle) ?: run { reset(); return }
         if (!isTypeEnabled(type)) { reset(); return }
 
-        val player = mc.player ?: return
         val gameMode = mc.gameMode ?: return
         val now = System.currentTimeMillis()
         val windowId = screen.menu.containerId
@@ -95,24 +107,29 @@ object AutoTerminal {
             }
             firstClickPending = false
 
-            // Process queued Melody skip clicks first if available
-            if (melodySkipQueue.isNotEmpty()) {
-                if (now - lastClickAt >= 40L) {
-                    val nextSlot = melodySkipQueue.removeFirst()
-                    gameMode.handleContainerInput(windowId, nextSlot, 2, ContainerInput.CLONE, player)
-                    recordClick(now, nextSlot, 40L)
-                }
-                return
-            }
-
             val slots = screen.menu.slots
             val size = type.slotCount
             if (slots.size < size) return
             val items = slots.take(size).map { it.item }
-            val click = melodyClick(items, now) ?: return
+            val click = melodyClick(items, now)
 
-            gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
-            recordClick(now, click.slot, 40L)
+            if (click != null) {
+                gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
+                clearCarried(screen, player)
+                recordClick(now, click.slot, 40L)
+                return
+            }
+
+            // Process queued Melody skip clicks only if the real active note is not ready right now
+            if (melodySkipQueue.isNotEmpty()) {
+                if (now - lastClickAt >= 40L) {
+                    val nextSlot = melodySkipQueue.removeFirst()
+                    gameMode.handleContainerInput(windowId, nextSlot, 2, ContainerInput.CLONE, player)
+                    clearCarried(screen, player)
+                    recordClick(now, nextSlot, 40L)
+                }
+                return
+            }
             return
         }
 
@@ -128,13 +145,14 @@ object AutoTerminal {
         // Rubix repeat guard
         if (click.slot == lastSlot && type == Type.RUBIX && now - lastClickAt < RUBIX_REPEAT_GUARD_MS) return
 
-        // Rubix accepts left-click (0) and right-click (1) with PICKUP.
+        // Rubix accepts left-click (0) with PICKUP.
         // Other terminals use middle-click (CLONE) to prevent client inventory desyncs.
         if (type == Type.RUBIX) {
             gameMode.handleContainerInput(windowId, click.slot, click.button, ContainerInput.PICKUP, player)
         } else {
             gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
         }
+        clearCarried(screen, player)
 
         recordClick(now, click.slot, nextClickDelayMs())
     }
@@ -231,11 +249,11 @@ object AutoTerminal {
             }?.let { Click(it) }
         }
 
-        Type.RUBIX -> rubixClick(items)
+        Type.RUBIX -> rubixClick(items, now)
         Type.MELODY -> melodyClick(items, now)
     }
 
-    private fun rubixClick(items: List<ItemStack>): Click? {
+    private fun rubixClick(items: List<ItemStack>, now: Long): Click? {
         val allowed = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
         val panes = allowed.mapNotNull { slot ->
             val stack = items.getOrNull(slot) ?: return@mapNotNull null
@@ -252,50 +270,87 @@ object AutoTerminal {
             for (t in 0..4) {
                 for (p in panes) {
                     val fwd = (t - p.second + 5) % 5
-                    val bwd = (p.second - t + 5) % 5
-                    costs[t] += minOf(fwd, bwd)
+                    costs[t] += fwd
                 }
             }
             target = costs.indices.minByOrNull { costs[it] } ?: return null
             lastRubixTarget = target
         }
 
-        val mismatch = panes.firstOrNull { it.second != target } ?: return null
-        val current = mismatch.second
-        val fwd = (target - current + 5) % 5
-        val bwd = (current - target + 5) % 5
+        val mismatches = panes.filter { it.second != target }
+        if (mismatches.isEmpty()) return null
 
-        // Left click (button 0) cycles forward (+1). Right click (button 1) cycles backward (-1).
-        val button = if (fwd <= bwd) 0 else 1
-        return Click(mismatch.first, button)
+        // Round-robin: pick a slot whose server packet has updated or whose click timed out
+        val readyMismatches = mismatches.filter { (slot, color) ->
+            val lastClicked = rubixLastClickedColor[slot]
+            lastClicked == null || lastClicked != color || (now - (clickedSlotsWithTime[slot] ?: 0L) >= CLICK_TIMEOUT_MS)
+        }
+
+        val chosen = readyMismatches.firstOrNull { it.first != lastSlot }
+            ?: readyMismatches.firstOrNull()
+            ?: return null
+
+        rubixLastClickedColor[chosen.first] = chosen.second
+        // Use left click (button 0) to cycle forward (+1)
+        return Click(chosen.first, 0)
     }
 
     private fun melodyClick(items: List<ItemStack>, now: Long): Click? {
-        val magenta = items.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
-        val lime = items.indexOfFirst { it.`is`(Items.LIME_STAINED_GLASS_PANE) }
-        if (magenta < 0 || lime < 0) return null
-        val correct = (magenta % 9) - 1
-        val current = (lime % 9) - 1
-        val buttonRow = floor(lime / 9.0).toInt() - 1
-        if (current != correct || buttonRow !in 0..3) return null
+        val magentaSlot = (45..53).firstOrNull { slot ->
+            items.getOrNull(slot)?.`is`(Items.MAGENTA_STAINED_GLASS_PANE) == true
+        } ?: items.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
+        if (magentaSlot < 0) return null
+        val targetCol = (magentaSlot % 9) - 1
+        if (targetCol !in 0..4) return null
 
-        // Prevent spam-clicking the same row during a single alignment window (debounce 300ms)
-        if (buttonRow == lastMelodyRow && now - lastMelodyRowClickAt < 300L) return null
+        var activeRow = -1
+        var movingCol = -1
 
-        val clickedSlot = buttonRow * 9 + 16
+        for (r in 0..3) {
+            val buttonSlot = (r + 1) * 9 + 7
+            val buttonStack = items.getOrNull(buttonSlot) ?: continue
+            val rowPaneSlots = ((r + 1) * 9 + 1)..((r + 1) * 9 + 5)
+            val rowPanes = rowPaneSlots.mapNotNull { items.getOrNull(it) }
+
+            val isRowCompleted = buttonStack.`is`(Items.LIME_TERRACOTTA) ||
+                buttonStack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+                buttonStack.`is`(Items.LIME_CONCRETE) ||
+                buttonStack.`is`(Items.EMERALD_BLOCK) ||
+                rowPanes.all { it.`is`(Items.LIME_STAINED_GLASS_PANE) || it.`is`(Items.GREEN_STAINED_GLASS_PANE) }
+
+            if (isRowCompleted) continue
+
+            val limePaneIndex = rowPaneSlots.firstOrNull { slot ->
+                val stack = items.getOrNull(slot) ?: return@firstOrNull false
+                stack.`is`(Items.LIME_STAINED_GLASS_PANE) || stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
+            }
+
+            if (limePaneIndex != null) {
+                activeRow = r
+                movingCol = (limePaneIndex % 9) - 1
+                break
+            }
+        }
+
+        if (activeRow !in 0..3 || movingCol != targetCol) return null
+
+        // Prevent spam-clicking the same row during a single alignment window (debounce 250ms)
+        if (activeRow == lastMelodyRow && now - lastMelodyRowClickAt < 250L) return null
+
+        val clickedSlot = (activeRow + 1) * 9 + 7
 
         // Melody Skip feature
         if (Config.autoTerminalMelodySkip) {
-            val skipAllowed = !(buttonRow == 0 && Config.autoTerminalDontSkipFirst)
-            if (skipAllowed && buttonRow < 3) {
+            val skipAllowed = !(activeRow == 0 && Config.autoTerminalDontSkipFirst)
+            if (skipAllowed && activeRow < 3) {
                 melodySkipQueue.clear()
-                for (r in (buttonRow + 1)..3) {
-                    melodySkipQueue.add(r * 9 + 16)
+                for (r in (activeRow + 1)..3) {
+                    melodySkipQueue.add((r + 1) * 9 + 7)
                 }
             }
         }
 
-        lastMelodyRow = buttonRow
+        lastMelodyRow = activeRow
         lastMelodyRowClickAt = now
         return Click(clickedSlot)
     }
@@ -356,6 +411,7 @@ object AutoTerminal {
         melodySkipQueue.clear()
         clickedSlotsWithTime.clear()
         lastRubixTarget = null
+        rubixLastClickedColor.clear()
         lastMelodyRow = -1
         lastMelodyRowClickAt = 0L
     }

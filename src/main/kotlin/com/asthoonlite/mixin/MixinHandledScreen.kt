@@ -12,6 +12,7 @@ import org.spongepowered.asm.mixin.injection.At
 import org.spongepowered.asm.mixin.injection.Inject
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo
 
+import com.asthoonlite.dungeon.AutoTerminal
 import com.asthoonlite.funny.InventoryAutoClicker
 import net.minecraft.client.input.KeyEvent
 import net.minecraft.client.input.MouseButtonEvent
@@ -44,8 +45,11 @@ abstract class MixinHandledScreen {
     )
     private fun asthoonlite_onContainerMouseClicked(event: MouseButtonEvent, doubleClick: Boolean, cir: CallbackInfoReturnable<Boolean>) {
         val self = (this as Any) as AbstractContainerScreen<*>
-        if (self.title.string.contains("Stash", ignoreCase = true)) {
-            InventoryAutoClicker.clearSkymyceWorthlessItems()
+        val title = self.title.string
+        if (title.contains("Stash", ignoreCase = true) || AutoTerminal.isTerminalTitle(title)) {
+            if (title.contains("Stash", ignoreCase = true)) {
+                InventoryAutoClicker.clearSkymyceWorthlessItems()
+            }
             if (!self.menu.carried.isEmpty) {
                 self.menu.carried = ItemStack.EMPTY
             }
@@ -105,6 +109,16 @@ abstract class MixinHandledScreen {
                 if (!player.containerMenu.carried.isEmpty) {
                     player.containerMenu.carried = ItemStack.EMPTY
                 }
+            }
+        }
+
+        if (AutoTerminal.isTerminalTitle(title)) {
+            val mc = Minecraft.getInstance()
+            if (!self.menu.carried.isEmpty) {
+                self.menu.carried = ItemStack.EMPTY
+            }
+            if (mc.player != null && !mc.player!!.containerMenu.carried.isEmpty) {
+                mc.player!!.containerMenu.carried = ItemStack.EMPTY
             }
         }
     }
