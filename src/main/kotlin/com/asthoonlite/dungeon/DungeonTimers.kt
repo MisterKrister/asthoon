@@ -1,6 +1,7 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
@@ -125,6 +126,7 @@ object DungeonTimers : HudElement {
     private fun fmt(ticks: Int): String = String.format("%.2fs", ticks / 20f)
     
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         if (!Config.dungeonTickTimersEnabled || !DungeonContext.inDungeon) return
         val mc = Minecraft.getInstance()
         if (mc.level == null || mc.player == null) return

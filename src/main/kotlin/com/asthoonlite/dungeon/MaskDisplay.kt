@@ -1,6 +1,7 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
@@ -58,6 +59,7 @@ object MaskDisplay : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         if (!Config.maskDisplayEnabled || !DungeonContext.inDungeon) return
         val now = System.currentTimeMillis()
         val mc = Minecraft.getInstance()

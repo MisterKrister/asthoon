@@ -95,6 +95,15 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         override val height: Int = ROW_H
     }
 
+    /**
+     * A non-interactive line of explanation, drawn under the section it is
+     * about. A setting is only easy to use when the consequence of flipping it
+     * is written next to the switch instead of guessed at.
+     */
+    private data class NoteRow(val text: String) : ContentItem {
+        override val height: Int = 15
+    }
+
     private data class WidgetRow(val widget: AbstractWidget) : ContentItem {
         override val height: Int = widget.height
     }
@@ -110,6 +119,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var listeningForAutoClickerKey = false
     private lateinit var btnInventoryAutoClickerKey: ModernButton
     private var listeningForInventoryAutoClickerKey = false
+    private lateinit var btnQuietModeKey: ModernButton
+    private var listeningForQuietModeKey = false
     private lateinit var searchBox: EditBox
     private var searchQuery = ""
     private var scrollOffset = 0
@@ -188,6 +199,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         dungeonSectionButtons.clear()
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
+        listeningForQuietModeKey = false
 
         val px = px()
         val py = py()
@@ -286,6 +298,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         dungeonSectionButtons.clear()
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
+        listeningForQuietModeKey = false
 
         val px = px()
         val all = getAllSearchableItems(px)
@@ -331,6 +344,16 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 }),
                 ToggleRow("Pet Menu Highlight", "Glows active pet in Pets GUI",
                     { Config.petMenuHighlightEnabled }, { Config.petMenuHighlightEnabled = it }),
+                SectionHeader("Session"),
+                ToggleRow("Quiet Mode", "Draws nothing in-game so a window capture looks vanilla",
+                    { Config.quietModeEnabled }, { Config.quietModeEnabled = it }),
+                WidgetRow(run {
+                    btnQuietModeKey = ModernButton(subX, 0, subW, 24, Component.literal(quietModeKeyLabel())) {
+                        listeningForQuietModeKey = true
+                        btnQuietModeKey.message = Component.literal("Press a key (ESC = NONE)")
+                    }
+                    btnQuietModeKey
+                }),
                 SectionHeader("Configuration"),
                 WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Reset All Settings to Clean Defaults")) {
                     Config.resetToCleanDefaults()
@@ -350,8 +373,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapAlwaysShow }, { Config.dungeonMapAlwaysShow = it }),
                 ToggleRow("  ↳ Full Map / Unopened", "Show unopened rooms from map packet",
                     { Config.dungeonMapFullGrid }, { Config.dungeonMapFullGrid = it }),
+                ToggleRow("  ↳ Legit Base", "Draw only what the held map item shows: explored rooms, cleared-room checkmarks, no names or counters",
+                    { Config.dungeonMapLegitBase }, { Config.dungeonMapLegitBase = it }),
                 ToggleRow("  ↳ Hide Map in Boss", "Automatically hide map during boss fights",
                     { Config.dungeonMapHideInBoss }, { Config.dungeonMapHideInBoss = it }),
+                ToggleRow("  ↳ External Overlay Window",
+                    "Draw the map in its own always-on-top window, outside the game window, so a window capture never sees it",
+                    { Config.dungeonMapExternalWindow }, { Config.dungeonMapExternalWindow = it }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 1, 6, Config.dungeonMapScale.toInt(), "Map Scale: ", "x") {
                     Config.dungeonMapScale = it.toFloat()
                     Config.save()
@@ -379,6 +407,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapPlayerNames }, { Config.dungeonMapPlayerNames = it }),
                 ToggleRow("    ↳ Only When Holding Leap", "Only show names while holding Spirit Leap",
                     { Config.dungeonMapNamesOnlyLeap }, { Config.dungeonMapNamesOnlyLeap = it }),
+                ToggleRow("  ↳ All Map Markers", "Draw every decoration from the map packet, including mob and waypoint markers (off = teammate markers only)",
+                    { Config.dungeonMapAllDecorations }, { Config.dungeonMapAllDecorations = it }),
                 SectionHeader("Room Labels & Secrets"),
                 ToggleRow("  ↳ Show Room Names", "Display room titles on the map",
                     { Config.dungeonMapShowNames }, { Config.dungeonMapShowNames = it }),
@@ -402,8 +432,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Solver & Automation"),
                 ToggleRow("Auto Terminal", "Automatically clicks the correct terminal buttons",
                     { Config.autoTerminalEnabled }, { Config.autoTerminalEnabled = it }),
+                ToggleRow("  ↳ Run Anywhere (P3 Sim)", "Also runs outside a real dungeon — the terminal title is all the identification needed, so the p3 simulator and practice worlds work",
+                    { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
+                NoteRow("Both need the terminal type switched on below."),
                 SectionHeader("Click Timing & Delays"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
@@ -424,6 +457,23 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 100, 1000, Config.autoTerminalBreakThresholdMs, "Break Threshold: ", " ms") {
                     Config.autoTerminalBreakThresholdMs = it
                 }),
+                SectionHeader("Pointer"),
+                ToggleRow("Glide Pointer", "Draws a pointer that travels to each pane, then clicks it there (clicks are still packets)",
+                    { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
+                NoteRow("Appears as soon as a terminal opens, not on the first solve."),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 25, 400, Config.autoTerminalCursorSpeed, "Pointer Speed: ", "%") {
+                    Config.autoTerminalCursorSpeed = it
+                }),
+                NoteRow("100% = natural hand speed. Higher is snappier."),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorArc, "Pointer Arc: ", "%") {
+                    Config.autoTerminalCursorArc = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorJitter, "Pointer Tremor: ", "%") {
+                    Config.autoTerminalCursorJitter = it
+                }),
+                NoteRow("Travel stretches to land on Click Delay, so timing lines up itself."),
+                ToggleRow("  ↳ Glide On Melody", "Also glide on Melody — off by default, its 40 ms cadence does not survive the travel time",
+                    { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
                 SectionHeader("Melody Settings"),
                 WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
                     Config.autoTerminalMelodyFirstClickDelayMs = it
@@ -463,7 +513,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Hitbox Visuals & Outline"),
                 ToggleRow("Show 3D Hitbox Boxes", "Renders custom 3D boxes in-game",
                     { Config.moddedHitboxDisplayEnabled }, { Config.moddedHitboxDisplayEnabled = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 10, 100, Config.secretHitboxSize, "Hitbox Size: ", "%") {
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretHitboxSize, "Hitbox Expansion: ", "%") {
                     Config.secretHitboxSize = it
                 }),
                 ToggleRow("Legit Selection Outline", "Shows vanilla outline when looking at blocks",
@@ -697,7 +747,28 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return "Stash Macro Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
     }
 
+    private fun quietModeKeyLabel(): String {
+        if (listeningForQuietModeKey) return "Press a key (ESC = NONE)"
+        val key = Config.quietModeKey
+        if (key == InputConstants.UNKNOWN.value || key == GLFW.GLFW_KEY_UNKNOWN || key < 0) return "Quiet Mode Keybind: NONE"
+        if (key in 0..7) return "Quiet Mode Keybind: MOUSE $key"
+        return "Quiet Mode Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
+    }
+
     override fun keyPressed(event: KeyEvent): Boolean {
+        if (listeningForQuietModeKey) {
+            val keyCode = event.key()
+            Config.quietModeKey = if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                InputConstants.UNKNOWN.value
+            } else {
+                keyCode
+            }
+            listeningForQuietModeKey = false
+            if (::btnQuietModeKey.isInitialized) {
+                btnQuietModeKey.message = Component.literal(quietModeKeyLabel())
+            }
+            return true
+        }
         if (listeningForAutoClickerKey) {
             val keyCode = event.key()
             Config.autoClickerKey = if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
@@ -737,6 +808,14 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     }
 
     override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        if (listeningForQuietModeKey && event.button() != 0) {
+            Config.quietModeKey = event.button()
+            listeningForQuietModeKey = false
+            if (::btnQuietModeKey.isInitialized) {
+                btnQuietModeKey.message = Component.literal(quietModeKeyLabel())
+            }
+            return true
+        }
         if (listeningForAutoClickerKey && event.button() != 0) {
             Config.autoClickerKey = event.button()
             listeningForAutoClickerKey = false
@@ -889,6 +968,9 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     }
                     is WidgetRow -> {
                         item.widget.extractRenderState(context, mouseX, mouseY, delta)
+                    }
+                    is NoteRow -> {
+                        context.text(font, item.text, px + 20, itemY + 3, COL_TEXT_SUB)
                     }
                 }
             }

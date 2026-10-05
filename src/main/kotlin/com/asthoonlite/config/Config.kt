@@ -89,6 +89,10 @@ object Config {
         var dungeonMapNamesOnlyLeap : Boolean = false,
         var dungeonMapPlayerHeadScale : Float = 1.0f,
         var dungeonMapMarkerScale   : Float   = 1.0f,
+        // Off (default) = only markers that resolve to a real teammate are
+        // drawn, so Hypixel's mob/waypoint markers never show up as heads.
+        // On = dump every non-frame decoration from the map packet.
+        var dungeonMapAllDecorations : Boolean = false,
 
         // ── Dungeon: F7/M7 ──────────────────────────────────────────────
         var dungeonTickTimersEnabled : Boolean = false,
@@ -173,6 +177,30 @@ object Config {
         var inventoryAutoClickerEnabled : Boolean = false,
         var inventoryAutoClickerCps     : Int     = 5,
         var inventoryAutoClickerKey     : Int     = -1,
+
+        // ── Session ─────────────────────────────────────────────────────────
+        var quietModeEnabled        : Boolean = false,
+        var quietModeKey            : Int     = -1,
+
+        // ── Window separation ───────────────────────────────────────────────
+        var dungeonMapExternalWindow: Boolean = false,
+        var dungeonMapLegitBase    : Boolean = true,
+        var dungeonMapWindowX      : Int     = -1,
+        var dungeonMapWindowY      : Int     = -1,
+        var espExternalOverlay     : Boolean = false,
+        var autoTerminalCursorGlide: Boolean = true,
+        var starMobOutlineOnly     : Boolean = true,
+
+        // ── AutoTerminal pointer (visual only; clicks still go by packet) ─
+        // Appended at the end of Data so existing config files keep loading.
+        var autoTerminalCursorSpeed : Int = 100,  // % of natural travel speed
+        var autoTerminalCursorArc   : Int = 25,   // % of distance bowed off-straight
+        var autoTerminalCursorJitter: Int = 35,   // % tremor while travelling
+        var autoTerminalCursorMelody: Boolean = false,
+        // Terminals outside a real dungeon run (p3 simulator, practice worlds):
+        // the screen title alone is what identifies a terminal, so the dungeon
+        // check is only ever a safety net.
+        var autoTerminalAnywhere: Boolean = true,
     )
 
     var data = Data()
@@ -396,6 +424,11 @@ object Config {
     var dungeonMapMarkerScale: Float
         get() = data.dungeonMapMarkerScale
         set(v) { data.dungeonMapMarkerScale = v.coerceIn(0.5f, 3.0f); save() }
+
+    /** Draw every decoration the map packet carries, not just teammate markers. */
+    var dungeonMapAllDecorations: Boolean
+        get() = data.dungeonMapAllDecorations
+        set(v) { data.dungeonMapAllDecorations = v; save() }
 
     var dungeonTickTimersEnabled: Boolean
         get() = data.dungeonTickTimersEnabled
@@ -668,7 +701,7 @@ object Config {
 
     var secretHitboxSize: Int
         get() = data.secretHitboxSize
-        set(v) { data.secretHitboxSize = v.coerceIn(10, 100); save() }
+        set(v) { data.secretHitboxSize = v.coerceIn(0, 100); save() }
 
     var moddedHitboxDisplayEnabled: Boolean
         get() = data.moddedHitboxDisplayEnabled
@@ -792,6 +825,71 @@ object Config {
     var inventoryAutoClickerKey: Int
         get() = data.inventoryAutoClickerKey
         set(v) { data.inventoryAutoClickerKey = v; save() }
+
+    var quietModeEnabled: Boolean
+        get() = data.quietModeEnabled
+        set(v) { data.quietModeEnabled = v; save() }
+
+    var quietModeKey: Int
+        get() = data.quietModeKey
+        set(v) { data.quietModeKey = v; save() }
+
+    var dungeonMapExternalWindow: Boolean
+        get() = data.dungeonMapExternalWindow
+        set(v) { data.dungeonMapExternalWindow = v; save() }
+
+    var dungeonMapLegitBase: Boolean
+        get() = data.dungeonMapLegitBase
+        set(v) { data.dungeonMapLegitBase = v; save() }
+
+    // -1 = pick the default top-left spot; the map window drag writes these.
+    var dungeonMapWindowX: Int
+        get() = data.dungeonMapWindowX
+        set(v) { data.dungeonMapWindowX = v; save() }
+
+    var dungeonMapWindowY: Int
+        get() = data.dungeonMapWindowY
+        set(v) { data.dungeonMapWindowY = v; save() }
+
+    var espExternalOverlay: Boolean
+        get() = data.espExternalOverlay
+        set(v) { data.espExternalOverlay = v; save() }
+
+    var autoTerminalCursorGlide: Boolean
+        get() = data.autoTerminalCursorGlide
+        set(v) { data.autoTerminalCursorGlide = v; save() }
+
+    /** Pointer travel speed, 100 = natural. Higher reaches the pane sooner. */
+    var autoTerminalCursorSpeed: Int
+        get() = data.autoTerminalCursorSpeed
+        set(v) { data.autoTerminalCursorSpeed = v.coerceIn(25, 400); save() }
+
+    /** How far the path bows off a straight line, as a percent of the distance. */
+    var autoTerminalCursorArc: Int
+        get() = data.autoTerminalCursorArc
+        set(v) { data.autoTerminalCursorArc = v.coerceIn(0, 100); save() }
+
+    /** Tremor amplitude while travelling, as a percent. */
+    var autoTerminalCursorJitter: Int
+        get() = data.autoTerminalCursorJitter
+        set(v) { data.autoTerminalCursorJitter = v.coerceIn(0, 100); save() }
+
+    /** Glide the pointer on Melody too. Off by default: Melody's cadence is
+     *  a 40 ms click loop and a travel animation would blow the timing. */
+    var autoTerminalCursorMelody: Boolean
+        get() = data.autoTerminalCursorMelody
+        set(v) { data.autoTerminalCursorMelody = v; save() }
+
+    /** Run the terminal clicker outside a real dungeon run — the p3 simulator
+     *  and practice worlds never set `DungeonContext.inDungeon`, and a terminal
+     *  title is all the identification any of them need. */
+    var autoTerminalAnywhere: Boolean
+        get() = data.autoTerminalAnywhere
+        set(v) { data.autoTerminalAnywhere = v; save() }
+
+    var starMobOutlineOnly: Boolean
+        get() = data.starMobOutlineOnly
+        set(v) { data.starMobOutlineOnly = v; save() }
 
     fun load() {
         if (!configDir.exists()) configDir.mkdirs()

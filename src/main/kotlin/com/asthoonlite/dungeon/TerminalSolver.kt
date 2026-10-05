@@ -20,6 +20,19 @@ object TerminalSolver {
 
     private enum class Type { PANES, RUBIX, ORDER, STARTS, SELECT, MELODY, NONE }
 
+    /**
+     * Whether [screenTitle] names a terminal this solver can draw.
+     *
+     * The title is stripped of formatting first: Hypixel's container titles
+     * are not always plain text, and a gate that tests the raw string lets a
+     * perfectly ordinary terminal through to nowhere — [colorFor] would strip
+     * it and answer, but the gate rejects before it is ever asked.
+     */
+    fun isTerminalTitle(screenTitle: String): Boolean {
+        val clean = ChatFormatting.stripFormatting(screenTitle)?.trim() ?: screenTitle.trim()
+        return typeFor(clean) != Type.NONE
+    }
+
     fun colorFor(screenTitle: String, slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
         if (!Config.terminalSolverEnabled || slot < 0) return null
         val cleanTitle = ChatFormatting.stripFormatting(screenTitle)?.trim() ?: screenTitle.trim()

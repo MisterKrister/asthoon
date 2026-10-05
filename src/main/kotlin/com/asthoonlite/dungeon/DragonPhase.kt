@@ -1,6 +1,7 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.render.WorldBoxRenderer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
@@ -152,6 +153,7 @@ object DragonPhase : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         if (!Config.dragonPhaseEnabled || !DungeonContext.inDungeon || !phase) return
         val mc = Minecraft.getInstance()
         val lines = mutableListOf<String>()

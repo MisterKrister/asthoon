@@ -49,6 +49,10 @@ object AsthoonLite : ClientModInitializer {
         AslCommand.register()
         DungeonContext.register()
 
+        // Session gate. Registered first so every draw path below can ask it
+        // a single question per frame — see QuietMode's class doc.
+        QuietMode.register()
+
         // Shared world-space box renderer (etherwarp highlight, star mob
         // ESP, higher/lower blaze highlight all queue into this one
         // renderer/one draw call instead of each running their own GPU
@@ -80,6 +84,9 @@ object AsthoonLite : ClientModInitializer {
         DragonPhase.register()
         MaskDisplay.register()
         AutoTerminal.register()
+        // Draws the pointer that "carries" the auto-terminal clicks. Clicks
+        // themselves are packets; this is the picture of the hand.
+        com.asthoonlite.dungeon.TerminalCursor.register()
         F7Devices.register()
         ArrowAlignSolver.register()
         SecretHitboxes.register()

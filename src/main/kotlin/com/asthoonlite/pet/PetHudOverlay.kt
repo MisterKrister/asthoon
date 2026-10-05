@@ -1,6 +1,7 @@
 package com.asthoonlite.pet
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry
@@ -31,6 +32,7 @@ object PetHudOverlay : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         render(context)
     }
 

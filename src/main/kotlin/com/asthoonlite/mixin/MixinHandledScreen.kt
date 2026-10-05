@@ -1,8 +1,9 @@
 package com.asthoonlite.mixin
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
-import com.asthoonlite.pet.PetTracker
 import com.asthoonlite.dungeon.TerminalSolver
+import com.asthoonlite.pet.PetTracker
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
 import net.minecraft.world.inventory.Slot
@@ -152,6 +153,7 @@ abstract class MixinHandledScreen {
         }
         if (!Config.petMenuHighlightEnabled) return
         if (!self.title.string.startsWith("Pets")) return
+        if (QuietMode.suppressing()) return
 
         val stack = slot.item
         if (stack.isEmpty || !PetTracker.isPetItem(stack)) return
@@ -187,14 +189,13 @@ abstract class MixinHandledScreen {
         ci: CallbackInfo
     ) {
         if (!Config.terminalSolverEnabled) return
+        if (QuietMode.suppressing()) return
         val self = (this as Any) as AbstractContainerScreen<*>
         val title = self.title.string
-        if (!title.startsWith("Correct all the panes!") &&
-            !title.startsWith("Change all to same color!") &&
-            !title.startsWith("Click in order!") &&
-            !title.startsWith("What starts with:") &&
-            !title.startsWith("Select all the") &&
-            !title.startsWith("Click the button on time!")) return
+        // Gate on the solver's own title test: it strips formatting, so a
+        // coloured terminal title still gets its highlight instead of failing
+        // a raw startsWith and never reaching colorFor.
+        if (!TerminalSolver.isTerminalTitle(title)) return
 
         val all = self.menu.slots.map { it.item }
         val color = TerminalSolver.colorFor(title, slot.containerSlot, slot.item, all) ?: return

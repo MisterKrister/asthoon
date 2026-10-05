@@ -1,6 +1,7 @@
 package com.asthoonlite.hud
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry
 import net.minecraft.client.DeltaTracker
@@ -82,6 +83,7 @@ object AlertHud : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         val popup = current ?: return
         val mc = Minecraft.getInstance()
         val font = mc.font

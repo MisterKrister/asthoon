@@ -12,6 +12,14 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
+/**
+ * Controls only what the selection outline *draws*.
+ *
+ * The interaction shape itself is handled upstream, in MixinBlockStateShape.
+ * Keeping these separate is what makes "hide outline" behave: hiding the
+ * drawing must not disable the click target, and drawing the vanilla footprint
+ * must not shrink the click target.
+ */
 @Mixin(LevelRenderer.class)
 public class MixinLevelRenderer {
     @WrapOperation(
@@ -24,7 +32,7 @@ public class MixinLevelRenderer {
     private VoxelShape asthoonlite$wrapOutlineShape(BlockState state, BlockGetter level, BlockPos pos,
                                                     CollisionContext context, Operation<VoxelShape> original) {
         if (SecretHitboxes.shouldOverrideOutline(state, pos)) {
-            return SecretHitboxes.getOutlineShape(state, pos, original.call(state, level, pos, context));
+            return SecretHitboxes.getOutlineShape(state, pos, level);
         }
         return original.call(state, level, pos, context);
     }
