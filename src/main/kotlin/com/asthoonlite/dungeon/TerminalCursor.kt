@@ -8,6 +8,7 @@ import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
+import org.lwjgl.glfw.GLFW
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -72,6 +73,35 @@ object TerminalCursor {
         pendingClick = null
         notBeforeAt = 0L
         positioned = false
+        applyOsCursor(false)
+    }
+
+    /**
+     * Whether the real cursor is currently hidden for the drawn one.
+     * Tracks intent, not the window: one transition in, one out.
+     */
+    private var osCursorHidden = false
+
+    /**
+     * Swaps the real cursor out from under the drawn pointer while it is on
+     * screen, and puts it back the moment it is not.
+     *
+     * Two pointers over one pane reads as a bug, and the drawn one is the one
+     * that is about to click. [GLFW] is called on the client thread — both
+     * the tick and the render pass run there, so the call never leaves the
+     * thread GLFW was initialised on. The guard makes it a no-op per state,
+     * so calling it every frame while the pointer is up costs nothing.
+     */
+    private fun applyOsCursor(pointerVisible: Boolean) {
+        val wanted = pointerVisible && Config.autoTerminalCursorHideReal
+        if (wanted == osCursorHidden) return
+        osCursorHidden = wanted
+        val handle = Minecraft.getInstance().window.handle()
+        GLFW.glfwSetInputMode(
+            handle,
+            GLFW.GLFW_CURSOR,
+            if (wanted) GLFW.GLFW_CURSOR_HIDDEN else GLFW.GLFW_CURSOR_NORMAL
+        )
     }
 
     /**
@@ -313,14 +343,22 @@ object TerminalCursor {
     }
 
     fun render(graphics: GuiGraphicsExtractor, now: Long = System.currentTimeMillis()) {
-        if (!Config.autoTerminalCursorGlide) return
-        if (QuietMode.suppressing()) return
-        val pos = positionNow(now) ?: return
-
+        if (!Config.autoTerminalCursorGlide || QuietMode.suppressing()) {
+            applyOsCursor(false)
+            return
+        }
+        val pos = positionNow(now)
+        if (pos == null) {
+            applyOsCursor(false)
+            return
+        }
         // Fade the resting pointer out instead of popping it off the screen.
         // A parked pointer waiting to click stays solid: it is about to act.
         val alpha = if (moving || pendingClick != null) 1f
         else ((1400L - (now - lastGlideAt)) / 400f).coerceIn(0f, 1f)
+        // The real cursor goes with this one, exactly — a pointer faded to
+        // nothing must not leave the window without a visible cursor.
+        applyOsCursor(alpha > 0f)
         if (alpha <= 0f) return
 
         drawPointer(graphics, pos.first, pos.second, alpha)

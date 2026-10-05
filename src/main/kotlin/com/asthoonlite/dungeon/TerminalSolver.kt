@@ -2,23 +2,75 @@ package com.asthoonlite.dungeon
 
 import com.asthoonlite.config.Config
 import net.minecraft.ChatFormatting
-import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
-import net.minecraft.core.component.DataComponents
 import net.minecraft.world.item.Items
 import java.util.Locale
 import java.util.regex.Pattern
 
 /**
- * Clean, non-automating terminal overlay inspired by RSM's slot-oriented
- * solver and Odin/Noamm's Melody presentation.
+ * What a terminal is, what needs clicking in it, and how that should look.
  *
- * It only highlights the slots to solve; it never sends clicks for the user.
+ * This object is the single source of truth for terminal identification:
+ * [AutoTerminal] reads its candidates and sends them as packets, the slot
+ * overlay in `MixinHandledScreen` colours them, and the next-click marker
+ * draws around one of them. One title parser, one slot-count table, one
+ * candidate list — nothing here can drift away from what the clicker does,
+ * which is exactly how a solver that "does nothing" happens: the highlight
+ * and the clicker disagree about what a terminal even is.
+ *
+ * Nothing here sends input. Clicks are AutoTerminal's job and go down the
+ * packet path the player would use by hand.
  */
 object TerminalSolver {
     private const val NUMBER_TERM_COUNT = 10
 
-    private enum class Type { PANES, RUBIX, ORDER, STARTS, SELECT, MELODY, NONE }
+    /**
+     * The six terminals. [slotCount] is the container size Hypixel gives the
+     * type, used to clip the slot list before it is read — anything past it is
+     * the player's own inventory, not terminal.
+     */
+    enum class Kind(val slotCount: Int) {
+        /** "Select all the red items!" — 6×9. */
+        SELECT(54),
+        /** "Click the button on time!" — 6×9. */
+        MELODY(54),
+        /** "Click in order!" — 4×9. */
+        ORDER(36),
+        /** "Correct all the panes!" — 5×9. */
+        PANES(45),
+        /** "Change all to same color!" — 5×9. */
+        RUBIX(45),
+        /** "What starts with: 'a'?" — 5×9. */
+        STARTS(45),
+    }
+
+    /** Format-stripped, trimmed title. Every comparison goes through this. */
+    fun cleanTitle(screenTitle: String): String =
+        ChatFormatting.stripFormatting(screenTitle)?.trim() ?: screenTitle.trim()
+
+    /**
+     * What kind of terminal this title names, or null.
+     *
+     * Matched with `contains` rather than `startsWith`: the phrase is what
+     * identifies a terminal, and a simulator that wraps it ("P3 · Click in
+     * order!") or a plugin that appends to it is still the same terminal. A
+     * prefix test throws all of those away silently, which is the failure
+     * shape this is written against.
+     */
+    fun kindOf(screenTitle: String): Kind? {
+        val title = cleanTitle(screenTitle)
+        if (title.isEmpty()) return null
+        val lower = title.lowercase(Locale.ROOT)
+        return when {
+            lower.contains("select all the") -> Kind.SELECT
+            lower.contains("click the button on time") -> Kind.MELODY
+            lower.contains("click in order") -> Kind.ORDER
+            lower.contains("correct all the panes") -> Kind.PANES
+            lower.contains("change all to same color") -> Kind.RUBIX
+            lower.contains("what starts with") -> Kind.STARTS
+            else -> null
+        }
+    }
 
     /**
      * Whether [screenTitle] names a terminal this solver can draw.
@@ -28,46 +80,221 @@ object TerminalSolver {
      * perfectly ordinary terminal through to nowhere — [colorFor] would strip
      * it and answer, but the gate rejects before it is ever asked.
      */
-    fun isTerminalTitle(screenTitle: String): Boolean {
-        val clean = ChatFormatting.stripFormatting(screenTitle)?.trim() ?: screenTitle.trim()
-        return typeFor(clean) != Type.NONE
-    }
+    fun isTerminalTitle(screenTitle: String): Boolean = kindOf(screenTitle) != null
 
-    fun colorFor(screenTitle: String, slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
+    /**
+     * Tint for one slot, or null when it has no business being tinted.
+     *
+     * [rubixTarget] is the colour the Rubix clicker has already committed to,
+     * if it has one. Without it the tint would keep recomputing the *cheapest*
+     * colour as panes change while the clicker drives a fixed one, and the
+     * picture and the pointer would end up disagreeing about what "done"
+     * looks like — the one thing a two-layer solver must never do.
+     */
+    fun colorFor(
+        screenTitle: String,
+        slot: Int,
+        stack: ItemStack,
+        all: List<ItemStack>,
+        rubixTarget: Int? = null
+    ): Int? {
         if (!Config.terminalSolverEnabled || slot < 0) return null
-        val cleanTitle = ChatFormatting.stripFormatting(screenTitle)?.trim() ?: screenTitle.trim()
-        val type = typeFor(cleanTitle)
-        val size = slotCount(type)
+        val cleanTitle = cleanTitle(screenTitle)
+        val type = kindOf(cleanTitle) ?: return null
+        val size = type.slotCount
         if (slot >= size) return null
         val terminalAll = all.take(size)
         return when (type) {
-            Type.PANES -> if (stack.`is`(Items.RED_STAINED_GLASS_PANE)) 0xCC55FFFF.toInt() else null
-            Type.ORDER -> orderColor(slot, stack, terminalAll)
-            Type.SELECT -> selectColor(cleanTitle, stack)
-            Type.STARTS -> startsColor(cleanTitle, stack)
-            Type.RUBIX -> rubixColor(slot, stack, terminalAll)
-            Type.MELODY -> melodyColor(slot, stack, terminalAll)
-            Type.NONE -> null
+            Kind.PANES -> if (stack.`is`(Items.RED_STAINED_GLASS_PANE)) 0xCC55FFFF.toInt() else null
+            Kind.ORDER -> orderColor(slot, stack, terminalAll)
+            Kind.SELECT -> selectColor(cleanTitle, stack)
+            Kind.STARTS -> startsColor(cleanTitle, stack)
+            Kind.RUBIX -> rubixColor(slot, stack, terminalAll, rubixTarget)
+            Kind.MELODY -> melodyColor(slot, stack, terminalAll)
         }
     }
 
-    private fun slotCount(type: Type): Int = when (type) {
-        Type.PANES -> 45
-        Type.RUBIX, Type.STARTS -> 45
-        Type.ORDER -> 36
-        Type.SELECT, Type.MELODY -> 54
-        Type.NONE -> 0
+    /**
+     * Every slot in this terminal that still wants a click, unordered.
+     *
+     * [blocked] is a set of slots whose last click has not come back from the
+     * server yet — including them would make the solver pick a pane it has
+     * already hit and sit there spinning. [rubixTarget] is the colour the
+     * Rubix terminal is being driven to; null means "decide one now".
+     *
+     * This is what both the clicker and the next-click marker read, so the
+     * marker can only ever point at something the clicker would actually do.
+     */
+    fun clickCandidates(
+        screenTitle: String,
+        items: List<ItemStack>,
+        blocked: Set<Int> = emptySet(),
+        rubixTarget: Int? = null
+    ): List<Int> {
+        val cleanTitle = cleanTitle(screenTitle)
+        val type = kindOf(cleanTitle) ?: return emptyList()
+        val size = type.slotCount
+        if (items.size < size) return emptyList()
+        val all = items.take(size)
+
+        return when (type) {
+            Kind.PANES -> all.indices.filter { i ->
+                i !in blocked && all[i].`is`(Items.RED_STAINED_GLASS_PANE)
+            }
+
+            // The number terminal is a chain: the pane whose count is still
+            // the lowest is the only one the server will accept next.
+            Kind.ORDER -> {
+                val reds = all.mapIndexedNotNull { i, s ->
+                    if (s.`is`(Items.RED_STAINED_GLASS_PANE)) i to s.count else null
+                }
+                if (reds.isEmpty()) return emptyList()
+                val next = reds.minOf { it.second }
+                reds.filter { it.second == next && it.first !in blocked }.map { it.first }
+            }
+
+            Kind.SELECT -> {
+                val wanted = selectTarget(cleanTitle) ?: return emptyList()
+                all.indices.filter { i ->
+                    if (i in blocked) return@filter false
+                    val stack = all[i]
+                    if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return@filter false
+                    if (TerminalHelper.isSelected(stack)) return@filter false
+                    TerminalHelper.matchesColor(stack, wanted)
+                }
+            }
+
+            Kind.STARTS -> {
+                val wanted = startsTarget(cleanTitle) ?: return emptyList()
+                all.indices.filter { i ->
+                    if (i in blocked) return@filter false
+                    val stack = all[i]
+                    if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return@filter false
+                    if (TerminalHelper.isSelected(stack)) return@filter false
+                    val name = ChatFormatting.stripFormatting(stack.hoverName.string)
+                        ?.lowercase(Locale.ROOT) ?: return@filter false
+                    name.startsWith(wanted)
+                }
+            }
+
+            Kind.RUBIX -> {
+                val target = rubixTarget ?: optimalRubixTarget(all) ?: return emptyList()
+                val panes = rubixPanes(all)
+                if (panes.size < 9) return emptyList()
+                panes.filter { it.second != target && it.first !in blocked }.map { it.first }
+            }
+
+            // Melody is one button, not a set: whatever candidate exists is
+            // the click. The row debounce and the skip queue are the
+            // clicker's business, not this list's.
+            Kind.MELODY -> listOfNotNull(melodyCandidate(all))
+        }
     }
 
-    private fun typeFor(title: String): Type = when {
-        title.startsWith("Correct all the panes!", true) -> Type.PANES
-        title.startsWith("Change all to same color!", true) -> Type.RUBIX
-        title.startsWith("Click in order!", true) -> Type.ORDER
-        title.startsWith("What starts with:", true) -> Type.STARTS
-        title.startsWith("Select all the", true) -> Type.SELECT
-        title.startsWith("Click the button on time!", true) -> Type.MELODY
-        else -> Type.NONE
+    /**
+     * The single slot a marker should ring: the nearest candidate to
+     * [lastSlot], so the picture and the pointer agree about where the next
+     * click is going. The slot it is already on is skipped while anything
+     * else is available — a marker sitting on the pane that was just clicked
+     * says nothing about where to go next.
+     */
+    fun nextClickSlot(
+        screenTitle: String,
+        items: List<ItemStack>,
+        blocked: Set<Int> = emptySet(),
+        rubixTarget: Int? = null,
+        lastSlot: Int? = null
+    ): Int? {
+        val kind = kindOf(screenTitle) ?: return null
+        val candidates = clickCandidates(screenTitle, items, blocked, rubixTarget)
+        if (candidates.isEmpty()) return null
+        val elsewhere = lastSlot?.let { s -> candidates.filter { it != s } }.orEmpty()
+        val pool = if (elsewhere.isNotEmpty()) elsewhere else candidates
+        return TerminalClickOrder.pickNearest(pool, lastSlot, kind.slotCount)
     }
+
+    // ── Per-type target extraction ───────────────────────────────────────────
+
+    // Compiled once: these are consulted for every slot of every frame the
+    // overlay is up, and a fresh Pattern each time is the kind of waste that
+    // only ever shows up as a frame hitch nobody can explain.
+    private val SELECT_PATTERN = Pattern.compile("Select all the (.+?) items!?", Pattern.CASE_INSENSITIVE)
+    private val STARTS_PATTERN = Pattern.compile("What starts with: '(.+?)'\\??", Pattern.CASE_INSENSITIVE)
+
+    private fun selectTarget(title: String): String? =
+        SELECT_PATTERN.matcher(title).let { if (it.find()) it.group(1) else null }
+
+    private fun startsTarget(title: String): String? =
+        STARTS_PATTERN.matcher(title).let { if (it.find()) it.group(1).lowercase(Locale.ROOT) else null }
+
+    /** Slot indices of the nine Rubix panes. */
+    private fun rubixPanes(all: List<ItemStack>): List<Pair<Int, Int>> =
+        RUBIX_SLOTS.mapNotNull { slot ->
+            val stack = all.getOrNull(slot) ?: return@mapNotNull null
+            val idx = TerminalHelper.rubixColorIndex(stack)
+            if (idx >= 0) slot to idx else null
+        }
+
+    /**
+     * The colour that costs the fewest clicks to reach, summed over all nine
+     * panes. Pure: same pane state, same answer, which is what lets the marker
+     * show the target before the clicker has committed to one.
+     */
+    fun optimalRubixTarget(all: List<ItemStack>): Int? {
+        val panes = rubixPanes(all)
+        if (panes.size < 9) return null
+        val costs = IntArray(5)
+        for (target in 0..4) {
+            for (p in panes) {
+                // Forward only: a left click cycles a pane +1, so the cost of
+                // reaching a colour from where a pane stands is the forward
+                // distance, never the short way back.
+                costs[target] += (target - p.second + 5) % 5
+            }
+        }
+        return costs.indices.minByOrNull { costs[it] }
+    }
+
+    /**
+     * Melody's next button: the row whose lime pane is aligned with the
+     * magenta marker and is not already complete. Returns the slot to click,
+     * or null when nothing is lined up right now.
+     */
+    fun melodyCandidate(all: List<ItemStack>): Int? {
+        val magentaSlot = (45..53).firstOrNull { slot ->
+            all.getOrNull(slot)?.`is`(Items.MAGENTA_STAINED_GLASS_PANE) == true
+        } ?: all.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
+        if (magentaSlot < 0) return null
+        val targetCol = (magentaSlot % 9) - 1
+        if (targetCol !in 0..4) return null
+
+        for (r in 0..3) {
+            val buttonSlot = (r + 1) * 9 + 7
+            val buttonStack = all.getOrNull(buttonSlot) ?: continue
+            val rowPaneSlots = ((r + 1) * 9 + 1)..((r + 1) * 9 + 5)
+            val rowPanes = rowPaneSlots.mapNotNull { all.getOrNull(it) }
+
+            val isRowCompleted = buttonStack.`is`(Items.LIME_TERRACOTTA) ||
+                buttonStack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+                buttonStack.`is`(Items.LIME_CONCRETE) ||
+                buttonStack.`is`(Items.EMERALD_BLOCK) ||
+                rowPanes.all { it.`is`(Items.LIME_STAINED_GLASS_PANE) || it.`is`(Items.GREEN_STAINED_GLASS_PANE) }
+            if (isRowCompleted) continue
+
+            val limePaneIndex = rowPaneSlots.firstOrNull { slot ->
+                val stack = all.getOrNull(slot) ?: return@firstOrNull false
+                stack.`is`(Items.LIME_STAINED_GLASS_PANE) || stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
+            } ?: continue
+
+            val movingCol = (limePaneIndex % 9) - 1
+            if (movingCol == targetCol) return buttonSlot
+        }
+        return null
+    }
+
+    private val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
+
+    // ── Presentation ─────────────────────────────────────────────────────────
 
     private fun orderColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
         if (!stack.`is`(Items.RED_STAINED_GLASS_PANE)) return null
@@ -84,40 +311,23 @@ object TerminalSolver {
     }
 
     private fun selectColor(title: String, stack: ItemStack): Int? {
-        val m = Pattern.compile("Select all the (.+?) items!?", Pattern.CASE_INSENSITIVE).matcher(title)
-        if (!m.find() || stack.isEmpty || TerminalHelper.isSelected(stack)) return null
-        val wanted = m.group(1)
+        val wanted = selectTarget(title) ?: return null
+        if (stack.isEmpty || TerminalHelper.isSelected(stack)) return null
         return if (TerminalHelper.matchesColor(stack, wanted)) 0xCCFF55FF.toInt() else null
     }
 
     private fun startsColor(title: String, stack: ItemStack): Int? {
-        val m = Pattern.compile("What starts with: '(.+?)'\\??", Pattern.CASE_INSENSITIVE).matcher(title)
-        if (!m.find() || stack.isEmpty || TerminalHelper.isSelected(stack)) return null
-        val wanted = m.group(1).lowercase(Locale.ROOT)
+        val wanted = startsTarget(title) ?: return null
+        if (stack.isEmpty || TerminalHelper.isSelected(stack)) return null
         val name = ChatFormatting.stripFormatting(stack.hoverName.string)?.lowercase(Locale.ROOT) ?: return null
         return if (name.startsWith(wanted)) 0xCC55FF55.toInt() else null
     }
 
-    private fun rubixColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
-        val allowed = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
-        if (slot !in allowed) return null
-
-        val panes = allowed.mapNotNull { s ->
-            val st = all.getOrNull(s) ?: return@mapNotNull null
-            val idx = TerminalHelper.rubixColorIndex(st)
-            if (idx >= 0) s to idx else null
-        }
+    private fun rubixColor(slot: Int, stack: ItemStack, all: List<ItemStack>, committedTarget: Int?): Int? {
+        if (slot !in RUBIX_SLOTS) return null
+        val panes = rubixPanes(all)
         if (panes.size < 9) return null
-
-        val costs = IntArray(5)
-        for (target in 0..4) {
-            for (p in panes) {
-                val fwd = (target - p.second + 5) % 5
-                val bwd = (p.second - target + 5) % 5
-                costs[target] += minOf(fwd, bwd)
-            }
-        }
-        val target = costs.indices.minByOrNull { costs[it] } ?: return null
+        val target = committedTarget ?: optimalRubixTarget(all) ?: return null
         val currentIdx = TerminalHelper.rubixColorIndex(stack)
         return if (currentIdx == target) 0xAA00E676.toInt() else 0xAAFFAA00.toInt()
     }

@@ -121,12 +121,17 @@ object Config {
         var autoTerminalDontSkipFirst : Boolean = false,
         var autoTerminalAnnounceMelody : Boolean = false,
         var autoTerminalMelodyMessage : String = "melody",
-        var autoTermColors          : Boolean = false,
-        var autoTermMelody          : Boolean = false,
-        var autoTermNumbers         : Boolean = false,
-        var autoTermRedGreen        : Boolean = false,
-        var autoTermRubix           : Boolean = false,
-        var autoTermStartsWith      : Boolean = false,
+        // Per-terminal-type switches default ON: "Auto Terminal" on its own has
+        // to solve something. A config where they are all off is treated as
+        // "no filter chosen" rather than "nothing may run" — see
+        // AutoTerminal.isTypeEnabled. They stay real toggles, so switching a
+        // type off still stops it.
+        var autoTermColors          : Boolean = true,
+        var autoTermMelody          : Boolean = true,
+        var autoTermNumbers         : Boolean = true,
+        var autoTermRedGreen        : Boolean = true,
+        var autoTermRubix           : Boolean = true,
+        var autoTermStartsWith      : Boolean = true,
         var autoI4Enabled           : Boolean = false,
         var autoSimonSaysEnabled    : Boolean = false,
         var autoSimonSaysStart      : Boolean = false,
@@ -197,10 +202,28 @@ object Config {
         var autoTerminalCursorArc   : Int = 25,   // % of distance bowed off-straight
         var autoTerminalCursorJitter: Int = 35,   // % tremor while travelling
         var autoTerminalCursorMelody: Boolean = false,
+        // Two pointers on one screen is one pointer too many: the real cursor
+        // steps aside for the drawn one while it is up.
+        var autoTerminalCursorHideReal: Boolean = true,
         // Terminals outside a real dungeon run (p3 simulator, practice worlds):
         // the screen title alone is what identifies a terminal, so the dungeon
         // check is only ever a safety net.
         var autoTerminalAnywhere: Boolean = true,
+
+        // ── Per-block hitbox size (each a multiplier on secretHitboxSize) ──
+        // Separated so a lever can be left forgiving while a button stays
+        // close to stock, which is what one shared slider could never do.
+        // Appended at the end of Data: existing config files keep loading.
+        var secretLeverHitboxSize   : Int = 100,
+        var secretButtonHitboxSize  : Int = 100,
+        var secretSkullHitboxSize   : Int = 100,
+        var secretMushroomHitboxSize: Int = 100,
+
+        // ── Settings screen ─────────────────────────────────────────────────
+        // Section headers the player has folded away. Keyed by title rather
+        // than index, so renaming or reordering a section only ever costs one
+        // row coming back open — it can never fold the wrong one.
+        var collapsedSections: MutableSet<String> = mutableSetOf(),
     )
 
     var data = Data()
@@ -703,6 +726,30 @@ object Config {
         get() = data.secretHitboxSize
         set(v) { data.secretHitboxSize = v.coerceIn(0, 100); save() }
 
+    var secretLeverHitboxSize: Int
+        get() = data.secretLeverHitboxSize
+        set(v) { data.secretLeverHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretButtonHitboxSize: Int
+        get() = data.secretButtonHitboxSize
+        set(v) { data.secretButtonHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretSkullHitboxSize: Int
+        get() = data.secretSkullHitboxSize
+        set(v) { data.secretSkullHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretMushroomHitboxSize: Int
+        get() = data.secretMushroomHitboxSize
+        set(v) { data.secretMushroomHitboxSize = v.coerceIn(0, 100); save() }
+
+    fun isSectionCollapsed(title: String): Boolean = data.collapsedSections.contains(title)
+
+    /** Fold or unfold a settings section and remember which. */
+    fun toggleSectionCollapsed(title: String) {
+        if (!data.collapsedSections.remove(title)) data.collapsedSections.add(title)
+        save()
+    }
+
     var moddedHitboxDisplayEnabled: Boolean
         get() = data.moddedHitboxDisplayEnabled
         set(v) { data.moddedHitboxDisplayEnabled = v; save() }
@@ -879,6 +926,13 @@ object Config {
     var autoTerminalCursorMelody: Boolean
         get() = data.autoTerminalCursorMelody
         set(v) { data.autoTerminalCursorMelody = v; save() }
+
+    /** Hide the real cursor while the drawn pointer is on screen. Two
+     *  pointers over one pane reads as a bug, and the drawn one is the one
+     *  that is about to click. */
+    var autoTerminalCursorHideReal: Boolean
+        get() = data.autoTerminalCursorHideReal
+        set(v) { data.autoTerminalCursorHideReal = v; save() }
 
     /** Run the terminal clicker outside a real dungeon run — the p3 simulator
      *  and practice worlds never set `DungeonContext.inDungeon`, and a terminal

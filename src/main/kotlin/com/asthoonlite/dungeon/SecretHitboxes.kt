@@ -68,10 +68,25 @@ object SecretHitboxes {
      *  Key covers the state identity *and* the slider value — both the shape
      *  and its vanilla base depend on them. */
     private val shapeCache = HashMap<Long, VoxelShape>()
-    private var shapeCacheSize = -1
+    private var shapeCacheSignature = -1L
 
     private fun shapeKey(state: BlockState, sizePercent: Int): Long =
         (state.hashCode().toLong() and 0xFFFFFFFFL) shl 10 or (sizePercent.toLong() and 0x3FF)
+
+    /**
+     * Every size setting, packed. The memo is keyed on the *resulting* size,
+     * so stale entries can only ever be wasteful, never wrong — but a slider
+     * that has been moved should not leave the old boxes sitting in memory
+     * either, and five separate fields cannot be watched with one integer.
+     */
+    private fun sizeSignature(): Long {
+        var s = Config.secretHitboxSize.toLong() and 0x7FL
+        s = (s shl 7) or (Config.secretLeverHitboxSize.toLong() and 0x7FL)
+        s = (s shl 7) or (Config.secretButtonHitboxSize.toLong() and 0x7FL)
+        s = (s shl 7) or (Config.secretSkullHitboxSize.toLong() and 0x7FL)
+        s = (s shl 7) or (Config.secretMushroomHitboxSize.toLong() and 0x7FL)
+        return s
+    }
 
     // ── Hot path ────────────────────────────────────────────────────────────
 
@@ -96,13 +111,14 @@ object SecretHitboxes {
         if (!shapeOverrideEnabled()) return null
         val kind = kindOf(state) ?: return null
         if (!isKindEnabled(kind, pos)) return null
-        if (Config.secretHitboxSize <= 0) return null
+        val sizePercent = sizePercentFor(kind)
+        if (sizePercent <= 0) return null
 
-        val key = shapeKey(state, Config.secretHitboxSize)
+        val key = shapeKey(state, sizePercent)
         shapeCache[key]?.let { return it }
 
         val vanilla = vanillaBounds(state, level, pos) ?: return null
-        val bounds = lerpBounds(vanilla, targetBounds(kind, vanilla), Config.secretHitboxSize)
+        val bounds = lerpBounds(vanilla, targetBounds(kind, vanilla), sizePercent)
         val made = Shapes.box(bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5])
 
         // Defensive ceiling: the key space is small by construction, but never
@@ -219,18 +235,73 @@ object SecretHitboxes {
      * levers / skulls / mushrooms grow all the way to the cell walls: that is
      * "full block", and it is what their GUI rows already promise.
      *
-     * buttons stop at the button's own height. X and Z go to the cell walls
-     * ("as wide as the block") while Y keeps the vanilla range, so the box
-     * ends up wide but never taller than the button. Taking Y from vanilla
-     * rather than hard-coding a number is what makes this orientation-free —
-     * floor, ceiling and wall buttons all keep their real plate height with no
-     * per-face bookkeeping.
+     * buttons are the interesting one. A button sticks out of a face by 2 px
+     * and presents a plate 6–8 px across, so one axis is always about a
+     * quarter as thick as the others — and *which* axis it is depends on where
+     * the button is mounted. Floor and ceiling buttons carry their depth in Y,
+     * wall buttons carry it in X or Z. Measured from 26.1.2:
+     *
+     *   floor   ext (0.375, 0.125, 0.250)   depth = Y
+     *   wall    ext (0.375, 0.250, 0.125)   depth = Z
+     *   ceiling ext (0.375, 0.125, 0.250)   depth = Y
+     *
+     * So the rule is not "Y stays" — that only held for buttons on the floor,
+     * and it made wall buttons protrude a whole block. The rule is: the
+     * thinnest axis is the depth, it stays exactly vanilla, the other two go
+     * to the cell walls. Length and width grow; how far it sticks out does not.
      */
     @JvmStatic
     fun targetBounds(kind: Kind, vanilla: DoubleArray): DoubleArray = when (kind) {
-        Kind.BUTTON -> doubleArrayOf(0.0, vanilla[1], 0.0, 1.0, vanilla[4], 1.0)
+        Kind.BUTTON -> buttonTargetBounds(vanilla)
         else -> doubleArrayOf(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
     }
+
+    private fun buttonTargetBounds(vanilla: DoubleArray): DoubleArray {
+        val ex = vanilla[3] - vanilla[0]
+        val ey = vanilla[4] - vanilla[1]
+        val ez = vanilla[5] - vanilla[2]
+        val extents = doubleArrayOf(ex, ey, ez)
+
+        // Smallest extent is the depth — unless nothing is meaningfully
+        // smaller than anything else, in which case the shape is not a plate
+        // on a face and there is no depth to preserve. Keep Y then: it is the
+        // orientation buttons are most often found in and the old behaviour.
+        val depth = extents.indices.minByOrNull { extents[it] } ?: 1
+        if (extents.max() >= extents[depth] * 2.0) {
+            return when (depth) {
+                0 -> doubleArrayOf(vanilla[0], 0.0, 0.0, vanilla[3], 1.0, 1.0)
+                2 -> doubleArrayOf(0.0, 0.0, vanilla[2], 1.0, 1.0, vanilla[5])
+                else -> doubleArrayOf(0.0, vanilla[1], 0.0, 1.0, vanilla[4], 1.0)
+            }
+        }
+        return doubleArrayOf(0.0, vanilla[1], 0.0, 1.0, vanilla[4], 1.0)
+    }
+
+    /**
+     * The slider actually applied to [kind]: the master expansion multiplied
+     * by this block family's own setting.
+     *
+     * Two numbers rather than one so a lever can stay forgiving while a
+     * button sits close to stock — which is what a single shared slider could
+     * never express. 100 % on the per-kind slider means "follow the master",
+     * so a config that never touches them behaves exactly as it did before
+     * they existed.
+     */
+    @JvmStatic
+    fun sizePercentFor(kind: Kind): Int {
+        val perKind = when (kind) {
+            Kind.LEVER -> Config.secretLeverHitboxSize
+            Kind.BUTTON -> Config.secretButtonHitboxSize
+            Kind.SKULL -> Config.secretSkullHitboxSize
+            Kind.MUSHROOM -> Config.secretMushroomHitboxSize
+        }
+        return sizePercent(Config.secretHitboxSize, perKind)
+    }
+
+    /** The combination itself, kept pure so it can be pinned by a test. */
+    @JvmStatic
+    fun sizePercent(master: Int, perKind: Int): Int =
+        (master.coerceIn(0, 100) * perKind.coerceIn(0, 100)) / 100
 
     /**
      * Per-axis interpolation from the vanilla footprint to the target box.
@@ -295,8 +366,9 @@ object SecretHitboxes {
         }
 
         // Config can change at any moment from the GUI; drop stale shapes.
-        if (Config.secretHitboxSize != shapeCacheSize) {
-            shapeCacheSize = Config.secretHitboxSize
+        val signature = sizeSignature()
+        if (signature != shapeCacheSignature) {
+            shapeCacheSignature = signature
             shapeCache.clear()
         }
 

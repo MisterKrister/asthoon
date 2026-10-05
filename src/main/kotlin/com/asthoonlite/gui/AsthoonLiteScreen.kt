@@ -227,7 +227,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             }
         }
 
-        currentItems = buildItemsForTab(tab, px)
+        currentItems = applyCollapse(buildItemsForTab(tab, px))
 
         var relY = 0
         for (item in currentItems) {
@@ -238,7 +238,34 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             relY += item.height + ROW_GAP
         }
 
+        // Folding a section shortens the list, so the viewport can now sit
+        // past the end of it. Clamping here rather than on the next scroll
+        // keeps the first frame after a fold on screen instead of blank.
+        scrollOffset = scrollOffset.coerceIn(0, maxScroll())
         updateWidgetPositions()
+    }
+
+    /**
+     * Drops the rows of every section the player has folded away, keeping the
+     * headers themselves so the folded state stays visible and clickable.
+     *
+     * Nothing is deleted — the settings are all still there, one click on the
+     * header from being back. That is the whole point: a long tab should be
+     * *short by default*, not short by removal.
+     */
+    private fun applyCollapse(items: List<ContentItem>): List<ContentItem> {
+        if (items.none { it is SectionHeader && Config.isSectionCollapsed(it.title) }) return items
+        val out = ArrayList<ContentItem>(items.size)
+        var hidden = false
+        for (item in items) {
+            if (item is SectionHeader) {
+                hidden = Config.isSectionCollapsed(item.title)
+                out.add(item)
+            } else if (!hidden) {
+                out.add(item)
+            }
+        }
+        return out
     }
 
     private fun updateWidgetPositions() {
@@ -436,7 +463,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
-                NoteRow("Both need the terminal type switched on below."),
+                NoteRow("Every type is on by default — switch one off below to leave it alone."),
                 SectionHeader("Click Timing & Delays"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
@@ -460,6 +487,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Pointer"),
                 ToggleRow("Glide Pointer", "Draws a pointer that travels to each pane, then clicks it there (clicks are still packets)",
                     { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
+                ToggleRow("  ↳ Hide Real Cursor", "Steps the real cursor aside while the drawn pointer is on screen",
+                    { Config.autoTerminalCursorHideReal }, { Config.autoTerminalCursorHideReal = it }),
                 NoteRow("Appears as soon as a terminal opens, not on the first solve."),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 25, 400, Config.autoTerminalCursorSpeed, "Pointer Speed: ", "%") {
                     Config.autoTerminalCursorSpeed = it
@@ -510,12 +539,27 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.skullHitboxEnabled }, { Config.skullHitboxEnabled = it }),
                 ToggleRow("  ↳ Mushroom Hitbox", "Full block Mushroom hitbox",
                     { Config.mushroomHitboxEnabled }, { Config.mushroomHitboxEnabled = it }),
+                SectionHeader("Hitbox Sizes"),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretHitboxSize, "Expansion (all): ", "%") {
+                    Config.secretHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretLeverHitboxSize, "Lever Size: ", "%") {
+                    Config.secretLeverHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretButtonHitboxSize, "Button Size: ", "%") {
+                    Config.secretButtonHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretSkullHitboxSize, "Skull Size: ", "%") {
+                    Config.secretSkullHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretMushroomHitboxSize, "Mushroom Size: ", "%") {
+                    Config.secretMushroomHitboxSize = it
+                }),
+                NoteRow("Each size multiplies Expansion (all). 100% = follow it."),
+                NoteRow("Buttons keep their real depth — only length and width grow."),
                 SectionHeader("Hitbox Visuals & Outline"),
                 ToggleRow("Show 3D Hitbox Boxes", "Renders custom 3D boxes in-game",
                     { Config.moddedHitboxDisplayEnabled }, { Config.moddedHitboxDisplayEnabled = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretHitboxSize, "Hitbox Expansion: ", "%") {
-                    Config.secretHitboxSize = it
-                }),
                 ToggleRow("Legit Selection Outline", "Shows vanilla outline when looking at blocks",
                     { Config.secretHitboxVanillaOutline }, { Config.secretHitboxVanillaOutline = it }),
                 ToggleRow("Hide Selection Outline", "Completely hide the in-game black selection outline",
@@ -849,6 +893,21 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 for (item in currentItems) {
                     val itemY = top - scrollOffset + curRelY
                     val itemH = item.height
+                    // A header folds its section. Only outside search: a search
+                    // result list has no sections to fold, only group labels.
+                    if (item is SectionHeader && searchQuery.isEmpty()) {
+                        val hx = px + 16
+                        val hw = PANEL_W - 32
+                        if (mx in hx..(hx + hw) && my in itemY..(itemY + itemH)) {
+                            if (::searchBox.isInitialized && searchBox.isFocused) {
+                                searchBox.isFocused = false
+                            }
+                            Config.toggleSectionCollapsed(item.title)
+                            AbstractWidget.playButtonClickSound(minecraft.soundManager)
+                            rebuildTab(activeTab)
+                            return true
+                        }
+                    }
                     if (item is ToggleRow) {
                         val isSub2 = item.label.startsWith("    ↳ ")
                         val isSub1 = !isSub2 && item.label.startsWith("  ↳ ")
@@ -955,7 +1014,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             if (itemY + itemH >= top && itemY <= bottom) {
                 when (item) {
                     is SectionHeader -> {
-                        drawSectionHeader(context, px + 16, itemY, PANEL_W - 32, itemH, item.title)
+                        val hx = px + 16
+                        val hw = PANEL_W - 32
+                        val hovered = searchQuery.isEmpty() &&
+                            mouseX in hx..(hx + hw) && mouseY in itemY..(itemY + itemH)
+                        drawSectionHeader(context, hx, itemY, hw, itemH, item.title, hovered)
                     }
                     is ToggleRow -> {
                         val isSub2 = item.label.startsWith("    ↳ ")
@@ -995,7 +1058,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
 
         // ── Footer hint ──────────────────────────────────────────────────────
-        val hint = "Click row to toggle • Scroll to view more"
+        val hint = "Click a header to fold • Click a row to toggle"
         val hintW = font.width(hint)
         context.text(font, hint, px + (PANEL_W - hintW) / 2, py + pH - 10, COL_TEXT_MUTED)
 
@@ -1005,20 +1068,36 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private fun drawSectionHeader(
         ctx: GuiGraphicsExtractor,
         x: Int, y: Int, w: Int, h: Int,
-        title: String
+        title: String,
+        hovered: Boolean = false
     ) {
-        val titleText = "✦  ${title.uppercase()}"
+        // Search results are grouped, not sectioned — a caret there would
+        // promise a fold that does nothing.
+        val foldable = searchQuery.isEmpty()
+        val collapsed = foldable && Config.isSectionCollapsed(title)
+        if (hovered) ctx.fill(x - 6, y, x + w, y + h, COL_CARD_HOVER)
+
+        val caret = if (!foldable) "" else if (collapsed) "▸  " else "▾  "
+        val titleText = "✦  $caret${title.uppercase()}"
         val textW = font.width(titleText)
         val textY = y + (h - 8) / 2
 
         // Render accent colored section title
         ctx.text(font, titleText, x, textY, COL_ACCENT)
 
+        // The fold affordance only speaks up on hover: a label on every header
+        // would add exactly the clutter the folding is meant to remove.
+        if (foldable && hovered) {
+            val foldNote = if (collapsed) "click to open" else "click to fold"
+            ctx.text(font, foldNote, x + w - font.width(foldNote), textY, COL_TEXT_MUTED)
+        }
+
         // Subtle divider line extending from end of text to right edge
         val lineX = x + textW + 8
         val lineY = y + h / 2
-        if (lineX < x + w) {
-            ctx.fill(lineX, lineY, x + w, lineY + 1, 0xFF1E293B.toInt())
+        val lineEnd = if (foldable && hovered) x + w - 64 else x + w
+        if (lineX < lineEnd) {
+            ctx.fill(lineX, lineY, lineEnd, lineY + 1, 0xFF1E293B.toInt())
         }
     }
 

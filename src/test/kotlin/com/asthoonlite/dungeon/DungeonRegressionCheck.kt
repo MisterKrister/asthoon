@@ -2,12 +2,24 @@ package com.asthoonlite.dungeon
 
 import com.asthoonlite.dungeon.api.FloorType
 import com.asthoonlite.dungeon.map.DungeonMapScanner
+import com.asthoonlite.dungeon.TerminalSolver.Kind
+import com.mojang.serialization.Lifecycle
+import net.minecraft.core.Holder
+import net.minecraft.core.HolderLookup
+import net.minecraft.core.HolderOwner
+import net.minecraft.core.HolderSet
+import net.minecraft.core.Registry
+import net.minecraft.core.registries.BuiltInRegistries
+import net.minecraft.resources.ResourceKey
+import net.minecraft.tags.TagKey
 import com.asthoonlite.dungeon.solvers.TicTacToeSolver
 import com.asthoonlite.overlay.J2dMapCanvas
 import com.asthoonlite.render.MapCanvas
 import com.asthoonlite.render.RecordMapCanvas
 import com.asthoonlite.render.mapBaseSpans
 import com.asthoonlite.render.replay
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
 import net.minecraft.world.level.saveddata.maps.MapDecorationTypes
 import net.minecraft.network.chat.Component
 import net.minecraft.world.level.LevelHeightAccessor
@@ -15,6 +27,8 @@ import net.minecraft.world.scores.ScoreHolder
 import net.minecraft.world.scores.Scoreboard
 import net.minecraft.world.scores.criteria.ObjectiveCriteria
 import java.awt.image.BufferedImage
+import java.util.Optional
+import java.util.stream.Stream
 
 /** Run with ./gradlew regressionCheck (also included in build). No game or server needed. */
 fun main() {
@@ -23,6 +37,23 @@ fun main() {
     // before it touches a registry — no world, no server, no connection.
     net.minecraft.SharedConstants.tryDetectVersion()
     net.minecraft.server.Bootstrap.bootStrap()
+
+    // `ItemStack` reads a component map off the item's holder, and vanilla
+    // only binds those during a resource reload — something this harness
+    // never does, so an ItemStack construction dies with "Components not
+    // bound yet". Bind the built-in ones here, once, exactly the way the
+    // reload path does: build the pending maps from a lookup over every
+    // built-in registry, then apply them.
+    //
+    // The item table is filled when `Items` loads, so make sure that has
+    // happened first — binding before registration would bind nothing.
+    requireNotNull(Items.WHITE_STAINED_GLASS_PANE) { "Item table must be populated before binding" }
+    val builtInLookups: List<HolderLookup.RegistryLookup<*>> = BuiltInRegistries.REGISTRY.stream()
+        .map { registry -> UntaggedLookup<Any>(registry as HolderLookup.RegistryLookup<Any>) }
+        .toList()
+    BuiltInRegistries.DATA_COMPONENT_INITIALIZERS
+        .build(HarnessLookupProvider(builtInLookups.associateBy { lookup -> lookup.key() }))
+        .forEach { pending -> pending.apply() }
 
     val scoreboard = Scoreboard()
     val objective = scoreboard.addObjective(
@@ -74,6 +105,103 @@ fun main() {
     check(AutoTerminal.canClick(2_430L))
     AutoTerminal.onEscape()
     check(AutoTerminal.beginTerminal("Click in order!", 3_000L)) { "Reopening after closing starts a new session" }
+
+    // ── Terminal identification, candidates, click order ────────────────────
+    run {
+        // Plain, simulator-wrapped and colour-formatted titles all name the
+        // same terminal. A phrase does not stop being true because something
+        // wrote in front of it — that was the failure the fuzzy match fixes.
+        check(TerminalSolver.kindOf("Select all the red items!") == Kind.SELECT)
+        check(TerminalSolver.kindOf("P3 · Click in order!") == Kind.ORDER)
+        check(TerminalSolver.kindOf("§cCorrect all the panes!") == Kind.PANES)
+        check(TerminalSolver.kindOf("What starts with: 'a'?") == Kind.STARTS)
+        check(TerminalSolver.kindOf("Change all to same color!") == Kind.RUBIX)
+        check(TerminalSolver.kindOf("Click the button on time!") == Kind.MELODY)
+        check(TerminalSolver.kindOf("Your inventory") == null)
+        check(TerminalSolver.kindOf("Sort these items in order") == null) {
+            "Containing 'order' is not containing 'click in order'"
+        }
+        check(!TerminalSolver.isTerminalTitle("Chest"))
+        check(TerminalSolver.cleanTitle("§aClick in order!") == "Click in order!")
+
+        // The gate that used to make Auto Terminal do nothing at all: with no
+        // type switches chosen there is no filter, not a filter on nothing.
+        check(AutoTerminal.typeAllowed(Kind.SELECT, emptySet())) { "No switches on must mean every terminal runs" }
+        check(AutoTerminal.typeAllowed(Kind.MELODY, emptySet()))
+        check(!AutoTerminal.typeAllowed(Kind.SELECT, setOf(Kind.MELODY)))
+        check(AutoTerminal.typeAllowed(Kind.MELODY, setOf(Kind.MELODY)))
+
+        val pane = Items.WHITE_STAINED_GLASS_PANE
+        val paneGrid = { size: Int -> ArrayList<ItemStack>(size).apply { repeat(size) { add(ItemStack(pane)) } } }
+
+        // Select: only the panes of the right colour that are not picked yet.
+        val select = paneGrid(54)
+        select[1] = ItemStack(Items.RED_STAINED_GLASS_PANE)
+        select[2] = ItemStack(Items.BLACK_STAINED_GLASS_PANE) // never a target
+        select[20] = ItemStack(Items.RED_STAINED_GLASS_PANE)
+        select[44] = ItemStack(Items.RED_STAINED_GLASS_PANE)
+        val selectTitle = "Select all the red items!"
+        check(TerminalSolver.clickCandidates(selectTitle, select) == listOf(1, 20, 44))
+        check(TerminalSolver.clickCandidates(selectTitle, select, setOf(1)) == listOf(20, 44))
+        check(TerminalSolver.clickCandidates("Chest", select).isEmpty()) {
+            "A non-terminal must never hand out a slot to click"
+        }
+        check(TerminalSolver.clickCandidates(selectTitle, select.take(10)).isEmpty()) {
+            "A clipped slot list short of the terminal's own size is not readable"
+        }
+
+        // The marker and the clicker are one decision: from wherever the
+        // pointer is, it goes to the nearest pane still to click.
+        check(TerminalSolver.nextClickSlot(selectTitle, select, lastSlot = 1) == 20)
+        check(TerminalSolver.nextClickSlot(selectTitle, select, lastSlot = 20) == 1)
+        // No previous click means "come from the middle of the grid", and the
+        // nearest of 1, 20 and 44 to slot 27 is 20.
+        check(TerminalSolver.nextClickSlot(selectTitle, select, lastSlot = null) == 20) {
+            "A fresh terminal starts from the middle of the grid, not from slot 0"
+        }
+        check(TerminalSolver.nextClickSlot(selectTitle, select, setOf(1), lastSlot = 1) == 20)
+        check(TerminalSolver.nextClickSlot(selectTitle, select, setOf(1, 20, 44)) == null) {
+            "Every pane blocked means nothing left to click, not a random pick"
+        }
+
+        // The number terminal only accepts the lowest count next.
+        val order = paneGrid(36)
+        order[4] = ItemStack(Items.RED_STAINED_GLASS_PANE, 1)
+        order[9] = ItemStack(Items.RED_STAINED_GLASS_PANE, 1)
+        order[20] = ItemStack(Items.RED_STAINED_GLASS_PANE, 2)
+        check(TerminalSolver.clickCandidates("Click in order!", order) == listOf(4, 9))
+        check(TerminalSolver.nextClickSlot("Click in order!", order, lastSlot = 4) == 9)
+
+        // What starts with: the letter from the title, and nothing else.
+        val starts = paneGrid(45)
+        starts[5] = ItemStack(Items.APPLE)
+        starts[14] = ItemStack(Items.ARROW)
+        starts[27] = ItemStack(Items.BREAD)
+        check(TerminalSolver.clickCandidates("What starts with: 'a'?", starts) == listOf(5, 14))
+
+        // Correct all the panes: every red one, in slot order.
+        val panes = paneGrid(45)
+        panes[3] = ItemStack(Items.RED_STAINED_GLASS_PANE)
+        panes[10] = ItemStack(Items.RED_STAINED_GLASS_PANE)
+        check(TerminalSolver.clickCandidates("Correct all the panes!", panes) == listOf(3, 10))
+
+        // Rubix: the target is the cheapest colour to reach, and the
+        // candidates are the panes that are not there yet.
+        val rubix = paneGrid(45)
+        for (slot in listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)) {
+            rubix[slot] = ItemStack(Items.ORANGE_STAINED_GLASS_PANE)
+        }
+        check(TerminalSolver.optimalRubixTarget(rubix) == 0)
+        check(TerminalSolver.clickCandidates("Change all to same color!", rubix).isEmpty()) {
+            "All nine panes already at the target: nothing left to click"
+        }
+        // Three panes already yellow flips the target to yellow (6 forward
+        // clicks) rather than orange (12), and the candidates are the six
+        // panes still orange.
+        for (slot in listOf(12, 13, 14)) rubix[slot] = ItemStack(Items.YELLOW_STAINED_GLASS_PANE)
+        check(TerminalSolver.optimalRubixTarget(rubix) == 1)
+        check(TerminalSolver.clickCandidates("Change all to same color!", rubix) == listOf(21, 22, 23, 30, 31, 32))
+    }
 
     for (floor in FloorType.entries.filter { it != FloorType.None }) {
         val colors = ByteArray(128 * 128)
@@ -156,10 +284,15 @@ fun main() {
         check(SecretHitboxes.expansionFraction(-5) == 0.0) { "expansion must clamp at 0" }
         check(SecretHitboxes.expansionFraction(500) == 1.0) { "expansion must clamp at 1" }
 
-        // Realistic vanilla footprints. The Y range on the button one is the
-        // plate height — that is the axis buttons must never grow on.
+        // Vanilla footprints as the game actually builds them. The thin axis
+        // is the depth: Y for a button on the floor, X for one on a side wall,
+        // Z for one on the other pair. Wall and ceiling buttons are exactly
+        // the case that used to break — the rule has to find the depth, not
+        // assume it is Y.
         val vanillaFloorLever = doubleArrayOf(0.3125, 0.0, 0.3125, 0.6875, 0.5, 0.6875)
-        val vanillaWallButton = doubleArrayOf(0.0, 0.375, 0.3125, 0.125, 0.75, 0.6875)
+        val vanillaWallButtonX = doubleArrayOf(0.0, 0.375, 0.3125, 0.125, 0.75, 0.6875)    // depth = X
+        val vanillaWallButtonZ = doubleArrayOf(0.3125, 0.375, 0.875, 0.6875, 0.625, 1.0)   // depth = Z
+        val vanillaFloorButton = doubleArrayOf(0.3125, 0.875, 0.375, 0.6875, 1.0, 0.625)   // depth = Y
         val vanillaSkull      = doubleArrayOf(0.125, 0.0, 0.125, 0.875, 0.875, 0.875)
 
         // Levers, skulls and mushrooms grow all the way to the cell walls.
@@ -179,15 +312,65 @@ fun main() {
             assertValid(atMax, "$kind@100%")
         }
 
-        // Buttons: full block in X and Z, exactly vanilla in Y.
-        val buttonTarget = SecretHitboxes.targetBounds(SecretHitboxes.Kind.BUTTON, vanillaWallButton)
-        check(buttonTarget.contentEquals(doubleArrayOf(0.0, vanillaWallButton[1], 0.0, 1.0, vanillaWallButton[4], 1.0))) {
-            "button target must be wide but keep the button's height: ${buttonTarget.toList()}"
+        // Buttons: the depth axis is copied from vanilla, untouched, and the
+        // other two go to the cell walls — in whichever axis depth sits.
+        val buttonCases = listOf(
+            Triple("wall/X", vanillaWallButtonX, intArrayOf(0)),
+            Triple("wall/Z", vanillaWallButtonZ, intArrayOf(2)),
+            Triple("floor", vanillaFloorButton, intArrayOf(1))
+        )
+        for ((label, vanilla, depthAxes) in buttonCases) {
+            val depth = depthAxes[0]
+            val target = SecretHitboxes.targetBounds(SecretHitboxes.Kind.BUTTON, vanilla)
+            check(target[depth] == vanilla[depth] && target[depth + 3] == vanilla[depth + 3]) {
+                "button($label) must keep its depth on axis $depth: ${target.toList()} vs ${vanilla.toList()}"
+            }
+            for (axis in intArrayOf(0, 1, 2)) {
+                if (axis == depth) continue
+                check(target[axis] == 0.0 && target[axis + 3] == 1.0) {
+                    "button($label) must span the block on axis $axis: ${target.toList()}"
+                }
+            }
+            assertValid(target, "button($label)@target")
+        }
+
+        // The measured 26.1.2 shapes: read them out of the real block states,
+        // so the rule is pinned against the game rather than against numbers
+        // someone typed in. The shape may change shape between versions; this
+        // is what notices.
+        run {
+            val empty = net.minecraft.world.level.EmptyBlockGetter.INSTANCE
+            val zero = net.minecraft.core.BlockPos.ZERO
+            val button = net.minecraft.world.level.block.Blocks.STONE_BUTTON.defaultBlockState()
+            for (face in net.minecraft.world.level.block.state.properties.AttachFace.values()) {
+                val state = button.setValue(
+                    net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE, face
+                )
+                val b = state.getShape(empty, zero).bounds()
+                val vanilla = doubleArrayOf(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ)
+                val extents = doubleArrayOf(
+                    vanilla[3] - vanilla[0], vanilla[4] - vanilla[1], vanilla[5] - vanilla[2]
+                )
+                val depth = extents.indices.minByOrNull { extents[it] }!!
+                check(extents.max() >= extents[depth] * 2.0) {
+                    "button($face) no longer has a distinguishable depth axis: ${extents.toList()}"
+                }
+                val target = SecretHitboxes.targetBounds(SecretHitboxes.Kind.BUTTON, vanilla)
+                check(target[depth] == vanilla[depth] && target[depth + 3] == vanilla[depth + 3]) {
+                    "button($face) grew into its own depth: ${target.toList()} from ${vanilla.toList()}"
+                }
+                for (axis in intArrayOf(0, 1, 2)) {
+                    if (axis == depth) continue
+                    check(target[axis] == 0.0 && target[axis + 3] == 1.0) {
+                        "button($face) failed to open up axis $axis: ${target.toList()}"
+                    }
+                }
+            }
         }
 
         // 0 % is a pure pass-through — vanilla hands back untouched.
         for (kind in SecretHitboxes.Kind.values()) {
-            val vanilla = if (kind == SecretHitboxes.Kind.BUTTON) vanillaWallButton else vanillaFloorLever
+            val vanilla = if (kind == SecretHitboxes.Kind.BUTTON) vanillaWallButtonX else vanillaFloorLever
             val out = SecretHitboxes.lerpBounds(vanilla, SecretHitboxes.targetBounds(kind, vanilla), 0)
             check(out.contentEquals(vanilla)) { "$kind at 0% must be exactly vanilla: ${out.toList()}" }
         }
@@ -196,49 +379,74 @@ fun main() {
         // vanilla..target corridor. A box grows *outward*: mins only ever move
         // down, maxes only ever move up. Getting that backwards is exactly the
         // kind of thing that reads as "the hitbox shrank when I raised it".
-        var prev = SecretHitboxes.lerpBounds(vanillaWallButton, buttonTarget, 0)
-        for (size in 1..100) {
-            val cur = SecretHitboxes.lerpBounds(vanillaWallButton, buttonTarget, size)
-            assertValid(cur, "button@${size}%")
-            for (i in 0..5) {
-                if (i < 3) {
-                    check(cur[i] <= prev[i] + 1e-12) {
-                        "button@${size}% min axis $i moved inwards: ${cur.toList()}"
-                    }
-                    check(cur[i] >= buttonTarget[i] - 1e-9 && cur[i] <= vanillaWallButton[i] + 1e-9) {
-                        "button@${size}% min axis $i escaped target..vanilla: ${cur.toList()}"
-                    }
-                } else {
-                    check(cur[i] >= prev[i] - 1e-12) {
-                        "button@${size}% max axis $i moved inwards: ${cur.toList()}"
-                    }
-                    check(cur[i] >= vanillaWallButton[i] - 1e-9 && cur[i] <= buttonTarget[i] + 1e-9) {
-                        "button@${size}% max axis $i escaped vanilla..target: ${cur.toList()}"
+        for ((label, vanilla, _) in buttonCases) {
+            val target = SecretHitboxes.targetBounds(SecretHitboxes.Kind.BUTTON, vanilla)
+            var prev = SecretHitboxes.lerpBounds(vanilla, target, 0)
+            for (size in 1..100) {
+                val cur = SecretHitboxes.lerpBounds(vanilla, target, size)
+                assertValid(cur, "button($label)@${size}%")
+                for (i in 0..5) {
+                    if (i < 3) {
+                        check(cur[i] <= prev[i] + 1e-12) {
+                            "button($label)@${size}% min axis $i moved inwards: ${cur.toList()}"
+                        }
+                        check(cur[i] >= target[i] - 1e-9 && cur[i] <= vanilla[i] + 1e-9) {
+                            "button($label)@${size}% min axis $i escaped target..vanilla: ${cur.toList()}"
+                        }
+                    } else {
+                        check(cur[i] >= prev[i] - 1e-12) {
+                            "button($label)@${size}% max axis $i moved inwards: ${cur.toList()}"
+                        }
+                        check(cur[i] >= vanilla[i] - 1e-9 && cur[i] <= target[i] + 1e-9) {
+                            "button($label)@${size}% max axis $i escaped vanilla..target: ${cur.toList()}"
+                        }
                     }
                 }
-            }
-            prev = cur
-        }
-
-        // The whole point of the button exception: Y never moves, at any
-        // setting, in any orientation.
-        for (size in 0..100) {
-            val b = SecretHitboxes.lerpBounds(vanillaWallButton, buttonTarget, size)
-            check(b[1] == vanillaWallButton[1] && b[4] == vanillaWallButton[4]) {
-                "button@${size}% changed height, which it must never do: ${b.toList()}"
+                prev = cur
             }
         }
 
-        // ...but it does go full-block sideways at the top of the range.
-        val fullButton = SecretHitboxes.lerpBounds(vanillaWallButton, buttonTarget, 100)
-        check(fullButton[0] == 0.0 && fullButton[3] == 1.0 && fullButton[2] == 0.0 && fullButton[5] == 1.0) {
-            "button@100% must span the full block in X and Z: ${fullButton.toList()}"
+        // The whole point of the button exception: the depth never moves, at
+        // any setting, in any orientation. This is the check that fails the
+        // moment someone "simplifies" the axis rule back to a fixed Y.
+        for ((label, vanilla, depthAxes) in buttonCases) {
+            val depth = depthAxes[0]
+            val target = SecretHitboxes.targetBounds(SecretHitboxes.Kind.BUTTON, vanilla)
+            for (size in 0..100) {
+                val b = SecretHitboxes.lerpBounds(vanilla, target, size)
+                check(b[depth] == vanilla[depth] && b[depth + 3] == vanilla[depth + 3]) {
+                    "button($label)@${size}% changed its depth on axis $depth: ${b.toList()}"
+                }
+            }
         }
+
+        // ...and it does go full-block across the plate at the top of the range.
+        for ((label, vanilla, depthAxes) in buttonCases) {
+            val depth = depthAxes[0]
+            val target = SecretHitboxes.targetBounds(SecretHitboxes.Kind.BUTTON, vanilla)
+            val fullButton = SecretHitboxes.lerpBounds(vanilla, target, 100)
+            for (axis in intArrayOf(0, 1, 2)) {
+                if (axis == depth) continue
+                check(fullButton[axis] == 0.0 && fullButton[axis + 3] == 1.0) {
+                    "button($label)@100% must span axis $axis: ${fullButton.toList()}"
+                }
+            }
+        }
+
+        // Per-block size sliders multiply the master: one knob to pull
+        // everything back, one to tune a family without disturbing the rest.
+        check(SecretHitboxes.sizePercent(100, 100) == 100) { "full master and full family = full" }
+        check(SecretHitboxes.sizePercent(50, 100) == 50) { "a halved master halves every family" }
+        check(SecretHitboxes.sizePercent(100, 50) == 50) { "a halved family halves only itself" }
+        check(SecretHitboxes.sizePercent(0, 80) == 0) { "a master at zero turns everything off" }
+        check(SecretHitboxes.sizePercent(80, 0) == 0) { "a family at zero turns itself off" }
+        check(SecretHitboxes.sizePercent(30, 40) == 12) { "the two settings compose" }
+        check(SecretHitboxes.sizePercent(500, 500) == 100) { "out-of-range settings clamp instead of overflowing" }
 
         // Out-of-range config values clamp instead of producing a degenerate
         // box — a stale config must never be able to break picking.
         for (kind in SecretHitboxes.Kind.values()) {
-            val vanilla = if (kind == SecretHitboxes.Kind.BUTTON) vanillaWallButton else vanillaSkull
+            val vanilla = if (kind == SecretHitboxes.Kind.BUTTON) vanillaWallButtonX else vanillaSkull
             val target = SecretHitboxes.targetBounds(kind, vanilla)
             assertValid(SecretHitboxes.lerpBounds(vanilla, target, -10), "$kind@-10%")
             assertValid(SecretHitboxes.lerpBounds(vanilla, target, 500), "$kind@500%")
@@ -502,5 +710,101 @@ fun main() {
         check(runs.first { it.row == 0 }.let { it.x0 == 0 && it.x1 == 0 }) { "pointer tip must be a single pixel" }
     }
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing.")
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing.")
+}
+
+/**
+ * A built-in registry lookup that answers tag queries even though nothing has
+ * loaded the tags.
+ *
+ * Vanilla binds tags in the same resource reload that binds item components.
+ * This harness has no resources, so a component builder that asks for a tag
+ * (fire resistance reads `#minecraft:is_fire`) would die on "Missing tag" and
+ * the whole bind step would fall over before any check ran. The answer here is
+ * an empty but *bound* tag set: present, iterable, containing nothing — which
+ * is everything the component builders in this harness do with it. Element
+ * lookups pass straight through to the real registry.
+ */
+private class UntaggedLookup<T : Any>(private val delegate: HolderLookup.RegistryLookup<T>) :
+    HolderLookup.RegistryLookup<T> {
+
+    override fun key(): ResourceKey<out Registry<out T>> = delegate.key()
+    override fun registryLifecycle(): Lifecycle = delegate.registryLifecycle()
+    override fun listElements(): Stream<Holder.Reference<T>> = delegate.listElements()
+    override fun listTags(): Stream<HolderSet.Named<T>> = delegate.listTags()
+    override fun get(key: ResourceKey<T>): Optional<Holder.Reference<T>> = delegate.get(key)
+
+    override fun get(tag: TagKey<T>): Optional<HolderSet.Named<T>> {
+        val loaded = delegate.get(tag)
+        return if (loaded.isPresent) loaded else Optional.of(emptyTagSet(this, tag))
+    }
+}
+
+/**
+ * The provider the component builders read from: every built-in registry as
+ * it really is, and a stub for anything else.
+ *
+ * "Anything else" is not hypothetical — `damage_type` is a dynamic registry
+ * that only exists once datapacks are loaded, and the fire-resistance
+ * initializer asks it for `#minecraft:is_fire` the moment it runs. The stub
+ * has no elements and no tags, which is the truth about this harness: it
+ * never loads a datapack, and nothing here damages anything.
+ */
+private class HarnessLookupProvider(
+    private val builtIns: Map<ResourceKey<*>, HolderLookup.RegistryLookup<*>>
+) : HolderLookup.Provider {
+
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : Any> lookup(
+        key: ResourceKey<out Registry<out T>>
+    ): Optional<out HolderLookup.RegistryLookup<T>> {
+        val real = builtIns[key] as HolderLookup.RegistryLookup<T>?
+        return Optional.of(real ?: StubLookup(key as ResourceKey<Registry<T>>))
+    }
+
+    override fun listRegistryKeys(): Stream<ResourceKey<out Registry<*>>> =
+        builtIns.keys.filterIsInstance<ResourceKey<out Registry<*>>>().stream()
+}
+
+/**
+ * A registry this harness never populates: no listable elements, tags that are
+ * present but empty, and a synthetic holder for any element asked for by name.
+ *
+ * The component builders only ever *store* what they look up — the holder goes
+ * straight into the component map without its value being read — so an
+ * unbound reference is enough. `trim_material` is the one that actually asks:
+ * an item declares a delayed holder component pointing at
+ * `minecraft:trim_material/redstone`, and without a datapack there is nothing
+ * real to hand back.
+ */
+private class StubLookup<T : Any>(private val registryKey: ResourceKey<Registry<T>>) :
+    HolderLookup.RegistryLookup<T> {
+
+    private val holders = HashMap<ResourceKey<T>, Holder.Reference<T>>()
+
+    override fun key(): ResourceKey<out Registry<out T>> = registryKey
+    override fun registryLifecycle(): Lifecycle = Lifecycle.stable()
+    override fun listElements(): Stream<Holder.Reference<T>> = Stream.empty()
+    override fun listTags(): Stream<HolderSet.Named<T>> = Stream.empty()
+
+    override fun get(key: ResourceKey<T>): Optional<Holder.Reference<T>> =
+        Optional.of(holders.getOrPut(key) { Holder.Reference.createStandAlone(this, key) })
+
+    override fun get(tag: TagKey<T>): Optional<HolderSet.Named<T>> = Optional.of(emptyTagSet(this, tag))
+}
+
+/** `HolderSet.Named` is constructible and bindable, but only inside its own package. */
+private val namedTagConstructor = HolderSet.Named::class.java
+    .getDeclaredConstructor(HolderOwner::class.java, TagKey::class.java)
+    .apply { isAccessible = true }
+
+private val namedTagBind = HolderSet.Named::class.java
+    .getDeclaredMethod("bind", List::class.java)
+    .apply { isAccessible = true }
+
+@Suppress("UNCHECKED_CAST")
+private fun <T : Any> emptyTagSet(owner: HolderOwner<T>, tag: TagKey<T>): HolderSet.Named<T> {
+    val named = namedTagConstructor.newInstance(owner, tag) as HolderSet.Named<T>
+    namedTagBind.invoke(named, emptyList<Holder<T>>())
+    return named
 }

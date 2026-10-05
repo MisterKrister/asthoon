@@ -134,6 +134,11 @@ abstract class MixinHandledScreen {
     private companion object {
         private const val HIGHLIGHT_COLOR = 0x881E90FF.toInt() // translucent blue fill
         private const val BORDER_COLOR    = 0xFF1E90FF.toInt() // solid blue border
+
+        // Next-click marker cache: which pane, as of when, for which terminal.
+        private var markerTitle = ""
+        private var markerNext: Int? = null
+        private var markerAt = 0L
     }
 
     @Inject(
@@ -195,10 +200,19 @@ abstract class MixinHandledScreen {
         // Gate on the solver's own title test: it strips formatting, so a
         // coloured terminal title still gets its highlight instead of failing
         // a raw startsWith and never reaching colorFor.
-        if (!TerminalSolver.isTerminalTitle(title)) return
+        val kind = TerminalSolver.kindOf(title) ?: return
+
+        // The player's own inventory sits in the same slot list *after* the
+        // terminal's slots, and its Slot.containerSlot counts from zero all
+        // over again. A red pane in the hotbar would therefore be read as
+        // terminal slot 3, tinted, and ringed as the next click. Slot.index
+        // does not restart, so it is the one that tells the two apart.
+        if (slot.index >= kind.slotCount) return
 
         val all = self.menu.slots.map { it.item }
-        val color = TerminalSolver.colorFor(title, slot.containerSlot, slot.item, all) ?: return
+        val color = TerminalSolver.colorFor(
+            title, slot.index, slot.item, all, AutoTerminal.rubixTargetOrNull()
+        ) ?: return
         val sx = slot.x
         val sy = slot.y
         graphics.fill(sx, sy, sx + 16, sy + 16, color)
@@ -206,5 +220,52 @@ abstract class MixinHandledScreen {
         graphics.fill(sx, sy + 15, sx + 16, sy + 16, 0xFFFFFFFF.toInt())
         graphics.fill(sx, sy, sx + 1, sy + 16, 0xFFFFFFFF.toInt())
         graphics.fill(sx + 15, sy, sx + 16, sy + 16, 0xFFFFFFFF.toInt())
+
+        // One ring, around one slot: the pane the clicker is about to send a
+        // packet for. Tint says "this matters", the ring says "this *next*",
+        // which is the distinction a screen full of coloured panes cannot
+        // make on its own.
+        if (slot.index == nextSlotFor(title, all)) {
+            drawNextClickRing(graphics, sx, sy)
+        }
+    }
+
+    /**
+     * The slot the ring belongs to, recomputed at most every 50 ms.
+     *
+     * Per-slot it would be computed 54 times per frame; the clicker itself
+     * only commits to a pane on a click cadence, so a marker a frame or two
+     * behind is invisible and the saving is not.
+     */
+    private fun nextSlotFor(title: String, all: List<ItemStack>): Int? {
+        val now = System.currentTimeMillis()
+        if (now - markerAt < 50L && markerTitle == title) return markerNext
+        markerTitle = title
+        markerAt = now
+        markerNext = TerminalSolver.nextClickSlot(
+            screenTitle = title,
+            items = all,
+            blocked = AutoTerminal.unsettledSlots(now),
+            rubixTarget = AutoTerminal.rubixTargetOrNull(),
+            lastSlot = AutoTerminal.lastClickedSlot()
+        )
+        return markerNext
+    }
+
+    /** Pulsing outline outside the slot's own border, on the pane to hit. */
+    private fun drawNextClickRing(graphics: GuiGraphicsExtractor, x: Int, y: Int) {
+        val phase = (System.currentTimeMillis() % 800L) / 800.0
+        val pulse = (kotlin.math.sin(phase * 2 * kotlin.math.PI) * 0.5 + 0.5)
+        val alpha = (160 + 95 * pulse).toInt().coerceIn(0, 255)
+        val color = (alpha shl 24) or 0x0000E676
+
+        val l = x - 1
+        val t = y - 1
+        val r = x + 17
+        val b = y + 17
+        graphics.fill(l, t, r, t + 2, color)
+        graphics.fill(l, b - 2, r, b, color)
+        graphics.fill(l, t, l + 2, b, color)
+        graphics.fill(r - 2, t, r, b, color)
     }
 }
