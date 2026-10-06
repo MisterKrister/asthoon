@@ -12,9 +12,7 @@ import net.minecraft.client.renderer.RenderPipelines
 import net.minecraft.resources.Identifier
 import org.lwjgl.glfw.GLFW
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.sin
 import kotlin.random.Random
 
 /**
@@ -25,13 +23,12 @@ import kotlin.random.Random
  * so nothing about the click needs a pointer at all — this object is purely the
  * picture of one. What it buys is that a solved terminal no longer *looks* like
  * it was solved by an act of God: a pointer travels to the pane, decelerates
- * into it, and the click lands when the pointer arrives.
+ * into it, while clicks run independently on the terminal's clock.
  *
  * Path shape, in order of importance:
  *  - a quadratic bezier whose control point is pushed off the straight line, so
  *    the pointer bows instead of tracking a ruler;
- *  - minimum-jerk easing (6t^5-15t^4+10t^3), which is what a real arm
- *    does — accelerate, then settle onto the target rather than stopping dead;
+ *  - configurable CSS cubic-bezier easing for acceleration and landing;
  *  - a decaying tremor, because a hand does not hold still on the way in;
  *  - travel time scaled by distance with gaussian spread, so a far flick takes
  *    longer than a hop to the neighbouring pane.
@@ -61,29 +58,9 @@ object TerminalCursor {
      *  rather than snapping it to an invented coordinate. */
     private var tipKnown = false
 
-    private var fromX = 0f
-    private var fromY = 0f
-    private var ctrlX = 0f
-    private var ctrlY = 0f
-    private var toX = 0f
-    private var toY = 0f
-
-    private var startedAt = 0L
-    private var durationMs = 1L
-    private var moving = false
-    private var pendingClick: (() -> Unit)? = null
-
-    /** When the terminal will accept the parked click; 0 = not parking. */
-    private var notBeforeAt = 0L
-
+    private val motion = CursorMotion()
+    private val moving: Boolean get() = motion.moving(System.currentTimeMillis())
     private var lastGlideAt = 0L
-    private var phaseX = Random.nextFloat() * 6.283f
-    private var phaseY = Random.nextFloat() * 6.283f
-
-    /** True while the pointer is travelling *or* parked on a pane waiting to
-     *  click; callers use it to hold off picking the next pane until this one
-     *  has been "clicked". */
-    fun busy(): Boolean = moving || pendingClick != null
 
     /**
      * True while the drawn pointer is on screen this frame and therefore
@@ -106,9 +83,7 @@ object TerminalCursor {
     fun ownsCursor(): Boolean = drawn
 
     fun reset() {
-        moving = false
-        pendingClick = null
-        notBeforeAt = 0L
+        motion.reset(CursorMotion.Point(x, y))
         positioned = false
         drawn = false
         // Hand the real cursor back now that nothing is drawn for it. Clear
@@ -217,15 +192,44 @@ object TerminalCursor {
         }
     }
 
-    /**
-     * Normalised progress along the path, before the bezier is evaluated.
-     * Minimum-jerk easing: zero velocity at both ends, which is what stops the
-     * pointer arriving at full speed and teleporting to a stop.
-     */
-    internal fun progressAt(elapsedMs: Long, durationMs: Long): Float {
+    /** CSS timing function: invert x(u), then evaluate y(u). X controls must
+     * be in [0,1]; Y may overshoot, as CSS permits. Endpoint times are clamped. */
+    internal fun cubicBezierEase(t: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
+        require(x1.isFinite() && x1 in 0f..1f && x2.isFinite() && x2 in 0f..1f)
+        require(y1.isFinite() && y2.isFinite() && t.isFinite())
+        if (t <= 0f) return 0f
+        if (t >= 1f) return 1f
+        fun curve(u: Double, a: Float, b: Float): Double {
+            val v = 1.0 - u
+            return 3.0 * v * v * u * a + 3.0 * v * u * u * b + u * u * u
+        }
+        fun slope(u: Double): Double = 3.0 * (1.0 - u) * (1.0 - u) * x1 +
+            6.0 * (1.0 - u) * u * (x2 - x1) + 3.0 * u * u * (1.0 - x2)
+        var u = t.toDouble()
+        var low = 0.0
+        var high = 1.0
+        repeat(8) {
+            val error = curve(u, x1, x2) - t
+            if (abs(error) < 1e-8) return curve(u, y1, y2).toFloat()
+            if (error < 0.0) low = u else high = u
+            val derivative = slope(u)
+            val next = if (abs(derivative) > 1e-8) u - error / derivative else Double.NaN
+            u = if (next.isFinite() && next > low && next < high) next else (low + high) / 2.0
+        }
+        repeat(32) {
+            val error = curve(u, x1, x2) - t
+            if (abs(error) < 1e-8) return curve(u, y1, y2).toFloat()
+            if (error < 0.0) low = u else high = u
+            u = (low + high) / 2.0
+        }
+        return curve(u, y1, y2).toFloat()
+    }
+
+    internal fun progressAt(elapsedMs: Long, durationMs: Long,
+        x1: Float = 0.2f, y1: Float = 0f, x2: Float = 0f, y2: Float = 1f): Float {
         if (durationMs <= 0L) return 1f
         val t = (elapsedMs.toDouble() / durationMs).toFloat().coerceIn(0f, 1f)
-        return t * t * t * (t * (t * 6f - 15f) + 10f)
+        return cubicBezierEase(t, x1, y1, x2, y2)
     }
 
     /**
@@ -241,28 +245,9 @@ object TerminalCursor {
         return raw.coerceIn(70f, 420f).toLong()
     }
 
-    /**
-     * Flight time once the terminal's own clock is in play.
-     *
-     * [naturalMs] is the hand's travel time (distance and the speed setting);
-     * [availableMs] is how long until the terminal accepts a click. The flight
-     * is *compressed* to fit that window and never stretched past it, because
-     * a pointer that takes as long as it likes is a pointer that sets the
-     * cadence — the whole point of the glide is that it happens inside the
-     * delay the terminal was going to impose anyway.
-     *
-     * So: a trip needing 300 ms inside a 120 ms window takes 120 ms, and a
-     * trip needing 90 ms inside a 300 ms window takes 90 ms and parks on the
-     * pane for the rest. Either way [AutoTerminal] clicks on the terminal's
-     * own clock — the animation never adds a frame to it. Past the deadline
-     * already, the pointer stops being a hand and becomes a hop to the next
-     * pane, which is the only honest answer when the click is waiting on it.
-     *
-     * The floor exists so a very tight window cannot teleport the pointer
-     * across the screen; it costs the difference, which only shows up when
-     * the configured click delay is under [MIN_FLIGHT_MS] plus the settle
-     * window.
-     */
+    /** Fit travel into the available click window where possible. The 70 ms
+     * floor keeps motion visible at fast cadences; a click may fire during
+     * that flight because AutoTerminal owns the clock independently. */
     internal fun flightDurationMs(naturalMs: Long, availableMs: Long): Long {
         val natural = naturalMs.coerceIn(MIN_FLIGHT_MS, MAX_FLIGHT_MS)
         if (availableMs <= 0L) return MIN_FLIGHT_MS
@@ -318,61 +303,26 @@ object TerminalCursor {
      * a click.
      */
     fun show() {
-        if (!positioned && !moving && pendingClick == null) {
+        if (!positioned) {
             val w = Minecraft.getInstance().window
             seedFromMouse(w.guiScaledWidth / 2f, w.guiScaledHeight / 2f)
         }
         if (!moving) lastGlideAt = System.currentTimeMillis()
     }
 
-    /**
-     * Starts a glide to ([targetX], [targetY]). [onArrive] fires exactly once,
-     * either on the frame the pointer lands or — if it beat the terminal's own
-     * delay — on the tick the delay expires with the pointer parked on the
-     * pane. That is the moment the click packet goes out, so the picture, the
-     * motion and the auto-terminal cadence are all in step.
-     *
-     * Does nothing and returns false if a flight or a parked click is already
-     * outstanding, so callers can fall back to clicking immediately.
-     */
-    fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long, onArrive: () -> Unit): Boolean {
-        if (moving || pendingClick != null) return false
-
+    /** Retarget from the current sampled position. Clicks belong to AutoTerminal. */
+    fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long) {
         if (!positioned) seedFromMouse(targetX, targetY)
-
-        fromX = x
-        fromY = y
-        toX = targetX
-        toY = targetY
-
-        val dx = toX - fromX
-        val dy = toY - fromY
-        val dist = hypot(dx, dy)
-
-        // Bow the path: push the control point along the normal of the
-        // straight line by a fraction of the distance, sign chosen at random
-        // so consecutive moves do not all curve the same way.
-        if (dist < 0.5f) {
-            ctrlX = fromX
-            ctrlY = fromY
-        } else {
-            val arc = Config.autoTerminalCursorArc.coerceIn(0, 100) / 100f
-            val bow = dist * arc * 0.4f * if (Random.nextBoolean()) 1f else -1f
-            ctrlX = (fromX + toX) / 2f + (-dy / dist) * bow
-            ctrlY = (fromY + toY) / 2f + (dx / dist) * bow
-        }
-
         val now = System.currentTimeMillis()
+        val from = motion.position(now)
+        val dist = hypot(targetX - from.x, targetY - from.y)
         val natural = travelDurationMs(dist, Config.autoTerminalCursorSpeed, gaussianUnit())
-        durationMs = flightDurationMs(natural, clickNotBeforeMs - now)
-        startedAt = now
-        notBeforeAt = clickNotBeforeMs
-        phaseX = Random.nextFloat() * 6.283f
-        phaseY = Random.nextFloat() * 6.283f
-        moving = true
-        pendingClick = onArrive
-        lastGlideAt = startedAt
-        return true
+        val bow = Config.autoTerminalCursorArc.coerceIn(0, 100) / 100f * 0.4f * if (Random.nextBoolean()) 1f else -1f
+        motion.glideTo(CursorMotion.Point(targetX, targetY), now, flightDurationMs(natural, clickNotBeforeMs - now), bow,
+            CursorMotion.Ease(Config.autoTerminalEaseX1 / 100f, Config.autoTerminalEaseY1 / 100f,
+                Config.autoTerminalEaseX2 / 100f, Config.autoTerminalEaseY2 / 100f),
+            Config.autoTerminalCursorJitter.coerceIn(0, 100) / 100f, Random.nextFloat() * 6.283f, Random.nextFloat() * 6.283f)
+        lastGlideAt = now
     }
 
     /**
@@ -398,36 +348,7 @@ object TerminalCursor {
             x = if (targetX > 120f) targetX - 90f else targetX + 90f
             y = targetY + 60f
         }
-    }
-
-    /**
-     * Lands the pointer and fires the queued click. Two stages: the flight has
-     * to finish first, then — if the terminal's own delay is still running —
-     * the pointer sits on the pane until it is allowed to click. Nothing ever
-     * goes out early, and [busy] holds the solver off the whole time.
-     */
-    fun tick(now: Long = System.currentTimeMillis()) {
-        if (!moving) {
-            val parked = pendingClick ?: return
-            if (now < notBeforeAt) return
-            pendingClick = null
-            notBeforeAt = 0L
-            lastGlideAt = now
-            parked()
-            return
-        }
-        if (now - startedAt < durationMs) return
-        x = toX
-        y = toY
-        moving = false
-        lastGlideAt = now
-        if (now < notBeforeAt) return
-        // Detach before invoking: the click starts the next glide, and that
-        // glide must not be handed this one's callback.
-        val click = pendingClick
-        pendingClick = null
-        notBeforeAt = 0L
-        click?.invoke()
+        motion.reset(CursorMotion.Point(x, y))
     }
 
     private fun gaussianUnit(): Float {
@@ -441,7 +362,7 @@ object TerminalCursor {
     internal const val LINGER_MS = 1400L
 
     /**
-     * Whether a parked pointer — no flight running, nothing queued to click —
+     * Whether a parked pointer with no flight running
      * is still on screen this frame.
      *
      * It lingers after the last click so the eye can see where that click
@@ -457,24 +378,9 @@ object TerminalCursor {
     /** Screen-space tip for this frame, or null when the pointer should be hidden. */
     private fun positionNow(now: Long): Pair<Float, Float>? {
         if (!positioned) return null
-        if (!moving) {
-            // Parked on a pane about to click: hold it there however long the
-            // terminal's clock takes. Otherwise linger after the last click,
-            // then get out of the way.
-            if (pendingClick != null) return x to y
-            return if (lingerOnScreen(now, lastGlideAt)) x to y else null
-        }
-        val t = progressAt(now - startedAt, durationMs)
-        var px = bezier(fromX, ctrlX, toX, t)
-        var py = bezier(fromY, ctrlY, toY, t)
-
-        val tremor = Config.autoTerminalCursorJitter.coerceIn(0, 100) / 100f
-        if (tremor > 0f && t < 1f) {
-            val settle = (1f - t)
-            px += sin(t * 9f + phaseX) * 1.4f * tremor * settle
-            py += cos(t * 7f + phaseY) * 1.4f * tremor * settle
-        }
-        return px to py
+        if (!motion.moving(now) && !lingerOnScreen(now, lastGlideAt)) return null
+        val pos = motion.position(now)
+        return pos.x to pos.y
     }
 
     fun render(graphics: GuiGraphicsExtractor, now: Long = System.currentTimeMillis()) {
@@ -507,6 +413,8 @@ object TerminalCursor {
         drawn = true
         if (moving) pushTrail(pos.first, pos.second, now)
         drawPointer(graphics, pos.first, pos.second, 1f, now)
+        x = pos.first
+        y = pos.second
         tipKnown = true
     }
 
@@ -699,16 +607,14 @@ object TerminalCursor {
     }
 
     /**
-     * Wired from [AsthoonLite]: one tick listener to land flights, and one
+     * Wired from [AsthoonLite]: one tick listener for cleanup, and one
      * screen hook per container screen to draw the pointer on top of it.
      */
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { mc ->
             if (mc.screen !is AbstractContainerScreen<*>) {
-                // Screen went away mid-flight: drop the queued click with it.
+                // Screen went away mid-flight: release the visual pointer.
                 if (moving || positioned) reset()
-            } else {
-                tick()
             }
         }
 
@@ -726,6 +632,7 @@ object TerminalCursor {
      * the slot coordinates alone are relative to the container, not the screen.
      */
     fun targetFor(screen: AbstractContainerScreen<*>, slotIndex: Int): Pair<Float, Float>? {
+        if (TermGui.active(screen)) return TermGui.gridFor(screen)?.center(slotIndex)
         val slot = screen.menu.slots.getOrNull(slotIndex) ?: return null
         val acc = screen as? AbstractContainerScreenAccessor ?: return null
         return (acc.leftPos + slot.x + 8f) to (acc.topPos + slot.y + 8f)

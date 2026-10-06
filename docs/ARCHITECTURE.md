@@ -171,6 +171,20 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   `QuizSolver.kt`, `WeirdosSolver.kt`, `BloodRoomSolver.kt`, `DragonPhase.kt`,
   `AutoTerminal.kt`, `TerminalHelper.kt`, `TerminalSolver.kt`, `F7Devices.kt`,
   `MaskDisplay.kt`, `SecretSounds.kt`, `DungeonTimers.kt` — feature modules.
+- `dungeon/TermGui.kt` — optional Odin-style centered terminal grids. Enable
+  **Custom Terminal GUI** on the Terminal tab; size and gap are adjustable.
+  Its pure layout supplies tile rendering, mouse hit tests, keyboard clicks
+  and `TerminalCursor.targetFor`. `MixinContainerScreen` replaces the chest
+  background, while `MixinHandledScreen` replaces contents and input without
+  replacing the live menu. Odin's BSD notice ships in `META-INF/licenses`.
+- `dungeon/CursorMotion.kt` — pure retargetable pointer flight. Acceleration
+  uses CSS cubic-bezier x inversion (Newton iteration and bisection), default
+  `(0.2, 0, 0, 1)`. Four percentage sliders tune the controls. AutoTerminal
+  owns click timing and revalidates candidates each tick; movement never
+  gates input. Enable **Glide On Melody** to premove to the next detected
+  button immediately after clicking. Detection, skip queues and layout share
+  the same three/four-row model, with a 250 ms retry window for unacknowledged
+  melody clicks.
 
 ## 7. The regression harness
 
@@ -184,5 +198,10 @@ It covers: sidebar/floor detection, terminal click timing, map dimension
 scanning, mob-category naming, Tic-Tac-Toe solver, secret-hitbox expansion
 geometry, and the map overlay canvas (record/replay round-trip, transform
 balance, Java2D fill convention).
+
+`TerminalRegressionCheck.kt`, called by that harness, also checks CSS easing
+reference values and degenerate curves, retarget continuity, clicks during
+flight, premove/debounce, three/four-row melody and skip queues, grid
+centers/hit testing across scales, and old-config defaults.
 
 **Rule: if you change pure logic, add a check for it in the same commit.**

@@ -204,7 +204,7 @@ object TerminalSolver {
             // Melody is one button, not a set: whatever candidate exists is
             // the click. The row debounce and the skip queue are the
             // clicker's business, not this list's.
-            Kind.MELODY -> listOfNotNull(melodyCandidate(all))
+            Kind.MELODY -> listOfNotNull(melodyCandidate(all)?.takeIf { it !in blocked })
         }
     }
 
@@ -272,56 +272,54 @@ object TerminalSolver {
         return costs.indices.minByOrNull { costs[it] }
     }
 
-    /**
-     * Melody's next button: the row whose lime pane is aligned with the
-     * magenta marker and is not already complete. Returns the slot to click,
-     * or null when nothing is lined up right now.
-     *
-     * The marker lives in the first five rows — that is the terminal's
-     * content window; the sixth is filler and is never read. The row's button
-     * being lime terracotta is the *pressable* state, not a finished one, so
-     * it is not part of the completion test: every button sits in that colour
-     * while its row is live, and treating it as done skipped every row and
-     * left melody clicking nothing at all.
-     */
-    fun melodyCandidate(all: List<ItemStack>): Int? {
-        val last = minOf(all.lastIndex, CONTENT_LAST)
-        if (last < 0) return null
+    data class MelodyRow(val row: Int, val completed: Boolean, val movingSlot: Int?) {
+        val buttonSlot: Int get() = row * 9 + 7
+    }
 
-        val magentaSlot = (0..last).firstOrNull { all[it].`is`(Items.MAGENTA_STAINED_GLASS_PANE) } ?: return null
-        val targetCol = (magentaSlot % 9) - 1
-        if (targetCol !in 0..4) return null
+    /** Button evidence distinguishes a fourth content row from the old indicator row.
+     * Only the terminal's six rows are read; inventory items cannot become notes. */
+    fun melodyRows(all: List<ItemStack>): List<MelodyRow> = (1..4).mapNotNull { row ->
+        val button = all.getOrNull(row * 9 + 7) ?: return@mapNotNull null
+        val doneButton = button.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+            button.`is`(Items.GREEN_STAINED_GLASS_PANE) || button.`is`(Items.LIME_CONCRETE) ||
+            button.`is`(Items.EMERALD_BLOCK)
+        val isButton = doneButton || button.`is`(Items.LIME_TERRACOTTA) ||
+            button.`is`(Items.GREEN_TERRACOTTA) || button.`is`(Items.RED_TERRACOTTA) ||
+            button.`is`(Items.YELLOW_TERRACOTTA)
+        if (!isButton) return@mapNotNull null
+        val panes = (row * 9 + 1)..(row * 9 + 5)
+        val greens = panes.filter { all.getOrNull(it)?.let(::isMelodyPointer) == true }
+        val completed = doneButton || greens.size == 5
+        MelodyRow(row, completed, if (completed) null else greens.singleOrNull())
+    }
 
-        for (r in 0..2) {
-            val buttonSlot = (r + 1) * 9 + 7
-            val buttonStack = all.getOrNull(buttonSlot) ?: continue
-            val rowPaneSlots = ((r + 1) * 9 + 1)..((r + 1) * 9 + 5)
-            val rowPanes = rowPaneSlots.mapNotNull { all.getOrNull(it) }
+    private fun isMelodyPointer(stack: ItemStack): Boolean =
+        stack.`is`(Items.LIME_STAINED_GLASS_PANE) || stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
 
-            // Finished when the row has filled in or the button has been
-            // struck out with a completed marker. Lime terracotta is absent
-            // from this list on purpose — see above.
-            val isRowCompleted = buttonStack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
-                buttonStack.`is`(Items.LIME_CONCRETE) ||
-                buttonStack.`is`(Items.EMERALD_BLOCK) ||
-                rowPanes.size == 5 && rowPanes.all {
-                    it.`is`(Items.LIME_STAINED_GLASS_PANE) || it.`is`(Items.GREEN_STAINED_GLASS_PANE)
-                }
-            if (isRowCompleted) continue
-
-            val limePaneIndex = rowPaneSlots.firstOrNull { slot ->
-                val stack = all[slot]
-                stack.`is`(Items.LIME_STAINED_GLASS_PANE) || stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
-            } ?: continue
-
-            val movingCol = (limePaneIndex % 9) - 1
-            if (movingCol == targetCol) return buttonSlot
+    /** Header first, then the indicator immediately below the detected content. */
+    fun melodyMarker(all: List<ItemStack>, rows: List<MelodyRow> = melodyRows(all)): Int? {
+        if (rows.isEmpty()) return null
+        for (row in listOf(0, rows.maxOf { it.row } + 1)) {
+            for (col in 1..5) {
+                val slot = row * 9 + col
+                if (slot < Kind.MELODY.slotCount && all.getOrNull(slot)?.`is`(Items.MAGENTA_STAINED_GLASS_PANE) == true) return slot
+            }
         }
         return null
     }
 
-    /** Last slot of the terminal's content window: rows 0..4 of a 6-row container. */
-    private const val CONTENT_LAST = 44
+    /** The aligned, unfinished row. Reading this never commits a click. */
+    fun melodyCandidate(all: List<ItemStack>): Int? {
+        val rows = melodyRows(all)
+        val column = (melodyMarker(all, rows) ?: return null) % 9
+        return rows.firstOrNull { !it.completed && it.movingSlot?.rem(9) == column }?.buttonSlot
+    }
+
+    fun melodyNextButton(all: List<ItemStack>, afterSlot: Int): Int? =
+        melodyRows(all).firstOrNull { !it.completed && it.buttonSlot > afterSlot }?.buttonSlot
+
+    fun melodyActiveButton(all: List<ItemStack>): Int? =
+        melodyRows(all).firstOrNull { !it.completed && it.movingSlot != null }?.buttonSlot
 
     private val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
 
@@ -363,24 +361,17 @@ object TerminalSolver {
         return if (currentIdx == target) 0xAA00E676.toInt() else 0xAAFFAA00.toInt()
     }
 
-    private fun melodyColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
-        // Same content window the candidate reads — rows 0..4 only, so the
-        // fillers in the last row cannot be mistaken for the marker.
-        val magenta = (0..minOf(all.lastIndex, CONTENT_LAST))
-            .firstOrNull { all[it].`is`(Items.MAGENTA_STAINED_GLASS_PANE) } ?: return null
-        val lime = all.indexOfLast { it.`is`(Items.LIME_STAINED_GLASS_PANE) }
-        val clay = all.indexOfLast { it.`is`(Items.LIME_TERRACOTTA) }
-        if (lime < 0) return null
-
-        val row = lime / 9
-        val magentaCol = magenta % 9
-        val slotRow = slot / 9
-        val slotCol = slot % 9
-
+    internal fun melodyColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
+        val rows = melodyRows(all)
+        val marker = melodyMarker(all, rows) ?: return null
+        val row = rows.firstOrNull { it.row == slot / 9 }
         return when {
-            slot == clay -> 0xFFFFC107.toInt()
-            slotRow == row && slotCol in 1..5 -> if (slot == lime) 0xDD00E676.toInt() else 0x99FFFFFF.toInt()
-            (slotCol == magentaCol && slotRow in 0..5) -> 0xAAE040FB.toInt()
+            slot % 9 == marker % 9 && slot / 9 in listOf(0, rows.maxOf { it.row } + 1) -> 0xAAE040FB.toInt()
+            row == null -> null
+            row.completed && slot == row.buttonSlot -> 0xFF00A060.toInt()
+            slot == row.movingSlot -> 0xDD00E676.toInt()
+            slot == row.buttonSlot -> 0xFFFFC107.toInt()
+            slot % 9 in 1..5 -> if (isMelodyPointer(stack)) 0xFF00A060.toInt() else 0x993D4350.toInt()
             else -> null
         }
     }

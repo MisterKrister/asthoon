@@ -224,6 +224,15 @@ object Config {
         // than index, so renaming or reordering a section only ever costs one
         // row coming back open — it can never fold the wrong one.
         var collapsedSections: MutableSet<String> = mutableSetOf(),
+
+        // Centered terminal GUI and CSS timing curve. Percent values map to 0..1.
+        var customTermGuiEnabled: Boolean = false,
+        var customTermGuiScale: Int = 100,
+        var customTermGuiGap: Int = 4,
+        var autoTerminalEaseX1: Int = 20,
+        var autoTerminalEaseY1: Int = 0,
+        var autoTerminalEaseX2: Int = 0,
+        var autoTerminalEaseY2: Int = 100,
     )
 
     var data = Data()
@@ -926,8 +935,7 @@ object Config {
         get() = data.autoTerminalCursorJitter
         set(v) { data.autoTerminalCursorJitter = v.coerceIn(0, 100); save() }
 
-    /** Glide the pointer on Melody too. Off by default: Melody's cadence is
-     *  a 40 ms click loop and a travel animation would blow the timing. */
+    /** Glide and premove on Melody without delaying its click clock. */
     var autoTerminalCursorMelody: Boolean
         get() = data.autoTerminalCursorMelody
         set(v) { data.autoTerminalCursorMelody = v; save() }
@@ -945,6 +953,31 @@ object Config {
     var autoTerminalAnywhere: Boolean
         get() = data.autoTerminalAnywhere
         set(v) { data.autoTerminalAnywhere = v; save() }
+
+    var customTermGuiEnabled: Boolean
+        get() = data.customTermGuiEnabled
+        set(v) { data.customTermGuiEnabled = v; save() }
+
+    var customTermGuiScale: Int
+        get() = data.customTermGuiScale.coerceIn(50, 200)
+        set(v) { data.customTermGuiScale = v.coerceIn(50, 200); save() }
+
+    var customTermGuiGap: Int
+        get() = data.customTermGuiGap.coerceIn(0, 12)
+        set(v) { data.customTermGuiGap = v.coerceIn(0, 12); save() }
+
+    var autoTerminalEaseX1: Int
+        get() = data.autoTerminalEaseX1.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseX1 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseY1: Int
+        get() = data.autoTerminalEaseY1.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseY1 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseX2: Int
+        get() = data.autoTerminalEaseX2.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseX2 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseY2: Int
+        get() = data.autoTerminalEaseY2.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseY2 = v.coerceIn(0, 100); save() }
 
     var starMobOutlineOnly: Boolean
         get() = data.starMobOutlineOnly

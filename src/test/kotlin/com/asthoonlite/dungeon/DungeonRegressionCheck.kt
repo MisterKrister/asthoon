@@ -740,9 +740,9 @@ fun main() {
             check(p >= previous) { "pointer progress went backwards at ${elapsed}ms" }
             previous = p
         }
-        // Minimum-jerk easing eases in and out: the first fifth of the trip
-        // must cover less than a fifth of the distance.
-        check(TerminalCursor.progressAt(20, 100) < 0.2f) { "pointer leaves the start too fast to read as a hand" }
+        check(TerminalCursor.progressAt(20, 100) > 0.2f) { "the default curve should accelerate quickly" }
+        check(TerminalCursor.progressAt(90, 100) > 0.99f) { "the default curve should land gently" }
+        terminalMotionAndGuiChecks()
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)

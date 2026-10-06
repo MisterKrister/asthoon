@@ -4,6 +4,7 @@ import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.TerminalCursor
 import com.asthoonlite.dungeon.TerminalSolver
+import com.asthoonlite.dungeon.TermGui
 import com.asthoonlite.render.fillRoundedRect
 import com.asthoonlite.pet.PetTracker
 import net.minecraft.client.gui.GuiGraphicsExtractor
@@ -36,6 +37,12 @@ abstract class MixinHandledScreen {
         cancellable = true
     )
     private fun asthoonlite_onContainerKeyPressed(event: KeyEvent, cir: CallbackInfoReturnable<Boolean>) {
+        val self = (this as Any) as AbstractContainerScreen<*>
+        if (TermGui.active(self)) {
+            TermGui.keyPressed(self, event)
+            cir.returnValue = true
+            return
+        }
         if (InventoryAutoClicker.handleScreenKeyPressed(event.key())) {
             cir.returnValue = true
         }
@@ -48,6 +55,11 @@ abstract class MixinHandledScreen {
     )
     private fun asthoonlite_onContainerMouseClicked(event: MouseButtonEvent, doubleClick: Boolean, cir: CallbackInfoReturnable<Boolean>) {
         val self = (this as Any) as AbstractContainerScreen<*>
+        if (TermGui.active(self)) {
+            TermGui.click(self, event.x(), event.y(), event.button())
+            cir.returnValue = true
+            return
+        }
         val title = self.title.string
         if (title.contains("Stash", ignoreCase = true) || AutoTerminal.isTerminalTitle(title)) {
             if (title.contains("Stash", ignoreCase = true)) {
@@ -64,6 +76,32 @@ abstract class MixinHandledScreen {
         if (InventoryAutoClicker.handleScreenMouseClicked(event.button())) {
             cir.returnValue = true
         }
+    }
+
+    // Verified with javap against Minecraft 26.1.2. The background is a separate
+    // ContainerScreen hook; this replaces contents, carried items and tooltips.
+    @Inject(method = ["extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIF)V"],
+        at = [At("HEAD")], cancellable = true)
+    private fun asthoonlite_customTerminal(graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float, ci: CallbackInfo) {
+        val self = (this as Any) as AbstractContainerScreen<*>
+        if (!TermGui.active(self)) return
+        TermGui.render(self, graphics, mouseX, mouseY)
+        ci.cancel()
+    }
+
+    @Inject(method = ["mouseReleased(Lnet/minecraft/client/input/MouseButtonEvent;)Z"], at = [At("HEAD")], cancellable = true)
+    private fun asthoonlite_customRelease(event: MouseButtonEvent, cir: CallbackInfoReturnable<Boolean>) {
+        if (TermGui.active((this as Any) as AbstractContainerScreen<*>)) cir.returnValue = true
+    }
+
+    @Inject(method = ["mouseDragged(Lnet/minecraft/client/input/MouseButtonEvent;DD)Z"], at = [At("HEAD")], cancellable = true)
+    private fun asthoonlite_customDrag(event: MouseButtonEvent, dx: Double, dy: Double, cir: CallbackInfoReturnable<Boolean>) {
+        if (TermGui.active((this as Any) as AbstractContainerScreen<*>)) cir.returnValue = true
+    }
+
+    @Inject(method = ["mouseScrolled(DDDD)Z"], at = [At("HEAD")], cancellable = true)
+    private fun asthoonlite_customScroll(x: Double, y: Double, horizontal: Double, vertical: Double, cir: CallbackInfoReturnable<Boolean>) {
+        if (TermGui.active((this as Any) as AbstractContainerScreen<*>)) cir.returnValue = true
     }
 
     @Inject(
