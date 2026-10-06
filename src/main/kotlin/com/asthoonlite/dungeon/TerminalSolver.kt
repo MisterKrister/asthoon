@@ -22,7 +22,7 @@ import java.util.regex.Pattern
  * packet path the player would use by hand.
  */
 object TerminalSolver {
-    private const val NUMBER_TERM_COUNT = 10
+    internal const val NUMBER_TERM_COUNT = 10
 
     /**
      * The six terminals. [slotCount] is the container size Hypixel gives the

@@ -344,6 +344,90 @@ fun main() {
     val boardAiWinThreat = listOf<String?>("X", "X", null, null, "O", null, null, null, null)
     check(TicTacToeSolver.bestMove(boardAiWinThreat, "O") == 2) { "O must block X at slot 2" }
 
+    // ── Custom terminal GUI: the grid, and the hit-test that matches it ─────
+    run {
+        // The grid is not read off the panel, so it has to be pinned to the
+        // slots the solver itself works from. Rubix is the exact set the
+        // clicker drives, and the number terminal is exactly the panes it
+        // ships with — both live constants in TerminalSolver, so if either
+        // moves this catches it instead of the GUI quietly drawing wrong.
+        check(TermGui.layoutFor(Kind.RUBIX).slots() == TerminalSolver.RUBIX_SLOTS) {
+            "the rubix grid drifted off the nine panes"
+        }
+        check(TermGui.layoutFor(Kind.ORDER).slots().size == TerminalSolver.NUMBER_TERM_COUNT) {
+            "the number grid drifted off the panes it ships with"
+        }
+
+        // Melody: four pad rows with their buttons, the marker strip in row
+        // 0, and row 5 of the container left out as the filler it is.
+        val melodyLayout = TermGui.layoutFor(Kind.MELODY)
+        check(melodyLayout.slots().containsAll(listOf(16, 25, 34, 43))) {
+            "the melody grid is missing a button"
+        }
+        check(melodyLayout.slots().containsAll((1..5).toList())) {
+            "the melody grid is missing the marker strip"
+        }
+        check(melodyLayout.slots().none { it >= 45 }) {
+            "the melody grid reached into the container's filler row"
+        }
+
+        // Every grid stays inside its container and draws each slot once.
+        // A slot drawn twice is a tile that clicks something else, and a slot
+        // past the end is a tile in the player's inventory.
+        for (kind in listOf(Kind.ORDER, Kind.PANES, Kind.RUBIX, Kind.STARTS, Kind.SELECT, Kind.MELODY)) {
+            val slots = TermGui.layoutFor(kind).slots()
+            check(slots.size == slots.toSet().size) { "the $kind grid draws a slot twice" }
+            check(slots.all { it in 0 until kind.slotCount }) {
+                "the $kind grid escapes its ${kind.slotCount}-slot container"
+            }
+        }
+
+        // Scale grows the grid and leaves its centring alone — the chest
+        // layout could never do either, which is the point of the thing.
+        val layout = TermGui.layoutFor(Kind.MELODY)
+        val small = TermGui.metrics(layout, 400, 300, scale = 1f, gap = 2, roundness = 5)
+        val large = TermGui.metrics(layout, 400, 300, scale = 3f, gap = 2, roundness = 5)
+        check(small.cell == 24) { "scale 1 must be the base tile size" }
+        check(large.cell > small.cell) { "raising scale must grow a tile" }
+        check(large.width > small.width) { "raising scale must grow the grid" }
+        check(small.originX + small.width / 2 == 200) { "the grid must sit centred across" }
+        check(small.originY + small.height / 2 == 150) { "the grid must sit centred down" }
+
+        // The check that actually matters. Whatever the renderer draws, the
+        // click has to land in the same tile — the centre of every cell
+        // round-trips to its own slot and nothing else.
+        val m = TermGui.metrics(layout, 1920, 1080, scale = 2f, gap = 2, roundness = 5)
+        for (row in 0 until layout.rows) {
+            for (col in 0 until layout.cols) {
+                val rect = TermGui.cellRect(m, row, col)
+                val hit = TermGui.slotAtPoint(
+                    m, layout,
+                    (rect[0] + rect[2]) / 2f,
+                    (rect[1] + rect[3]) / 2f
+                )
+                check(hit == layout.slotAt(row, col)) {
+                    "the hit-test disagrees with the drawing at $row/$col: $hit"
+                }
+            }
+        }
+
+        // The gutter is the gap's whole purpose: a click between two tiles
+        // belongs to no pane. Answering with a neighbour instead is how a
+        // grid clicks something the pointer was never on.
+        val first = TermGui.cellRect(m, 0, 0)
+        val gutterX = first[2] + m.gap / 2
+        check(TermGui.slotAtPoint(m, layout, gutterX.toFloat(), (first[1] + m.cell / 2).toFloat()) == null) {
+            "a click in the gutter must belong to no pane"
+        }
+
+        // And everything outside the grid — the padding, the close button,
+        // the rest of the screen.
+        check(TermGui.slotAtPoint(m, layout, -1f, -1f) == null) { "off-grid must hit nothing" }
+        check(
+            TermGui.slotAtPoint(m, layout, (m.originX + m.width + 10).toFloat(), m.originY.toFloat()) == null
+        ) { "past the grid must hit nothing" }
+    }
+
     // ── Secret hitbox expansion geometry ───────────────────────────────────
     // Guards the lerp MixinBlockStateShape feeds into Minecraft's picking ray:
     // normal (0 %) -> full block (100 %), with buttons stopping at the
@@ -996,7 +1080,7 @@ fun main() {
         check(TerminalCursor.rawFromScaled(100f, 1920, 0) == 0.0) { "a zero gui scale must not divide by zero" }
     }
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
 }
 
 /**

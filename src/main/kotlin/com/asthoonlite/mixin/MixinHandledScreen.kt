@@ -3,6 +3,7 @@ package com.asthoonlite.mixin
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.TerminalCursor
+import com.asthoonlite.dungeon.TermGui
 import com.asthoonlite.dungeon.TerminalSolver
 import com.asthoonlite.render.fillRoundedRect
 import com.asthoonlite.pet.PetTracker
@@ -49,6 +50,39 @@ abstract class MixinHandledScreen {
     private fun asthoonlite_onContainerMouseClicked(event: MouseButtonEvent, doubleClick: Boolean, cir: CallbackInfoReturnable<Boolean>) {
         val self = (this as Any) as AbstractContainerScreen<*>
         val title = self.title.string
+
+        // The custom grid owns the click while it is up. Vanilla hit-tests
+        // against the chest's own slots, and the chest's slots are not where
+        // anything was drawn — so the point goes through the grid instead and
+        // the container is told about the pane the grid says it hit.
+        //
+        // The widget pass comes first because `AbstractContainerScreen` checks
+        // its children before it checks slots and this runs before both: skip
+        // that test and a close button the grid happens to overlap goes dead.
+        if (TermGui.isActive(self)) {
+            val kind = TerminalSolver.kindOf(TerminalSolver.cleanTitle(title))
+            val overWidget = self.children().any { it.isMouseOver(event.x(), event.y()) }
+            if (kind != null && !overWidget) {
+                val hit = TermGui.slotAt(self, kind, event.x().toFloat(), event.y().toFloat())
+                if (hit != null) {
+                    val slot = self.menu.slots.getOrNull(hit)
+                    if (slot != null) {
+                        val input = if (event.hasShiftDown()) ContainerInput.QUICK_MOVE else ContainerInput.PICKUP
+                        (self as AbstractContainerScreenAccessor).invokeSlotClicked(
+                            slot, hit, event.button(), input
+                        )
+                    }
+                    cir.returnValue = true
+                    return
+                }
+                // Off the grid and off every widget: the click belongs to the
+                // empty window, not to a pane. Cancelling here keeps vanilla
+                // from resolving one against a slot that is no longer drawn.
+                cir.returnValue = true
+                return
+            }
+        }
+
         if (title.contains("Stash", ignoreCase = true) || AutoTerminal.isTerminalTitle(title)) {
             if (title.contains("Stash", ignoreCase = true)) {
                 InventoryAutoClicker.clearSkymyceWorthlessItems()
@@ -156,7 +190,7 @@ abstract class MixinHandledScreen {
         mouseY: Int,
         ci: CallbackInfo
     ) {
-        if (TerminalCursor.ownsCursor()) ci.cancel()
+        if (TerminalCursor.ownsCursor() || TermGui.isActive(this)) ci.cancel()
     }
 
     @Inject(
@@ -168,7 +202,7 @@ abstract class MixinHandledScreen {
         graphics: GuiGraphicsExtractor,
         ci: CallbackInfo
     ) {
-        if (TerminalCursor.ownsCursor()) ci.cancel()
+        if (TerminalCursor.ownsCursor() || TermGui.isActive(this)) ci.cancel()
     }
 
     @Inject(
@@ -180,7 +214,47 @@ abstract class MixinHandledScreen {
         graphics: GuiGraphicsExtractor,
         ci: CallbackInfo
     ) {
-        if (TerminalCursor.ownsCursor()) ci.cancel()
+        if (TerminalCursor.ownsCursor() || TermGui.isActive(this)) ci.cancel()
+    }
+
+    // ── Custom terminal GUI: the vanilla screen stops drawing entirely ──────
+    //
+    // The grid is in screen space and the container's own slots are not where
+    // it drew anything, so leaving them up would put the chest's items, title
+    // and "Inventory" label underneath a panel that is meant to *be* the
+    // terminal. All three go: the slots, the labels they hang off, and the
+    // chest panel behind them (see MixinContainerScreen).
+    //
+    // The close button is not touched — it is a widget, drawn from
+    // `Screen.extractRenderState`, not from this pass.
+
+    @Inject(
+        method = ["extractSlot(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/world/inventory/Slot;II)V"],
+        at = [At("HEAD")],
+        cancellable = true
+    )
+    private fun asthoonlite_suppressSlotForCustomGui(
+        graphics: GuiGraphicsExtractor,
+        slot: Slot,
+        mouseX: Int,
+        mouseY: Int,
+        ci: CallbackInfo
+    ) {
+        if (TermGui.isActive(this)) ci.cancel()
+    }
+
+    @Inject(
+        method = ["extractLabels(Lnet/minecraft/client/gui/GuiGraphicsExtractor;II)V"],
+        at = [At("HEAD")],
+        cancellable = true
+    )
+    private fun asthoonlite_suppressLabelsForCustomGui(
+        graphics: GuiGraphicsExtractor,
+        mouseX: Int,
+        mouseY: Int,
+        ci: CallbackInfo
+    ) {
+        if (TermGui.isActive(this)) ci.cancel()
     }
 
     // Draws the pet-menu slot highlight right after each slot's item/overlay
@@ -291,7 +365,10 @@ abstract class MixinHandledScreen {
         mouseY: Int,
         ci: CallbackInfo
     ) {
-        if (!Config.terminalSolverEnabled) return
+        // The custom grid stands on its own: it does not need the highlight
+        // pass, but it does need the screen to be drawn — so it opens the
+        // gate the solver switch used to hold on its own.
+        if (!Config.terminalSolverEnabled && !Config.termGuiEnabled) return
         if (QuietMode.suppressing()) return
         val self = (this as Any) as AbstractContainerScreen<*>
         val title = self.title.string
@@ -302,6 +379,15 @@ abstract class MixinHandledScreen {
 
         val slots = self.menu.slots
         val all = slots.map { it.item }
+
+        // The custom GUI replaces the overlay outright rather than sitting on
+        // top of it: it draws the terminal in screen space, so the slot-by-
+        // slot pass below — which reads every coordinate off the chest — has
+        // nothing left to contribute.
+        if (Config.termGuiEnabled) {
+            TermGui.draw(graphics, self, kind, title, all, nextSlotFor(title, all))
+            return
+        }
 
         // One pass decides both what to draw and whether to draw at all. A
         // terminal the solver cannot parse answers "nothing to say" for every

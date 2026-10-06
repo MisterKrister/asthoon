@@ -224,6 +224,16 @@ object Config {
         // than index, so renaming or reordering a section only ever costs one
         // row coming back open — it can never fold the wrong one.
         var collapsedSections: MutableSet<String> = mutableSetOf(),
+
+        // ── Custom terminal GUI ─────────────────────────────────────────────
+        // A grid centred in screen space instead of highlights painted onto
+        // Hypixel's chest slots — see [com.asthoonlite.dungeon.TermGui].
+        // Appended at the end of Data: existing config files keep loading.
+        var termGuiEnabled   : Boolean = false,
+        var termGuiSize      : Float   = 2.0f,
+        var termGuiMelodySize: Float   = 1.5f,
+        var termGuiGap       : Int     = 2,
+        var termGuiRoundness : Int     = 5,
     )
 
     var data = Data()
@@ -504,6 +514,30 @@ object Config {
     var terminalSolverEnabled: Boolean
         get() = data.terminalSolverEnabled
         set(v) { data.terminalSolverEnabled = v; save() }
+
+    // ── Custom terminal GUI ─────────────────────────────────────────────────
+
+    var termGuiEnabled: Boolean
+        get() = data.termGuiEnabled
+        set(v) { data.termGuiEnabled = v; save() }
+
+    /** Tile scale. Melody carries its own — five rows of seven does not fit at the term size. */
+    var termGuiSize: Float
+        get() = data.termGuiSize
+        set(v) { data.termGuiSize = v; save() }
+
+    var termGuiMelodySize: Float
+        get() = data.termGuiMelodySize
+        set(v) { data.termGuiMelodySize = v; save() }
+
+    /** Gap between tiles, before scaling. */
+    var termGuiGap: Int
+        get() = data.termGuiGap
+        set(v) { data.termGuiGap = v; save() }
+
+    var termGuiRoundness: Int
+        get() = data.termGuiRoundness
+        set(v) { data.termGuiRoundness = v; save() }
 
     var autoTerminalEnabled: Boolean
         get() = data.autoTerminalEnabled

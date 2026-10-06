@@ -512,6 +512,22 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 NoteRow("Travel is fitted inside the Click Delay — the pointer never adds time to the terminal."),
                 ToggleRow("  ↳ Glide On Melody", "Also glide on Melody — off by default, its 40 ms cadence does not survive the travel time",
                     { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
+                SectionHeader("Custom Terminal GUI"),
+                ToggleRow("Custom Terminal GUI", "Draws the terminal as its own grid centred on screen — sized, gapped and rounded here rather than inherited from the chest panel. Clicks are routed through the grid.",
+                    { Config.termGuiEnabled }, { Config.termGuiEnabled = it }),
+                WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 3.0f, Config.termGuiSize, "Term Size: ", "x") {
+                    Config.termGuiSize = it
+                }),
+                WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 3.0f, Config.termGuiMelodySize, "Melody Size: ", "x") {
+                    Config.termGuiMelodySize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 8, Config.termGuiGap, "Tile Gap: ", " px") {
+                    Config.termGuiGap = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 15, Config.termGuiRoundness, "Roundness: ", " px") {
+                    Config.termGuiRoundness = it
+                }),
+                NoteRow("Melody carries its own size — five rows of seven does not fit at the term size."),
                 SectionHeader("Terminal Types — all on by default"),
                 ToggleRow("Automate Colours", "Solves 'Select all the X items'",
                     { Config.autoTermColors }, { Config.autoTermColors = it }),
