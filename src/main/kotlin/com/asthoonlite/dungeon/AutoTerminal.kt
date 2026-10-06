@@ -133,11 +133,16 @@ object AutoTerminal {
             }
             firstClickPending = false
 
-            // Pointer still travelling to the previous pane: melody waits for
-            // it rather than clicking underneath it. Only matters when the
-            // melody glide is on — its 40 ms cadence does not survive the trip,
-            // which is why that switch is off by default.
-            if (Config.autoTerminalCursorGlide && Config.autoTerminalCursorMelody && TerminalCursor.busy()) return
+            // Pointer still travelling to a pane it owes a click to: melody
+            // waits for it rather than clicking underneath it. Only matters
+            // when the melody glide is on — its 40 ms cadence does not survive
+            // the trip, which is why that switch is off by default.
+            //
+            // Waiting on `awaitingClick` and not on `busy`: a *premove* carries
+            // no click, and re-aiming one the instant the pane state says it
+            // was aimed at the wrong row is exactly what it is for. Only an
+            // outstanding click at the far end has to be honoured first.
+            if (Config.autoTerminalCursorGlide && Config.autoTerminalCursorMelody && TerminalCursor.awaitingClick()) return
 
             val slots = screen.menu.slots
             val size = kind.slotCount
@@ -148,14 +153,19 @@ object AutoTerminal {
             if (click != null) {
                 // Melody runs on a 40 ms cadence, so the pointer glide is off
                 // unless it is switched on explicitly — see CursorGlide.
-                if (glideIfEnabled(screen, player, windowId, kind, click, clickNotBeforeMs = now)) return
+                if (glideIfEnabled(screen, player, windowId, kind, click, clickNotBeforeMs = now,
+                        afterClick = { premoveNextMelodyRow(screen, click.slot) })) return
                 fireClick(screen, player, windowId, kind, click, clickDelayMs = 40L)
+                premoveNextMelodyRow(screen, click.slot)
                 return
             }
 
             // Process queued Melody skip clicks only if the real active note is not ready right now
             // (the skip queue is deliberately instant even with the pointer on:
-            //  it is a burst, and gliding each hop would drop the cadence.)
+            //  it is a burst, and gliding each hop would drop the cadence.
+            //  Reachable during a flight on purpose — nothing above blocks it
+            //  when `click` was null, because those packets ARE the cadence and
+            //  holding them for a glide is what would drop it.)
             if (melodySkipQueue.isNotEmpty()) {
                 if (now - lastClickAt >= 40L) {
                     val nextSlot = melodySkipQueue.removeFirst()
@@ -172,24 +182,27 @@ object AutoTerminal {
         // drawn pointer has to stay one step ahead of the packets.
         if (TerminalCursor.busy()) return
 
-        // One server round trip after the previous click, so the slot update it
-        // triggered has landed before the next pane is read. The configured
-        // click delay no longer gates this stage: the pointer covers that
-        // window on its way to the pane, and the click fires when both the
-        // pointer and the terminal are ready.
-        if (now - lastClickAt < TARGET_SETTLE_MS) return
-
-        // With no pointer in play the delay gates target selection exactly as
-        // it always did — the Rubix chooser records the pane it picks, so it
-        // must only run when a click is actually about to go out. With a
-        // pointer, selection runs during the delay window and the flight
-        // carries it to the pane.
-        if (!Config.autoTerminalCursorGlide && !canClick(now)) return
-
         val slots = screen.menu.slots
         val size = kind.slotCount
         if (slots.size < size) return
         val items = slots.take(size).map { it.item }
+
+        // With no pointer in play the delay gates target selection exactly as
+        // it always did — the Rubix chooser records the pane it picks, so it
+        // must only run when a click is actually about to go out.
+        //
+        // With a pointer, selection runs *during* the settle window instead of
+        // after it: the flight is what spends that window, and the click
+        // itself is still held back by clickNotBeforeAt(), which is the same
+        // instant the settle would have released at. What is read this early
+        // is pane state the server has not confirmed yet, and that is what
+        // `blocked` is for — a slot hit but not yet answered is filtered out
+        // of the candidates, so a stale read cannot send the pointer back to a
+        // pane it has already pressed.
+        if (!Config.autoTerminalCursorGlide &&
+            (now - lastClickAt < TARGET_SETTLE_MS || !canClick(now))
+        ) return
+
         val click = nextClick(kind, cleanTitle, items, now) ?: return
 
         // Rubix repeat guard
@@ -198,9 +211,49 @@ object AutoTerminal {
         if (glideIfEnabled(screen, player, windowId, kind, click, clickNotBeforeMs = clickNotBeforeAt())) return
 
         // No pointer in play (glide switched off, or no screen coordinate for
-        // the slot): fall back to plain delay timing.
+        // the slot): fall back to plain delay timing — settle and all.
+        if (now - lastClickAt < TARGET_SETTLE_MS) return
         if (!canClick(now)) return
         fireClick(screen, player, windowId, kind, click, nextClickDelayMs())
+    }
+
+    /**
+     * Sends the pointer at the row that will need it next, *before* the
+     * terminal has said which one that is.
+     *
+     * The buttons sit at column 7 of rows 1..4 — slots 16, 25, 34, 43 — so
+     * "next" is simply the row below the one just clicked, and the pointer can
+     * be committed to it the instant the packet leaves rather than parked
+     * where it clicked. It is a guess, and it is meant to be: the pane state
+     * that would confirm it arrives a round trip later, and waiting for it is
+     * the whole dead time this removes. If the guess is wrong the next solve
+     * re-aims mid-flight (a premove carries no click, so replacing it costs
+     * nothing) and the bill is one trip that was going to happen anyway.
+     *
+     * Silent when row-skipping is off: rows do not then advance on a fixed
+     * schedule, so the row below is not a prediction, it is a coin flip.
+     */
+    private fun premoveNextMelodyRow(screen: AbstractContainerScreen<*>, clickedSlot: Int) {
+        if (!Config.autoTerminalCursorGlide || !Config.autoTerminalCursorMelody) return
+        if (!Config.autoTerminalMelodySkip) return
+
+        val next = premoveSlotAfter(clickedSlot) ?: return
+        val target = TerminalCursor.targetFor(screen, next) ?: return
+        TerminalCursor.moveTo(target.first, target.second)
+    }
+
+    /**
+     * The button to premove to after clicking [clickedSlot]: column 7 of the
+     * row below, or null when there is no row below (or no row clicked).
+     *
+     * Pure — the screen coordinate is the only part that needs a live
+     * container, and that is [premoveNextMelodyRow]'s job.
+     */
+    internal fun premoveSlotAfter(clickedSlot: Int): Int? {
+        val row = clickedSlot / TerminalClickOrder.COLS - 1
+        val nextRow = row + 1
+        if (row < 0 || nextRow > 3) return null
+        return (nextRow + 1) * TerminalClickOrder.COLS + 7
     }
 
     /**
@@ -210,7 +263,11 @@ object AutoTerminal {
      */
     private fun clickNotBeforeAt(): Long {
         val base = if (firstClickPending) terminalOpenedAt else lastClickAt
-        return base + currentClickDelayMs
+        // Never before one server round trip after the last click, even when
+        // the configured delay is shorter than that. Selection deliberately
+        // runs early — see the settle note in [tick] — and this is what keeps
+        // the packet held until the pane state it was chosen from has landed.
+        return base + max(currentClickDelayMs, TARGET_SETTLE_MS)
     }
 
     /**
@@ -230,7 +287,8 @@ object AutoTerminal {
         kind: Kind,
         click: Click,
         clickNotBeforeMs: Long,
-        clickDelayMs: Long? = null
+        clickDelayMs: Long? = null,
+        afterClick: (() -> Unit)? = null
     ): Boolean {
         if (!Config.autoTerminalCursorGlide) return false
         // Melody is opt-in: its 40 ms cadence and a travel animation do not mix.
@@ -241,6 +299,9 @@ object AutoTerminal {
             // firing at a dead window id would just desync the container.
             if (Minecraft.getInstance().screen !== screen) return@glideTo
             fireClick(screen, player, windowId, kind, click, clickDelayMs ?: nextClickDelayMs())
+            // Runs with the flight already torn down, so the pointer is free
+            // to be sent straight on somewhere else.
+            afterClick?.invoke()
         }
     }
 

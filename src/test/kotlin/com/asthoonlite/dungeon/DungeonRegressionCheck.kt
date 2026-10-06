@@ -847,6 +847,39 @@ fun main() {
         }
     }
 
+    // ── Click while moving, and the premove ─────────────────────────────────
+    // The pointer stops shorter than it used to: within 3.5 px of the pane it
+    // clicks and lets the glide fall away underneath it. Both halves of that
+    // have to hold — fire early enough that the arrival crawl is gone, and
+    // never so early that it clicks a pane it is not standing on.
+    println("── Click while moving: the arrival window, and the premove ──")
+    run {
+        check(TerminalCursor.closeEnough(0f)) { "a tip on the pane is arrived" }
+        check(TerminalCursor.closeEnough(3.5f)) { "the arrival window must include its own edge" }
+        check(!TerminalCursor.closeEnough(3.6f)) { "past the window the pointer must still be flying" }
+        check(!TerminalCursor.closeEnough(60f)) { "halfway across a pane is not arrived" }
+
+        // It is an arrival *window*, not an arrival shortcut: the trip still
+        // has to happen, and it still obeys the floor.
+        check(TerminalCursor.flightDurationMs(200L, Long.MAX_VALUE) == 200L) {
+            "a premove with no deadline must take its natural time, not the floor"
+        }
+
+        // The row below, predicted from the button just clicked. These four
+        // numbers are the whole premove: slots 16/25/34/43 are the melody
+        // buttons on rows 1..4, and column 7 is where they live.
+        check(AutoTerminal.premoveSlotAfter(16) == 25) { "row 1 premoves to row 2" }
+        check(AutoTerminal.premoveSlotAfter(25) == 34) { "row 2 premoves to row 3" }
+        check(AutoTerminal.premoveSlotAfter(34) == 43) { "row 3 premoves to row 4" }
+        check(AutoTerminal.premoveSlotAfter(43) == null) { "row 4 has nothing below it to aim at" }
+        // Anything off the button column is not a melody click at all — the
+        // filler row, a stray pane, a marker — so there is no row to follow.
+        check(AutoTerminal.premoveSlotAfter(0) == null) { "row 0 is filler, not a click" }
+        check(AutoTerminal.premoveSlotAfter(5) == null) { "row 0 is filler, not a click" }
+        check(AutoTerminal.premoveSlotAfter(7) == null) { "row 0 is filler, not a click" }
+        check(AutoTerminal.premoveSlotAfter(44) == null) { "row 5 is filler, not a click" }
+    }
+
     // ── Terminal pointer motion ─────────────────────────────────────────────
     run {
         check(TerminalCursor.progressAt(0, 100) == 0f) { "pointer must start at rest" }
@@ -1080,7 +1113,7 @@ fun main() {
         check(TerminalCursor.rawFromScaled(100f, 1920, 0) == 0.0) { "a zero gui scale must not divide by zero" }
     }
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer flight timing, click-while-moving arrival window and melody premove, terminal pointer motion, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
 }
 
 /**

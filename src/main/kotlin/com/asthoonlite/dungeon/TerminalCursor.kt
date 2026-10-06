@@ -405,8 +405,46 @@ object TerminalCursor {
      * outstanding, so callers can fall back to clicking immediately.
      */
     fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long, onArrive: () -> Unit): Boolean {
-        if (moving || pendingClick != null) return false
+        // Only an outstanding *click* blocks. A premove in flight carries
+        // none, so replacing it loses nothing — and replacing it is exactly
+        // what has to happen when the pane state comes back mid-flight and
+        // the pointer is aiming at the wrong row.
+        if (pendingClick != null) return false
+        return startFlight(targetX, targetY, clickNotBeforeMs, onArrive)
+    }
 
+    /**
+     * A flight with nothing to do at the end of it — a *premove*, where the
+     * pointer is being sent somewhere ahead of the terminal rather than to
+     * something the terminal has just asked for.
+     *
+     * Exactly the same path, arc and speed as [glideTo] with no arrival work
+     * attached, which is the point: it counts as busy so nothing else starts
+     * a second one under it, it lands on the pane rather than beside it, and
+     * when the real click comes the pointer is already standing on it.
+     */
+    fun moveTo(targetX: Float, targetY: Float): Boolean {
+        if (pendingClick != null) return false
+        return startFlight(targetX, targetY, clickNotBeforeMs = null, onArrive = null)
+    }
+
+    /** True while a click is owed at the pane the pointer is heading for. */
+    fun awaitingClick(): Boolean = pendingClick != null
+
+    /**
+     * The path, arc, timing and bookkeeping both entry points share.
+     *
+     * [clickNotBeforeMs] null means there is no click to land, so the flight
+     * takes its natural time instead of being squeezed into the terminal's
+     * own window — there is no window, because nothing at the far end is
+     * waiting to fire.
+     */
+    private fun startFlight(
+        targetX: Float,
+        targetY: Float,
+        clickNotBeforeMs: Long?,
+        onArrive: (() -> Unit)?
+    ): Boolean {
         if (!positioned) seedFromMouse(targetX, targetY)
 
         fromX = x
@@ -433,9 +471,13 @@ object TerminalCursor {
 
         val now = System.currentTimeMillis()
         val natural = travelDurationMs(dist, Config.autoTerminalCursorSpeed, gaussianUnit())
-        durationMs = flightDurationMs(natural, clickNotBeforeMs - now)
+        durationMs = if (clickNotBeforeMs == null) {
+            flightDurationMs(natural, Long.MAX_VALUE)
+        } else {
+            flightDurationMs(natural, clickNotBeforeMs - now)
+        }
         startedAt = now
-        notBeforeAt = clickNotBeforeMs
+        notBeforeAt = clickNotBeforeMs ?: 0L
         phaseX = Random.nextFloat() * 6.283f
         phaseY = Random.nextFloat() * 6.283f
         moving = true
@@ -485,12 +527,36 @@ object TerminalCursor {
             parked()
             return
         }
+
+        val due = now >= notBeforeAt
+
+        // Click while moving. A hand does not stop on the pane — it clips it
+        // and carries on — so once the tip is this close and the terminal
+        // will take the click, the packet goes out from mid-flight and the
+        // next glide picks the pointer up mid-stride.
+        //
+        // The tip is deliberately not snapped onto the pane first. It is not
+        // the three and a half pixels that are worth having; it is that an
+        // eased flight spends its last stretch crawling, and cutting the
+        // arrival short at 3.5 px instead of 0 px is where most of the
+        // waiting actually lived. Those few pixels of overshoot are also
+        // what stops the pointer visibly parking.
+        if (due && closeEnough(hypot(toX - x, toY - y))) {
+            val click = pendingClick
+            pendingClick = null
+            notBeforeAt = 0L
+            moving = false
+            lastGlideAt = now
+            click?.invoke()
+            return
+        }
+
         if (now - startedAt < durationMs) return
         x = toX
         y = toY
         moving = false
         lastGlideAt = now
-        if (now < notBeforeAt) return
+        if (!due) return
         // Detach before invoking: the click starts the next glide, and that
         // glide must not be handed this one's callback.
         val click = pendingClick
@@ -498,6 +564,22 @@ object TerminalCursor {
         notBeforeAt = 0L
         click?.invoke()
     }
+
+    /**
+     * How close counts as arrived — a fraction of a tile, so the pointer is
+     * still visibly on the pane when it clicks. Wider than this and it would
+     * be clicking panes it is not on; at zero and the stop it is meant to
+     * remove comes straight back.
+     */
+    private const val FIRE_PROXIMITY_PX = 3.5f
+
+    /**
+     * Whether a tip [distance] from its target counts as arrived. Split out
+     * only so the window can be pinned from outside — the number itself is
+     * the whole of the behaviour: cross it and the click goes out mid-flight,
+     * miss it and the pointer creeps the last pixels to a stop.
+     */
+    internal fun closeEnough(distance: Float): Boolean = distance <= FIRE_PROXIMITY_PX
 
     private fun gaussianUnit(): Float {
         val u1 = (1.0 - Random.nextDouble()).coerceAtLeast(1e-9)
@@ -552,6 +634,18 @@ object TerminalCursor {
             drawn = false
             return
         }
+        // Land whatever is due here as well as on the client tick. The tick
+        // runs at 20 Hz, so a click that comes due between two ticks waits up
+        // to 50 ms to leave — a third of a click cadence, spent doing
+        // nothing, and it adds up once per pane. This is the same `tick`, not
+        // a second one: whichever call reaches a due flight first fires it,
+        // and the other finds nothing left to do.
+        //
+        // Safe to run mid-extract: the screen's slot pass has already
+        // finished by the time `afterExtract` fires, so nothing here can be
+        // iterating the menu the click is about to mutate.
+        tick(now)
+
         // While the pointer is armed it is drawn every frame and the real
         // cursor stays hidden behind it — the two never share the screen, so
         // no viewer sees one cursor hand over to the other, and never a frame
