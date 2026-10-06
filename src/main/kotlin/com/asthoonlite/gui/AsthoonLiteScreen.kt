@@ -495,7 +495,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     Config.autoTerminalMelodyFirstClickDelayMs = it
                 }),
                 SectionHeader("Pointer"),
-                ToggleRow("Glide Pointer", "Draws a pointer that travels to each pane, then clicks it there (clicks are still packets). Appears as soon as a terminal opens, not on the first solve.",
+                ToggleRow("Glide Pointer", "Draws a pointer that travels between panes while clicks follow the terminal timing",
                     { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
                 ToggleRow("  ↳ Hide Real Cursor", "Steps the real cursor aside while the drawn pointer is on screen",
                     { Config.autoTerminalCursorHideReal }, { Config.autoTerminalCursorHideReal = it }),
@@ -509,8 +509,20 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorJitter, "Pointer Tremor: ", "%") {
                     Config.autoTerminalCursorJitter = it
                 }),
-                NoteRow("Travel is fitted inside the Click Delay — the pointer never adds time to the terminal."),
-                ToggleRow("  ↳ Glide On Melody", "Also glide on Melody — off by default, its 40 ms cadence does not survive the travel time",
+                NoteRow("Clicks continue while the pointer moves. Acceleration uses a tunable cubic Bezier curve."),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseX1, "Acceleration X1: ", "%") {
+                    Config.autoTerminalEaseX1 = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseY1, "Acceleration Y1: ", "%") {
+                    Config.autoTerminalEaseY1 = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseX2, "Landing X2: ", "%") {
+                    Config.autoTerminalEaseX2 = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseY2, "Landing Y2: ", "%") {
+                    Config.autoTerminalEaseY2 = it
+                }),
+                ToggleRow("  ↳ Glide On Melody", "Glides to the next row immediately after a click, without waiting for the row update",
                     { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
                 SectionHeader("Custom Terminal GUI"),
                 ToggleRow("Custom Terminal GUI", "Draws the terminal as its own grid centred on screen — sized, gapped and rounded here rather than inherited from the chest panel. Clicks are routed through the grid.",

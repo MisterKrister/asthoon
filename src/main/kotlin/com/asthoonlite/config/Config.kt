@@ -234,6 +234,13 @@ object Config {
         var termGuiMelodySize: Float   = 1.5f,
         var termGuiGap       : Int     = 2,
         var termGuiRoundness : Int     = 5,
+
+        // CSS timing curve for the pointer, percent mapping to 0..1. Melody and
+        // the pane terminals share it; the shape is the whole of the accel.
+        var autoTerminalEaseX1: Int = 20,
+        var autoTerminalEaseY1: Int = 0,
+        var autoTerminalEaseX2: Int = 0,
+        var autoTerminalEaseY2: Int = 100,
     )
 
     var data = Data()
@@ -960,8 +967,7 @@ object Config {
         get() = data.autoTerminalCursorJitter
         set(v) { data.autoTerminalCursorJitter = v.coerceIn(0, 100); save() }
 
-    /** Glide the pointer on Melody too. Off by default: Melody's cadence is
-     *  a 40 ms click loop and a travel animation would blow the timing. */
+    /** Glide and premove on Melody without delaying its click clock. */
     var autoTerminalCursorMelody: Boolean
         get() = data.autoTerminalCursorMelody
         set(v) { data.autoTerminalCursorMelody = v; save() }
@@ -979,6 +985,24 @@ object Config {
     var autoTerminalAnywhere: Boolean
         get() = data.autoTerminalAnywhere
         set(v) { data.autoTerminalAnywhere = v; save() }
+
+    // The grid's own fields kept their original `termGui*` names: Config.Data
+    // is Gson-serialised to disk, so renaming one silently resets the setting
+    // for anyone who already has it. The curve below was new in the same
+    // change and landed under these names.
+
+    var autoTerminalEaseX1: Int
+        get() = data.autoTerminalEaseX1.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseX1 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseY1: Int
+        get() = data.autoTerminalEaseY1.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseY1 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseX2: Int
+        get() = data.autoTerminalEaseX2.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseX2 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseY2: Int
+        get() = data.autoTerminalEaseY2.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseY2 = v.coerceIn(0, 100); save() }
 
     var starMobOutlineOnly: Boolean
         get() = data.starMobOutlineOnly

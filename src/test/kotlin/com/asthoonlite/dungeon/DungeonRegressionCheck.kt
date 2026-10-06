@@ -344,88 +344,42 @@ fun main() {
     val boardAiWinThreat = listOf<String?>("X", "X", null, null, "O", null, null, null, null)
     check(TicTacToeSolver.bestMove(boardAiWinThreat, "O") == 2) { "O must block X at slot 2" }
 
-    // ── Custom terminal GUI: the grid, and the hit-test that matches it ─────
+    // ── Custom terminal GUI: the grid must agree with the solver ─────────────
+    // Rendering, hit-testing and centre-maths are covered by
+    // TerminalRegressionCheck. What is checked here is the thing only this
+    // file can see: that the grid is pinned to the slot sets the *solver*
+    // works from, so the two cannot drift apart silently.
     run {
-        // The grid is not read off the panel, so it has to be pinned to the
-        // slots the solver itself works from. Rubix is the exact set the
-        // clicker drives, and the number terminal is exactly the panes it
-        // ships with — both live constants in TerminalSolver, so if either
-        // moves this catches it instead of the GUI quietly drawing wrong.
-        check(TermGui.layoutFor(Kind.RUBIX).slots() == TerminalSolver.RUBIX_SLOTS) {
+        fun slotsOf(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3, 4)) =
+            TermGui.layout(kind, 640, 360, 100, 4, melodyRows).tiles.map { it.slot }
+
+        check(slotsOf(Kind.RUBIX) == TerminalSolver.RUBIX_SLOTS) {
             "the rubix grid drifted off the nine panes"
         }
-        check(TermGui.layoutFor(Kind.ORDER).slots().size == TerminalSolver.NUMBER_TERM_COUNT) {
+        check(slotsOf(Kind.ORDER).size == TerminalSolver.NUMBER_TERM_COUNT) {
             "the number grid drifted off the panes it ships with"
         }
 
-        // Melody: four pad rows with their buttons, the marker strip in row
-        // 0, and row 5 of the container left out as the filler it is.
-        val melodyLayout = TermGui.layoutFor(Kind.MELODY)
-        check(melodyLayout.slots().containsAll(listOf(16, 25, 34, 43))) {
+        // Melody: marker strip, all four content rows, and their buttons at
+        // column 7. Row 5 is the bottom indicator and is drawn as one — it is
+        // the same row melodyMarker reads for a lower marker.
+        val melodySlots = slotsOf(Kind.MELODY)
+        check(melodySlots.containsAll(listOf(16, 25, 34, 43))) {
             "the melody grid is missing a button"
         }
-        check(melodyLayout.slots().containsAll((1..5).toList())) {
+        check(melodySlots.containsAll((1..5).toList())) {
             "the melody grid is missing the marker strip"
         }
-        check(melodyLayout.slots().none { it >= 45 }) {
-            "the melody grid reached into the container's filler row"
-        }
 
-        // Every grid stays inside its container and draws each slot once.
         // A slot drawn twice is a tile that clicks something else, and a slot
         // past the end is a tile in the player's inventory.
-        for (kind in listOf(Kind.ORDER, Kind.PANES, Kind.RUBIX, Kind.STARTS, Kind.SELECT, Kind.MELODY)) {
-            val slots = TermGui.layoutFor(kind).slots()
+        for (kind in Kind.entries) {
+            val slots = slotsOf(kind)
             check(slots.size == slots.toSet().size) { "the $kind grid draws a slot twice" }
             check(slots.all { it in 0 until kind.slotCount }) {
                 "the $kind grid escapes its ${kind.slotCount}-slot container"
             }
         }
-
-        // Scale grows the grid and leaves its centring alone — the chest
-        // layout could never do either, which is the point of the thing.
-        val layout = TermGui.layoutFor(Kind.MELODY)
-        val small = TermGui.metrics(layout, 400, 300, scale = 1f, gap = 2, roundness = 5)
-        val large = TermGui.metrics(layout, 400, 300, scale = 3f, gap = 2, roundness = 5)
-        check(small.cell == 24) { "scale 1 must be the base tile size" }
-        check(large.cell > small.cell) { "raising scale must grow a tile" }
-        check(large.width > small.width) { "raising scale must grow the grid" }
-        check(small.originX + small.width / 2 == 200) { "the grid must sit centred across" }
-        check(small.originY + small.height / 2 == 150) { "the grid must sit centred down" }
-
-        // The check that actually matters. Whatever the renderer draws, the
-        // click has to land in the same tile — the centre of every cell
-        // round-trips to its own slot and nothing else.
-        val m = TermGui.metrics(layout, 1920, 1080, scale = 2f, gap = 2, roundness = 5)
-        for (row in 0 until layout.rows) {
-            for (col in 0 until layout.cols) {
-                val rect = TermGui.cellRect(m, row, col)
-                val hit = TermGui.slotAtPoint(
-                    m, layout,
-                    (rect[0] + rect[2]) / 2f,
-                    (rect[1] + rect[3]) / 2f
-                )
-                check(hit == layout.slotAt(row, col)) {
-                    "the hit-test disagrees with the drawing at $row/$col: $hit"
-                }
-            }
-        }
-
-        // The gutter is the gap's whole purpose: a click between two tiles
-        // belongs to no pane. Answering with a neighbour instead is how a
-        // grid clicks something the pointer was never on.
-        val first = TermGui.cellRect(m, 0, 0)
-        val gutterX = first[2] + m.gap / 2
-        check(TermGui.slotAtPoint(m, layout, gutterX.toFloat(), (first[1] + m.cell / 2).toFloat()) == null) {
-            "a click in the gutter must belong to no pane"
-        }
-
-        // And everything outside the grid — the padding, the close button,
-        // the rest of the screen.
-        check(TermGui.slotAtPoint(m, layout, -1f, -1f) == null) { "off-grid must hit nothing" }
-        check(
-            TermGui.slotAtPoint(m, layout, (m.originX + m.width + 10).toFloat(), m.originY.toFloat()) == null
-        ) { "past the grid must hit nothing" }
     }
 
     // ── Secret hitbox expansion geometry ───────────────────────────────────
@@ -847,40 +801,7 @@ fun main() {
         }
     }
 
-    // ── Click while moving, and the premove ─────────────────────────────────
-    // The pointer stops shorter than it used to: within 3.5 px of the pane it
-    // clicks and lets the glide fall away underneath it. Both halves of that
-    // have to hold — fire early enough that the arrival crawl is gone, and
-    // never so early that it clicks a pane it is not standing on.
-    println("── Click while moving: the arrival window, and the premove ──")
-    run {
-        check(TerminalCursor.closeEnough(0f)) { "a tip on the pane is arrived" }
-        check(TerminalCursor.closeEnough(3.5f)) { "the arrival window must include its own edge" }
-        check(!TerminalCursor.closeEnough(3.6f)) { "past the window the pointer must still be flying" }
-        check(!TerminalCursor.closeEnough(60f)) { "halfway across a pane is not arrived" }
-
-        // It is an arrival *window*, not an arrival shortcut: the trip still
-        // has to happen, and it still obeys the floor.
-        check(TerminalCursor.flightDurationMs(200L, Long.MAX_VALUE) == 200L) {
-            "a premove with no deadline must take its natural time, not the floor"
-        }
-
-        // The row below, predicted from the button just clicked. These four
-        // numbers are the whole premove: slots 16/25/34/43 are the melody
-        // buttons on rows 1..4, and column 7 is where they live.
-        check(AutoTerminal.premoveSlotAfter(16) == 25) { "row 1 premoves to row 2" }
-        check(AutoTerminal.premoveSlotAfter(25) == 34) { "row 2 premoves to row 3" }
-        check(AutoTerminal.premoveSlotAfter(34) == 43) { "row 3 premoves to row 4" }
-        check(AutoTerminal.premoveSlotAfter(43) == null) { "row 4 has nothing below it to aim at" }
-        // Anything off the button column is not a melody click at all — the
-        // filler row, a stray pane, a marker — so there is no row to follow.
-        check(AutoTerminal.premoveSlotAfter(0) == null) { "row 0 is filler, not a click" }
-        check(AutoTerminal.premoveSlotAfter(5) == null) { "row 0 is filler, not a click" }
-        check(AutoTerminal.premoveSlotAfter(7) == null) { "row 0 is filler, not a click" }
-        check(AutoTerminal.premoveSlotAfter(44) == null) { "row 5 is filler, not a click" }
-    }
-
-    // ── Terminal pointer motion ─────────────────────────────────────────────
+    // ── Terminal pointer motion ────────────────────────────────────────────
     run {
         check(TerminalCursor.progressAt(0, 100) == 0f) { "pointer must start at rest" }
         check(TerminalCursor.progressAt(100, 100) == 1f) { "pointer must land at the end of its duration" }
@@ -906,6 +827,11 @@ fun main() {
         check(TerminalCursor.progressAt(50, 100) > 0.65f) {
             "accel curve must cover the ground early, not crawl the second half"
         }
+        // The PR's own default curve lands where it should too.
+        check(TerminalCursor.progressAt(20, 100) > 0.2f) { "the default curve should accelerate quickly" }
+        check(TerminalCursor.progressAt(90, 100) > 0.99f) { "the default curve should land gently" }
+
+        terminalMotionAndGuiChecks()
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)
@@ -1113,7 +1039,7 @@ fun main() {
         check(TerminalCursor.rawFromScaled(100f, 1920, 0) == 0.0) { "a zero gui scale must not divide by zero" }
     }
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer flight timing, click-while-moving arrival window and melody premove, terminal pointer motion, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer flight timing, terminal motion and gui, terminal pointer motion, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
 }
 
 /**
