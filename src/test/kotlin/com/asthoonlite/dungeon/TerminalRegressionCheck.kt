@@ -101,8 +101,15 @@ internal fun terminalMotionAndGuiChecks() {
     run {
         AutoTerminal.recordMelodyClick(pending, 16, 2_000L, skip = true, dontSkipFirst = false)
         check(AutoTerminal.melodyAimSlot(pending, 2_001L) == 25) { "premove must precede the server update" }
-        check(!AutoTerminal.melodyRowReady(16, 2_249L) && AutoTerminal.melodyRowReady(16, 2_250L))
-        check(AutoTerminal.melodyAimSlot(pending, 2_250L) == 16) { "unacknowledged notes must remain retryable" }
+        // The row gets its ticks to arrive before the aim or the click answers:
+        // inside the window the pointer holds the row below, and only past it
+        // does the still-unacknowledged note get its retry.
+        check(AutoTerminal.melodyAimSlot(pending, 2_250L) == 25) { "the grace keeps the pointer down while the row catches up" }
+        check(AutoTerminal.melodyAimSlot(pending, 2_399L) == 25) { "the grace is not a tick shorter than it is set to" }
+        check(!AutoTerminal.melodyRowReady(16, 2_399L) && AutoTerminal.melodyRowReady(16, 2_400L))
+        check(AutoTerminal.melodyAimSlot(pending, 2_400L) == 16) { "unacknowledged notes must remain retryable" }
+        check(AutoTerminal.MELODY_RETRY_TOTAL_MS == AutoTerminal.MELODY_ROW_RETRY_MS + AutoTerminal.MELODY_UPDATE_GRACE_MS)
+        check(AutoTerminal.MELODY_UPDATE_TICKS == 3L && AutoTerminal.MELODY_UPDATE_GRACE_MS == 150L)
         val queue = AutoTerminal::class.java.getDeclaredField("melodySkipQueue").apply { isAccessible = true }
         check((queue.get(AutoTerminal) as Collection<*>).toList() == listOf(25, 34, 43))
         AutoTerminal.recordMelodyClick(pending, 16, 3_000L, skip = true, dontSkipFirst = true)
@@ -141,20 +148,38 @@ internal fun terminalMotionAndGuiChecks() {
 
     // ── The drawn grid must cover whatever screen it is on ─────────────────
     run {
-        // The terminal's own rows are the whole requirement: everything the
-        // grid draws comes from `slots.take(slotCount)`, and it never needed
-        // the player's inventory below them. Asking for that as well is what
-        // left a screen holding the terminal and nothing else blank — its own
-        // windows, in the p3 simulator — while the clicker, which never asked
-        // for it, kept working on the very same screen.
+        // The requirement is the slots the tiles land on, not the terminal's
+        // own row count. The real terminal ships a full chest under its rows
+        // and a simulator's window ships the panes and nothing else, so the
+        // two numbers part company there — and demanding the larger one turns
+        // the grid off on a screen that can draw every tile it wants to draw.
+        // The numbers below are counted by hand from each layout's shape,
+        // which is the point: the assertion has to survive a change to the
+        // tile code it is checking.
+        check(TermGui.requiredSlots(Kind.PANES) == 34)   // rows 1..3, cols 2..6
+        check(TermGui.requiredSlots(Kind.ORDER) == 25)   // rows 1..2, cols 2..6
+        check(TermGui.requiredSlots(Kind.RUBIX) == 33)   // rows 1..3, cols 3..5
+        check(TermGui.requiredSlots(Kind.SELECT) == 44)  // rows 1..4, cols 1..7
+        check(TermGui.requiredSlots(Kind.STARTS) == 35)  // rows 1..3, cols 1..7
+        check(TermGui.requiredSlots(Kind.MELODY) == 42)  // three rows, col 6 and the tail's col 7 skipped
+        check(TermGui.requiredSlots(Kind.MELODY, listOf(1, 2, 3, 4)) == 51) { "a fourth content row draws two rows lower" }
+        for (kind in Kind.entries) {
+            check(TermGui.requiredSlots(kind) <= kind.slotCount) {
+                "$kind must never ask for more than the terminal itself ships"
+            }
+        }
+
         check(TermGui.covers(Kind.PANES, 45)) { "the terminal's own rows are enough" }
         check(TermGui.covers(Kind.PANES, 45 + 36)) { "a real chest still counts" }
-        check(!TermGui.covers(Kind.PANES, 44)) { "a screen one row short is not this terminal" }
-        check(TermGui.covers(Kind.SELECT, 54) && !TermGui.covers(Kind.SELECT, 53))
-        check(TermGui.covers(Kind.MELODY, 54) && !TermGui.covers(Kind.MELODY, 53))
-        check(TermGui.covers(Kind.ORDER, 36) && !TermGui.covers(Kind.ORDER, 35))
-        check(TermGui.covers(Kind.STARTS, 45) && !TermGui.covers(Kind.STARTS, 44))
-        check(TermGui.covers(Kind.RUBIX, 45) && !TermGui.covers(Kind.RUBIX, 44))
+        check(TermGui.covers(Kind.PANES, 34)) { "a window holding every pane is this terminal" }
+        check(!TermGui.covers(Kind.PANES, 33)) { "a window missing the last pane is not" }
+        check(TermGui.covers(Kind.ORDER, 25) && !TermGui.covers(Kind.ORDER, 24))
+        check(TermGui.covers(Kind.RUBIX, 33) && !TermGui.covers(Kind.RUBIX, 32))
+        check(TermGui.covers(Kind.SELECT, 44) && !TermGui.covers(Kind.SELECT, 43))
+        check(TermGui.covers(Kind.STARTS, 35) && !TermGui.covers(Kind.STARTS, 34))
+        check(TermGui.covers(Kind.MELODY, 54) && !TermGui.covers(Kind.MELODY, 41))
+        check(TermGui.covers(Kind.MELODY, 51, listOf(1, 2, 3, 4))) { "melody's requirement follows its live rows" }
+        check(!TermGui.covers(Kind.MELODY, 50, listOf(1, 2, 3, 4))) { "one slot short of the drawn rows is not covered" }
     }
 
     // ── Click pacing: the settings have to be the settings ────────────────

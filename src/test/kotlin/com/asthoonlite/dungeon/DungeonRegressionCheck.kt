@@ -147,9 +147,15 @@ fun main() {
         check(TerminalSolver.clickCandidates("Chest", select).isEmpty()) {
             "A non-terminal must never hand out a slot to click"
         }
-        check(TerminalSolver.clickCandidates(selectTitle, select.take(10)).isEmpty()) {
-            "A clipped slot list short of the terminal's own size is not readable"
+        // A list that stops short of the terminal's own size is still readable
+        // — it just answers over the slots that are there. A simulator's window
+        // and a practice world's shorter chest hold the panes without the
+        // player's inventory underneath them, and an empty answer from a screen
+        // with a red pane sitting in it is indistinguishable from a solved one.
+        check(TerminalSolver.clickCandidates(selectTitle, select.take(10)) == listOf(1)) {
+            "A short slot list must still answer over the slots it has"
         }
+        check(TerminalSolver.clickCandidates(selectTitle, paneGrid(9)) == emptyList<Int>())
 
         // The marker and the clicker are one decision: from wherever the
         // pointer is, it goes to the nearest pane still to click.

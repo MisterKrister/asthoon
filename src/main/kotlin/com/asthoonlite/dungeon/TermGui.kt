@@ -1,13 +1,15 @@
 package com.asthoonlite.dungeon
 
+import com.asthoonlite.AsthoonLite
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.TerminalSolver.Kind
 import com.asthoonlite.render.fillRoundedRect
+import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphicsExtractor
+import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
-import net.minecraft.client.gui.screens.inventory.ContainerScreen
 import net.minecraft.client.input.KeyEvent
 import net.minecraft.world.inventory.ContainerInput
 import net.minecraft.world.item.ItemStack
@@ -20,8 +22,6 @@ object TermGui {
     internal const val TILE_SIZE = 24
     private const val BACKGROUND = 0xF0090B10.toInt()
     private const val NEUTRAL = 0xFF292F3B.toInt()
-    /** Same dim MixinContainerScreen paints over a chest, for screens it cannot reach. */
-    private const val DIM_BACKGROUND = 0x88000000.toInt()
 
     data class Tile(val slot: Int, val x: Int, val y: Int)
 
@@ -45,20 +45,31 @@ object TermGui {
         kind: Kind, width: Int, height: Int, scalePercent: Int, gapPixels: Int,
         melodyRows: List<Int> = listOf(1, 2, 3)
     ): Grid {
-        val (rows, cols, startRow, startCol) = when (kind) {
-            Kind.PANES -> listOf(3, 5, 1, 2)
-            Kind.RUBIX -> listOf(3, 3, 1, 3)
-            Kind.ORDER -> listOf(2, 5, 1, 2)
-            Kind.STARTS -> listOf(3, 7, 1, 1)
-            Kind.SELECT -> listOf(4, 7, 1, 1)
-            Kind.MELODY -> listOf((melodyRows.maxOrNull() ?: 3).coerceIn(1, 4) + 2, 7, 0, 1)
-        }
+        val (rows, cols, startRow, startCol) = shape(kind, melodyRows)
         val gap = gapPixels.coerceIn(0, 12)
         val w = cols * TILE_SIZE + (cols - 1) * gap
         val h = rows * TILE_SIZE + (rows - 1) * gap
         val scale = minOf(scalePercent.coerceIn(50, 300) / 100f,
             (width - 16).coerceAtLeast(1) / w.toFloat(), (height - 48).coerceAtLeast(1) / h.toFloat())
-        val tiles = buildList {
+        return Grid((width - w * scale) / 2f, (height - h * scale) / 2f, scale, w, h, tiles(kind, melodyRows, gap))
+    }
+
+    /** rows, columns, and where the first one sits in the 9-wide menu list. */
+    private fun shape(kind: Kind, melodyRows: List<Int>): IntArray = when (kind) {
+        Kind.PANES -> intArrayOf(3, 5, 1, 2)
+        Kind.RUBIX -> intArrayOf(3, 3, 1, 3)
+        Kind.ORDER -> intArrayOf(2, 5, 1, 2)
+        Kind.STARTS -> intArrayOf(3, 7, 1, 1)
+        Kind.SELECT -> intArrayOf(4, 7, 1, 1)
+        Kind.MELODY -> intArrayOf((melodyRows.maxOrNull() ?: 3).coerceIn(1, 4) + 2, 7, 0, 1)
+    }
+
+    /** The tiles themselves — independent of the screen they will be drawn on,
+     *  which is what lets the slot requirement be answered without one. */
+    internal fun tiles(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3), gapPixels: Int = 0): List<Tile> {
+        val (rows, cols, startRow, startCol) = shape(kind, melodyRows)
+        val gap = gapPixels.coerceIn(0, 12)
+        return buildList {
             for (r in 0 until rows) for (c in 0 until cols) {
                 val row = startRow + r
                 val col = startCol + c
@@ -67,35 +78,47 @@ object TermGui {
                 add(Tile(row * 9 + col, c * (TILE_SIZE + gap), r * (TILE_SIZE + gap)))
             }
         }
-        return Grid((width - w * scale) / 2f, (height - h * scale) / 2f, scale, w, h, tiles)
     }
 
     /**
-     * Whether the drawn grid covers this screen.
+     * How many slots the menu has to have for this terminal's grid to be
+     * drawable: one past the last tile the layout would produce.
      *
-     * The only thing the grid needs from a menu is the terminal's own rows —
-     * everything it draws comes from `slots.take(kind.slotCount)` — so that is
-     * the test. The `+ 36` this replaces asked for the player's inventory
-     * below the rows as well, which is how a screen with the terminal and
-     * nothing else (a simulator's window, a practice world's shorter chest)
-     * went undrawn while the clicker, which never asked for the inventory,
-     * kept working on the very same screen. The title stays the real gate: it
-     * is what says "this is a terminal" at all, and it is matched on the
-     * stripped text, so a wrapper like "P3 · Click in order!" still counts.
-     *
-     * [covers] is split out because the count test is the part worth pinning,
-     * and pinning it does not want a screen.
+     * Deliberately not [Kind.slotCount]. The real terminal ships a full chest
+     * — its own rows plus the player's inventory under them — so a menu that
+     * holds every pane the grid draws is enough, whether or not it also
+     * carries the inventory. A simulator's window or a practice world's
+     * shorter chest is exactly the case where the two numbers part company,
+     * and demanding the larger one turns the grid off on a screen that can
+     * draw it. Melody is the one kind whose rows are live, so its callers pass
+     * what the menu actually shows.
      */
-    internal fun covers(kind: Kind, slotCount: Int): Boolean = slotCount >= kind.slotCount
+    internal fun requiredSlots(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3)): Int =
+        (tiles(kind, melodyRows).maxOfOrNull { it.slot } ?: -1) + 1
 
-    fun active(screen: AbstractContainerScreen<*>): Boolean =
-        Config.termGuiEnabled && !QuietMode.suppressing() &&
-            TerminalSolver.kindOf(screen.title.string)?.let { covers(it, screen.menu.slots.size) } == true
+    /** [requiredSlots] for a live menu: melody's answer depends on its rows. */
+    internal fun requiredSlotsFor(kind: Kind, items: List<ItemStack>): Int =
+        if (kind == Kind.MELODY) requiredSlots(kind, TerminalSolver.melodyRows(items).map { it.row })
+        else requiredSlots(kind)
+
+    internal fun covers(kind: Kind, slotCount: Int, melodyRows: List<Int> = listOf(1, 2, 3)): Boolean =
+        slotCount >= requiredSlots(kind, melodyRows)
+
+    fun active(screen: AbstractContainerScreen<*>): Boolean {
+        if (!Config.termGuiEnabled || QuietMode.suppressing()) return false
+        val kind = TerminalSolver.kindOf(screen.title.string) ?: return false
+        val slots = screen.menu.slots.size
+        return covers(kind, slots, liveMelodyRows(screen, kind))
+    }
+
+    /** Melody's rows as the menu currently shows them; nothing else asks. */
+    private fun liveMelodyRows(screen: AbstractContainerScreen<*>, kind: Kind): List<Int> =
+        if (kind == Kind.MELODY) TerminalSolver.melodyRows(items(screen, kind)).map { it.row } else emptyList()
 
     fun gridFor(screen: AbstractContainerScreen<*>): Grid? {
         if (!active(screen)) return null
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return null
-        val rows = if (kind == Kind.MELODY) TerminalSolver.melodyRows(items(screen, kind)).map { it.row } else emptyList()
+        val rows = liveMelodyRows(screen, kind)
         // Melody carries its own scale — seven columns of six rows does not fit
         // at the pane size, which is the entire reason the setting is separate.
         val tileScale = if (kind == Kind.MELODY) Config.termGuiMelodySize else Config.termGuiSize
@@ -107,13 +130,16 @@ object TermGui {
 
     fun render(screen: AbstractContainerScreen<*>, graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val grid = gridFor(screen) ?: return
-        // A chest dims itself through MixinContainerScreen, which mixes into
-        // ContainerScreen and nowhere else. A screen that is not one of those
-        // — a simulator's own window — would leave its background sitting
-        // there, untrimmed, underneath a grid drawn on top of it. So this dims
-        // it here instead, and only when the hook could not have run, because
-        // dimming twice would take the grid down with the background.
-        if (screen !is ContainerScreen) graphics.fill(0, 0, screen.width, screen.height, DIM_BACKGROUND)
+        // No dim of our own, and the reason is the extraction order rather
+        // than taste: extractRenderStateWithTooltipAndSubtitles calls
+        // extractBackground *before* extractRenderState, and
+        // AbstractContainerScreen.isInGameUi() is true, so every container
+        // screen — chest or otherwise — has already been dimmed by
+        // extractTransparentBackground by the time the mixin up here fires.
+        // A chest is the one case where that did not happen, because
+        // MixinContainerScreen cancels extractBackground to trim its texture
+        // and puts its own dim back. Filling here too would draw a second
+        // layer over the first and take the grid down with the background.
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
         val all = items(screen, kind)
         val title = TerminalSolver.cleanTitle(screen.title.string)
@@ -188,5 +214,49 @@ object TermGui {
             click(screen, mc.mouseHandler.getScaledXPos(mc.window), mc.mouseHandler.getScaledYPos(mc.window),
                 if (event.hasControlDown()) 1 else 0)
         }
+    }
+
+    /**
+     * One line, once per screen type, saying which of the gates refused.
+     *
+     * A grid that does not appear is otherwise indistinguishable from a grid
+     * that was never asked for: four separate conditions have to be true at
+     * once and they all fail the same way, silently. This prints the answer
+     * into the log where it can be read after one run, instead of guessed at.
+     */
+    fun register() {
+        val seen = HashSet<String>()
+        ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
+            val title = screen.title.string
+            val kind = TerminalSolver.kindOf(title)
+            if (kind == null && !looksLikeTerminal(title, screen)) return@register
+            if (!seen.add(screen.javaClass.simpleName + "|" + title)) return@register
+            val container = screen as? AbstractContainerScreen<*> ?: return@register
+            AsthoonLite.LOGGER.info("[AsthoonLite] TermGui {} {} -> {}",
+                screen.javaClass.simpleName, "'$title'", diagnose(container, kind))
+        }
+    }
+
+    /** Title or class that reads like a terminal even when kindOf does not match it. */
+    private fun looksLikeTerminal(title: String, screen: Screen): Boolean {
+        val t = title.lowercase()
+        val cls = screen.javaClass.simpleName.lowercase()
+        return "p3" in t || "terminal" in t || "sim" in t || "sim" in cls || "terminal" in cls
+    }
+
+    internal fun diagnose(screen: AbstractContainerScreen<*>, kind: Kind?): String {
+        val slots = screen.menu.slots.size
+        val quiet = QuietMode.suppressing()
+        val enabled = Config.termGuiEnabled
+        if (kind == null) return "kind=null slots=$slots termGui=$enabled quiet=$quiet reason=no kind for this title"
+        val required = requiredSlotsFor(kind, items(screen, kind))
+        val reason = when {
+            !enabled -> "termGuiEnabled is off"
+            quiet -> "quiet mode is on"
+            slots < required -> "menu has $slots slots, grid needs $required"
+            else -> "open"
+        }
+        return "kind=$kind slots=$slots need=$required termGui=$enabled quiet=$quiet active=" +
+            "${active(screen)} reason=$reason"
     }
 }

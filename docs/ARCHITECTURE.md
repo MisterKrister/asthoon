@@ -175,9 +175,15 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   **Custom Terminal GUI** on the Terminal tab; size and gap are adjustable.
   Its pure layout supplies tile rendering, mouse hit tests, keyboard clicks
   and `TerminalCursor.targetFor`. A screen is covered when its menu holds the
-  terminal's *own* rows (`TermGui.covers`); the player's inventory below them
-  is never required, which is what lets a window holding only the terminal —
-  a p3-simulator screen, a shorter practice chest — draw at all. Clicks leave
+  slots the *tiles* land on (`TermGui.covers` reads `requiredSlots`, counted
+  from the layout, not `Kind.slotCount`), so the player's inventory below the
+  terminal — and one row more than the grid draws — is never required; that is
+  what lets a window holding only the panes, a p3-simulator screen or a
+  shorter practice chest, draw at all, and the same requirement gates
+  `AutoTerminal.tick` and `TerminalSolver.clickCandidates` so the grid and the
+  clicker open on the same screen or not at all. A screen that still does not
+  draw prints one line per screen type through `TermGui.register()` naming
+  which gate refused. Clicks leave
   through `dungeon/TerminalInput.kt`: the player's window sends packets, a
   screen holding a menu of its own is driven through `slotClicked`, the door
   a hand's click uses there. `MixinContainerScreen` replaces the chest
@@ -200,9 +206,13 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   Delay instead — on a chain of numbered panes that ceiling was not a safety
   margin, it was the whole cadence. Enable **Glide On Melody** to premove to
   the next detected button immediately after clicking. Detection, skip queues
-  and layout share the same three/four-row model, with a 250 ms retry window
-  for unacknowledged melody clicks; melody's aim and its click read the same
-  candidate, so the hand drops to the next row once and stays there.
+  and layout share the same three/four-row model. An unacknowledged melody
+  click waits `MELODY_ROW_RETRY_MS` (250 ms) plus `MELODY_UPDATE_GRACE_MS`
+  (three ticks, 150 ms) — the row is given time to arrive before the aim or
+  the click answers for it, which is what keeps the pointer from walking back
+  to the row it just left while the server is still catching up. Melody's aim
+  and its click read the same candidate and the same total window, so the hand
+  drops to the next row once and stays there.
 
 ## 7. The regression harness
 
@@ -225,7 +235,8 @@ that made the terminal settings stop answering: the click clock taking Click
 Delay as its mean with one Delay Spread either side of it, the per-slot guard
 each terminal runs on, the humanize bounds (timing, hesitation, overshoot,
 settle), a flight that hesitates and settles back onto its pane, the split
-that keeps a whole trip inside one beat, and which menus the drawn grid
-covers.
+that keeps a whole trip inside one beat, which menus the drawn grid covers
+(counted from the tiles, hand-checked against each layout's shape), and the
+melody grace that keeps a row's ticks from being answered too early.
 
 **Rule: if you change pure logic, add a check for it in the same commit.**

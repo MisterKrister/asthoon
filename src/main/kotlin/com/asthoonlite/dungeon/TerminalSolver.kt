@@ -150,9 +150,13 @@ object TerminalSolver {
     ): List<Int> {
         val cleanTitle = cleanTitle(screenTitle)
         val type = kindOf(cleanTitle) ?: return emptyList()
-        val size = type.slotCount
-        if (items.size < size) return emptyList()
-        val all = items.take(size)
+        // Read the slots that are there rather than insisting on the full
+        // chest. A simulator's window or a practice world's shorter menu stops
+        // short of the player's inventory underneath the terminal's own rows,
+        // and an empty answer is indistinguishable from a finished puzzle —
+        // the clicker would sit on a screen it can otherwise drive and never
+        // say why. Everything below already guards each slot it reaches for.
+        val all = items.take(type.slotCount)
 
         return when (type) {
             Kind.PANES -> all.indices.filter { i ->

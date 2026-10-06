@@ -47,7 +47,8 @@ object AutoTerminal {
     private const val RUBIX_REPEAT_GUARD_MS = 70L
 
     /**
-     * How long the same Melody row waits before it is clicked again.
+     * How long the same Melody row waits before it is clicked again, before
+     * [MELODY_UPDATE_GRACE_MS] is added on top.
      *
      * Melody is the one terminal whose pace is the puzzle: the beat is the row
      * moving into place, so this doubles as the retry window for a click the
@@ -55,6 +56,22 @@ object AutoTerminal {
      * to the next row.
      */
     internal const val MELODY_ROW_RETRY_MS = 250L
+
+    /**
+     * Extra ticks a row is given to show up before anything reacts to it.
+     *
+     * The retry window alone was tight enough that a row arriving a few ticks
+     * late read as "never updated": the aim walked back to the row just
+     * clicked, the retry fired on it, and the pointer shuttled instead of
+     * sitting on the new row. This is time spent waiting rather than answering
+     * — three ticks at 20 Hz, 150 ms — and it only costs anything on the one
+     * path where the server is already behind. [MELODY_RETRY_TOTAL_MS] is the
+     * sum, because the aim and the click have to use the same number or they
+     * disagree about where the pointer belongs.
+     */
+    internal const val MELODY_UPDATE_TICKS = 3L
+    internal const val MELODY_UPDATE_GRACE_MS = MELODY_UPDATE_TICKS * 50L
+    internal const val MELODY_RETRY_TOTAL_MS = MELODY_ROW_RETRY_MS + MELODY_UPDATE_GRACE_MS
 
     /**
      * How far the opening beat of a terminal may stray from its setting.
@@ -139,8 +156,11 @@ object AutoTerminal {
             }
         }
         if (glide) TerminalCursor.show() else TerminalCursor.reset()
-        if (screen.menu.slots.size < kind.slotCount) return
         val items = screen.menu.slots.take(kind.slotCount).map { it.item }
+        // The clicker stops at what it actually needs — the slots the tiles
+        // land on — not at the full chest the real terminal ships underneath
+        // its own rows. Same test TermGui.covers asks, for the same reason.
+        if (screen.menu.slots.size < TermGui.requiredSlotsFor(kind, items)) return
 
         if (kind == Kind.MELODY) {
             if (!Config.autoTerminalMelodySkip) melodySkipQueue.clear()
@@ -148,14 +168,14 @@ object AutoTerminal {
             // disagree: the pointer sits where the next click lands, and the
             // one move it makes is down to the row below — once, after a
             // click, staying there until this terminal says otherwise.
-            melodyAimSlot(items, now)?.let { aim(screen, kind, it, now + MELODY_ROW_RETRY_MS) }
+            melodyAimSlot(items, now)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
             if (!canClick(now)) return
             val click = melodyClick(items, now)
             if (click != null) {
                 aim(screen, kind, click.slot, now)
                 if (fireClick(screen, player, screen.menu.containerId, kind, click, 40L)) {
                     recordMelodyClick(items, click.slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, now + MELODY_ROW_RETRY_MS) }
+                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
                 }
                 return
             }
@@ -164,10 +184,10 @@ object AutoTerminal {
             while (melodySkipQueue.isNotEmpty()) {
                 val slot = melodySkipQueue.removeFirst()
                 if (slot !in remaining || slot / 9 <= lastMelodyRow) continue
-                aim(screen, kind, slot, now + MELODY_ROW_RETRY_MS)
+                aim(screen, kind, slot, now + MELODY_RETRY_TOTAL_MS)
                 if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), 40L)) {
                     recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, now + MELODY_ROW_RETRY_MS) }
+                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
                 }
                 break
             }
@@ -380,7 +400,7 @@ object AutoTerminal {
     }
 
     internal fun melodyRowReady(slot: Int, now: Long): Boolean =
-        slot / 9 != lastMelodyRow || now - lastMelodyRowClickAt >= MELODY_ROW_RETRY_MS
+        slot / 9 != lastMelodyRow || now - lastMelodyRowClickAt >= MELODY_RETRY_TOTAL_MS
 
     /**
      * Where the pointer sits while Melody runs — and, crucially, the same
@@ -400,7 +420,7 @@ object AutoTerminal {
             ?: TerminalSolver.melodyActiveButton(items)
             ?: TerminalSolver.melodyRows(items).firstOrNull { !it.completed }?.buttonSlot
         val sinceClick = now - lastMelodyRowClickAt
-        if (lastMelodyRow >= 0 && sinceClick in 0 until MELODY_ROW_RETRY_MS) {
+        if (lastMelodyRow >= 0 && sinceClick in 0 until MELODY_RETRY_TOTAL_MS) {
             // Down once, onto the row below — or stay put when there is none.
             return TerminalSolver.melodyNextButton(items, lastMelodyRow * 9 + 7) ?: pending
         }

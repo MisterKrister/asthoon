@@ -87,6 +87,9 @@ object AsthoonLite : ClientModInitializer {
         // Draws the pointer that "carries" the auto-terminal clicks. Clicks
         // themselves are packets; this is the picture of the hand.
         com.asthoonlite.dungeon.TerminalCursor.register()
+        // Prints one line per terminal-shaped screen naming the gate that
+        // kept the custom grid closed, so a screen that draws nothing says why.
+        com.asthoonlite.dungeon.TermGui.register()
         F7Devices.register()
         ArrowAlignSolver.register()
         SecretHitboxes.register()
