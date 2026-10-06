@@ -800,6 +800,17 @@ object TerminalCursor {
     }
 
     /**
+     * Whether the drawn pointer is mid-flight as of [now].
+     *
+     * The clicker reads this before it sends: a packet that leaves while the
+     * pointer is still crossing the grid is a click nobody saw anyone make.
+     * A trip always ends — [CursorMotion.moving] is a start-plus-duration
+     * test, not a "still aiming" flag — so this cannot hold a click back
+     * forever, only until the hand lands.
+     */
+    fun isMoving(now: Long): Boolean = motion.moving(now)
+
+    /**
      * Screen-space centre of [slot], where the pointer is aimed. The container
      * origin comes from the accessor because `leftPos`/`topPos` are protected —
      * the slot coordinates alone are relative to the container, not the screen.

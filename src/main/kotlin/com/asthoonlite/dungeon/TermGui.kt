@@ -56,6 +56,18 @@ object TermGui {
         return Grid((width - w * scale) / 2f, (height - h * scale) / 2f, scale, w, h, tiles(kind, melodyRows, gap))
     }
 
+    /**
+     * The content rows melody actually ships: 1, 2, 3.
+     *
+     * Row 0 above them is the marker strip and row 4 below them is the
+     * indicator, so anything outside this range in the data is either one of
+     * those or a stale leftover from the four-row terminal the game used to
+     * run. Filtering here rather than in each caller is what keeps a stale
+     * row from growing the grid, from adding tiles, and from raising the slot
+     * count the menu has to reach before the grid is allowed to draw.
+     */
+    private fun contentRows(melodyRows: List<Int>): List<Int> = melodyRows.filter { it in 1..3 }
+
     /** rows, columns, and where the first one sits in the 9-wide menu list. */
     private fun shape(kind: Kind, melodyRows: List<Int>): IntArray = when (kind) {
         Kind.PANES -> intArrayOf(3, 5, 1, 2)
@@ -63,20 +75,23 @@ object TermGui {
         Kind.ORDER -> intArrayOf(2, 5, 1, 2)
         Kind.STARTS -> intArrayOf(3, 7, 1, 1)
         Kind.SELECT -> intArrayOf(4, 7, 1, 1)
-        Kind.MELODY -> intArrayOf((melodyRows.maxOrNull() ?: 3).coerceIn(1, 4) + 2, 7, 0, 1)
+        // Marker row, the three content rows, indicator row: five rows, seven
+        // columns, starting at the left of the menu's own columns.
+        Kind.MELODY -> intArrayOf((contentRows(melodyRows).maxOrNull() ?: 3) + 2, 7, 0, 1)
     }
 
     /** The tiles themselves — independent of the screen they will be drawn on,
      *  which is what lets the slot requirement be answered without one. */
     internal fun tiles(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3), gapPixels: Int = 0): List<Tile> {
-        val (rows, cols, startRow, startCol) = shape(kind, melodyRows)
+        val rows = contentRows(melodyRows)
+        val (rowCount, cols, startRow, startCol) = shape(kind, rows)
         val gap = gapPixels.coerceIn(0, 12)
         return buildList {
-            for (r in 0 until rows) for (c in 0 until cols) {
+            for (r in 0 until rowCount) for (c in 0 until cols) {
                 val row = startRow + r
                 val col = startCol + c
                 if (kind == Kind.MELODY && (col == 6 ||
-                    (row !in melodyRows && (row != 0 && row != rows - 1 || col == 7)))) continue
+                    (row !in rows && (row != 0 && row != rowCount - 1 || col == 7)))) continue
                 add(Tile(row * 9 + col, c * (TILE_SIZE + gap), r * (TILE_SIZE + gap)))
             }
         }
@@ -147,7 +162,8 @@ object TermGui {
         val title = TerminalSolver.cleanTitle(screen.title.string)
         val target = AutoTerminal.rubixTargetOrNull()
         val next = if (Config.terminalSolverEnabled)
-            TerminalSolver.nextClickSlot(title, all, AutoTerminal.unsettledSlots(), target, AutoTerminal.lastClickedSlot()) else null
+            TerminalSolver.nextClickSlot(title, all, AutoTerminal.unsettledSlots(), target,
+                AutoTerminal.lastClickedSlot(), Config.autoTerminalClickOrder) else null
         val hovered = if (TerminalCursor.ownsCursor()) null else grid.hitTest(mouseX.toDouble(), mouseY.toDouble())
         val font = Minecraft.getInstance().font
         graphics.centeredText(font, title, screen.width / 2, (grid.originY - 18).toInt(), 0xFFFFFFFF.toInt())

@@ -171,8 +171,9 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   `QuizSolver.kt`, `WeirdosSolver.kt`, `BloodRoomSolver.kt`, `DragonPhase.kt`,
   `AutoTerminal.kt`, `TerminalHelper.kt`, `TerminalSolver.kt`, `F7Devices.kt`,
   `MaskDisplay.kt`, `SecretSounds.kt`, `DungeonTimers.kt` — feature modules.
-- `dungeon/TermGui.kt` — optional Odin-style centered terminal grids. Enable
-  **Custom Terminal GUI** on the Terminal tab; size and gap are adjustable.
+- `dungeon/TermGui.kt` — the Odin-style centered terminal grid, **on by
+  default** (`termGuiEnabled` ships true, and the AutoTerm preset turns it on
+  along with the pointer); size and gap are adjustable.
   Its pure layout supplies tile rendering, mouse hit tests, keyboard clicks
   and `TerminalCursor.targetFor`. A screen is covered when its menu holds the
   slots the *tiles* land on (`TermGui.covers` reads `requiredSlots`, counted
@@ -208,26 +209,39 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   overshoot that carries past a pane before settling back. A flight has three
   stretches (dwell, travel, settle), all computed from its inputs, so the same
   inputs always draw the same line. AutoTerminal owns click timing
-  and revalidates candidates each tick. The pointer never sets that timing: a
-  trip is *fitted* into the time until the next click — hesitation first,
-  travel with what is left, floored so motion stays visible — so the Click
-  Delay is the cadence of every terminal and Pointer Speed only changes how
-  the trip looks. The per-slot guard follows the same rule: every terminal
+  and revalidates candidates each tick. A trip is *fitted* into the time until
+  the next click — hesitation first, travel with what is left, floored so
+  motion stays visible — so the Click Delay is the cadence of every terminal
+  and Pointer Speed only changes how the trip looks. One thing runs the other
+  way: **the packet waits for the hand**. `AutoTerminal.pointerBlocksClick`
+  holds a click while the drawn pointer is still travelling to the pane it is
+  for, so a click reads as the pointer landing and pressing rather than as a
+  packet that left mid-crossing. It can hold a click for a few frames; it can
+  never choose the beat, and with Glide Pointer off there is nothing on screen
+  to wait for. The per-slot guard follows the same rule: every terminal
   gets the 350 ms round-trip ceiling, the number terminal gets the Click
   Delay instead — on a chain of numbered panes that ceiling was not a safety
   margin, it was the whole cadence. **Random Delay ships on**, over a
   150–240 ms window around a 180 ms mean — the shape NoammAddons ships — because
-  a fixed interval is a metronome. Enable **Glide On Melody** to premove to
-  the next detected button immediately after clicking; melody's clicks ride
-  this same clock, and the flat 40 ms they used to take on their own was 25
-  clicks a second. Detection, skip queues
-  and layout share the same three/four-row model. An unacknowledged melody
+  a fixed interval is a metronome. **Glide On Melody ships on** too: melody's
+  clicks ride this same clock, and the flat 40 ms they used to take on their
+  own was 25 clicks a second. **Click Order** is NoammAddons' dropdown in his
+  numbering — None (slot order), Random, Human (nearest, the default), Skizo
+  (furthest) — and one setting feeds both `AutoTerminal.choose` and the
+  next-click marker, so the ring and the packets cannot pick differently.
+  Detection, skip queues
+  and layout share the same **three**-row model: melody ships content rows
+  1–3, row 0 above them is the marker strip and row 4 below them is the
+  indicator, and `TermGui.contentRows` drops anything else out of the data
+  before it can grow the grid. Numbers ships ten panes
+  (`TerminalSolver.NUMBER_TERM_COUNT`), not nine. An unacknowledged melody
   click waits `MELODY_ROW_RETRY_MS` (250 ms) plus `MELODY_UPDATE_GRACE_MS`
   (three ticks, 150 ms) — the row is given time to arrive before the aim or
   the click answers for it, which is what keeps the pointer from walking back
   to the row it just left while the server is still catching up. Melody's aim
-  and its click read the same candidate and the same total window, so the hand
-  drops to the next row once and stays there.
+  and its click read the same candidate and the same deadline (the click
+  beat), so there is one aim per tick, the hand drops to the next row once,
+  and it stays there.
 
 ## 7. The regression harness
 
@@ -244,7 +258,9 @@ balance, Java2D fill convention).
 
 `TerminalRegressionCheck.kt`, called by that harness, also checks CSS easing
 reference values and degenerate curves, retarget continuity, clicks during
-flight, premove/debounce, three/four-row melody and skip queues, grid
+flight, premove/debounce, three-row melody and skip queues (with the stale
+fourth row as the must-ignore probe), the four Click Order modes over the same
+ready set, the pointer gate that holds a packet until the hand lands, grid
 centers/hit testing across scales, and old-config defaults — plus the pieces
 that made the terminal settings stop answering: the click clock taking Click
 Delay as its mean with one Delay Spread either side of it, the per-slot guard

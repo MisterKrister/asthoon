@@ -24,6 +24,53 @@ object TerminalClickOrder {
     /** Grid width of every terminal container. */
     const val COLS = 9
 
+    // ── Click Order, in NoammAddons' numbering ──────────────────────────────
+    // His dropdown reads None / Random / Human / Skizo in that order with
+    // Human selected, and the config field stores his index so the settings
+    // row can print his words. Every one of them is a choice about *which*
+    // ready candidate goes next — never about whether one does.
+    const val ORDER_FIRST  = 0  // None: lowest slot number, old behaviour
+    const val ORDER_RANDOM = 1
+    const val ORDER_HUMAN  = 2  // nearest to the pointer — the shipped default
+    const val ORDER_SKIZO  = 3  // furthest from it
+
+    /** The word the settings row prints for [mode]. */
+    fun modeName(mode: Int): String = when (mode) {
+        ORDER_FIRST  -> "None"
+        ORDER_RANDOM -> "Random"
+        ORDER_SKIZO  -> "Skizo"
+        else         -> "Human"
+    }
+
+    /** How many Click Order values there are, so a cycling row cannot run off. */
+    const val MODE_COUNT = 4
+
+    /**
+     * The candidate the clicker should take, under [mode].
+     *
+     * [candidates] may arrive in any order and with duplicates; everything
+     * below normalises first, so the marker (which passes its slot list
+     * straight through) and the clicker (which has already been through
+     * [TerminalSolver.clickCandidates]) pick from the same set. Null only
+     * when there is nothing to click, whichever mode is selected.
+     */
+    fun pick(
+        mode: Int,
+        candidates: Collection<Int>,
+        lastSlot: Int?,
+        slotCount: Int
+    ): Int? {
+        val list = candidates.distinct().filter { it >= 0 }
+        if (list.isEmpty()) return null
+        if (list.size == 1) return list[0]
+        return when (mode) {
+            ORDER_FIRST  -> list.min()
+            ORDER_RANDOM -> list.random()
+            ORDER_SKIZO  -> pickFurthest(list, lastSlot, slotCount)
+            else         -> pickNearest(list, lastSlot, slotCount)
+        }
+    }
+
     /** Neighbourhood used to prefer clusters, in grid pixels. One cell of
      *  slack, so orthogonal neighbours count and diagonal ones do not — which
      *  is how people actually group their clicks. */
@@ -53,6 +100,39 @@ object TerminalClickOrder {
             if (distance > bestDistance) continue
             val neighbors = countNeighbors(candidate, list)
             if (distance < bestDistance || neighbors > bestNeighbors) {
+                best = candidate
+                bestDistance = distance
+                bestNeighbors = neighbors
+            }
+        }
+        return best
+    }
+
+    /**
+     * The mirror of [pickNearest] for Skizo: the candidate furthest from
+     * where the pointer already is, so every hop crosses the pane rather than
+     * working outwards. Ties break towards the candidate with the *fewest*
+     * neighbours — a lone pane at the far end is a longer, emptier move than
+     * one inside a cluster — and then by slot index, so the answer never
+     * depends on the order the candidate list happened to arrive in.
+     */
+    fun pickFurthest(candidates: Collection<Int>, lastSlot: Int?, slotCount: Int): Int? {
+        val list = candidates.distinct().filter { it >= 0 }
+        if (list.isEmpty()) return null
+        if (list.size == 1) return list[0]
+
+        val from = lastSlot ?: (slotCount / 2)
+        var best = list[0]
+        var bestDistance = -1
+        var bestNeighbors = Int.MAX_VALUE
+
+        for (candidate in list) {
+            val distance = distanceSqr(from, candidate)
+            val neighbors = countNeighbors(candidate, list)
+            if (distance > bestDistance ||
+                (distance == bestDistance && neighbors < bestNeighbors) ||
+                (distance == bestDistance && neighbors == bestNeighbors && candidate < best)
+            ) {
                 best = candidate
                 bestDistance = distance
                 bestNeighbors = neighbors

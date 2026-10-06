@@ -170,22 +170,27 @@ object AutoTerminal {
 
         if (kind == Kind.MELODY) {
             if (!Config.autoTerminalMelodySkip) melodySkipQueue.clear()
-            // The aim and the click read the same candidate, so they cannot
-            // disagree: the pointer sits where the next click lands, and the
-            // one move it makes is down to the row below — once, after a
-            // click, staying there until this terminal says otherwise.
-            melodyAimSlot(items, now)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
-            if (!canClick(now)) return
+            // One aim per tick, and always at the pane the click is for when
+            // there is one: aiming the resting slot first and the click slot
+            // second restarted the trip on every frame and the pointer never
+            // got anywhere. The deadline is the click beat — the same clock
+            // every other terminal aims against — so the travel is fitted
+            // into the wait rather than racing it. Without a click ready the
+            // aim falls back to where the hand belongs while it waits: one
+            // move, down to the row below, staying there until this terminal
+            // says otherwise.
             val click = melodyClick(items, now)
+            (click?.slot ?: melodyAimSlot(items, now))?.let { aim(screen, kind, it, clickNotBeforeAt()) }
+            if (!canClick(now)) return
             if (click != null) {
-                aim(screen, kind, click.slot, now)
+                if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
                 // Same clock as every other terminal. This used to be a flat
                 // 40 ms, which is 25 clicks a second — the row debounce only
                 // guards one row, so two rows ready at once fired back to
                 // back and the whole thing read as a machine gun.
                 if (fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs())) {
                     recordMelodyClick(items, click.slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
+                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
                 }
                 return
             }
@@ -194,10 +199,17 @@ object AutoTerminal {
             while (melodySkipQueue.isNotEmpty()) {
                 val slot = melodySkipQueue.removeFirst()
                 if (slot !in remaining || slot / 9 <= lastMelodyRow) continue
-                aim(screen, kind, slot, now + MELODY_RETRY_TOTAL_MS)
+                aim(screen, kind, slot, clickNotBeforeAt())
+                // The queue entry is dropped when the pointer is still on its
+                // way — put it back, or the row it was for would be skipped
+                // without ever being clicked.
+                if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) {
+                    melodySkipQueue.addFirst(slot)
+                    break
+                }
                 if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), nextClickDelayMs())) {
                     recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
+                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
                 }
                 break
             }
@@ -209,9 +221,24 @@ object AutoTerminal {
         val click = nextClick(kind, title, items, now) ?: return
         aim(screen, kind, click.slot, clickNotBeforeAt())
         if (!canClick(now)) return
+        // The packet waits for the hand: a click has to read as the pointer
+        // landing on the pane and pressing it, not as a packet that left
+        // while the pointer was still crossing the grid.
+        if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
         if (kind == Kind.RUBIX && click.slot == lastSlot && now - lastClickAt < RUBIX_REPEAT_GUARD_MS) return
         fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs())
     }
+
+    /**
+     * Whether the drawn pointer is still travelling to the pane this click is
+     * for. True means the packet waits one more frame.
+     *
+     * Split out so the decision can be pinned without a config file behind it:
+     * no glide means no pointer on screen, so there is nothing to wait for,
+     * and a pointer that has already landed never delays anything.
+     */
+    internal fun pointerBlocksClick(glideOn: Boolean, pointerMoving: Boolean): Boolean =
+        glideOn && pointerMoving
 
     private fun clickNotBeforeAt(): Long =
         (if (firstClickPending) terminalOpenedAt else lastClickAt) + currentClickDelayMs
@@ -371,15 +398,23 @@ object AutoTerminal {
     }
 
     /**
-     * Nearest candidate to the pane the pointer is on, ignoring that pane
-     * itself while anything else is available — otherwise "nearest" is always
-     * "the one I just clicked" and the clicker would sit on it forever.
+     * The ready candidate the clicker takes, ordered by where the pointer
+     * already is rather than by slot number — unless Click Order says
+     * otherwise, in which case all four modes run off this same list.
+     * Ignoring that pane itself while anything else is available stays true
+     * under every mode: otherwise "nearest" is always "the one I just
+     * clicked" and the clicker would sit on it forever.
      */
     private fun choose(candidates: List<Int>, kind: Kind): Int? {
         if (candidates.isEmpty()) return null
         val elsewhere = candidates.filter { it != lastSlot }
         val pool = if (elsewhere.isNotEmpty()) elsewhere else candidates
-        return TerminalClickOrder.pickNearest(pool, lastSlot.takeIf { it >= 0 }, kind.slotCount)
+        return TerminalClickOrder.pick(
+            Config.autoTerminalClickOrder,
+            pool,
+            lastSlot.takeIf { it >= 0 },
+            kind.slotCount
+        )
     }
 
     private fun rubixClick(kind: Kind, title: String, items: List<ItemStack>, blocked: Set<Int>, now: Long): Click? {

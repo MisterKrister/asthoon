@@ -2,6 +2,7 @@ package com.asthoonlite.gui
 
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
+import com.asthoonlite.dungeon.TerminalClickOrder
 import com.asthoonlite.pet.PetHudEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
 import net.minecraft.client.Minecraft
@@ -472,6 +473,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
                 ToggleRow("Terminal Progress", "Shows the terminal's name and how far through it the clicker is, centred near the top while a terminal is open",
                     { Config.autoTerminalHudProgress }, { Config.autoTerminalHudProgress = it }),
+                WidgetRow(clickOrderButton(fullX, fullW)),
+                NoteRow("Which ready pane the clicker takes next. Human works outwards from where the pointer already is, Random takes any of them, None goes by slot number, and Skizo sends it to the far side of the pane every time."),
                 SectionHeader("Click Timing"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
@@ -808,6 +811,26 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             )
         }
     }
+
+    /**
+     * The Click Order row: one button that cycles None → Random → Human →
+     * Skizo → None. The label is rewritten on press rather than the row being
+     * rebuilt, so the button always reads the mode that is actually in force —
+     * a row that showed the old mode after a click would be a setting that
+     * lies about itself.
+     */
+    private fun clickOrderButton(x: Int, w: Int): ModernButton {
+        var button: ModernButton? = null
+        button = ModernButton(x, 0, w, 24, Component.literal(clickOrderLabel())) {
+            Config.autoTerminalClickOrder =
+                (Config.autoTerminalClickOrder + 1) % TerminalClickOrder.MODE_COUNT
+            button?.setMessage(Component.literal(clickOrderLabel()))
+        }
+        return button
+    }
+
+    private fun clickOrderLabel(): String =
+        "Click Order: ${TerminalClickOrder.modeName(Config.autoTerminalClickOrder)}"
 
     private fun autoClickerKeyLabel(): String {
         if (listeningForAutoClickerKey) return "Press a key (ESC = NONE)"

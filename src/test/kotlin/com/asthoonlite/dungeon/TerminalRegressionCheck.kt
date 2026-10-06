@@ -62,6 +62,21 @@ internal fun terminalMotionAndGuiChecks() {
     AutoTerminal.recordClick(1_040L, 25, 40L)
     check(!AutoTerminal.canClick(1_040L) && AutoTerminal.canClick(1_080L)) { "a due click is consumed once" }
 
+    // Two separate questions. The clock says the beat has come round; the gate
+    // says whether the packet leaves while the hand is still crossing the grid.
+    // Only an on-screen pointer can hold anything back, and only while it is
+    // travelling — a landed pointer, or no pointer at all, sends at once.
+    check(motion.moving(1_080L)) { "the flight is still running at 1_080" }
+    check(AutoTerminal.pointerBlocksClick(glideOn = true, pointerMoving = motion.moving(1_080L))) {
+        "a travelling pointer holds the packet"
+    }
+    check(!AutoTerminal.pointerBlocksClick(glideOn = false, pointerMoving = true)) {
+        "nothing drawn on screen means there is nothing to wait for"
+    }
+    check(!AutoTerminal.pointerBlocksClick(glideOn = true, pointerMoving = false)) {
+        "a pointer that has landed never holds a click back"
+    }
+
     fun melody(count: Int, row: Int): MutableList<ItemStack> = MutableList(54) { ItemStack(Items.BLACK_STAINED_GLASS_PANE) }.also { all ->
         all[3] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
         for (r in 1..count) {
@@ -70,7 +85,10 @@ internal fun terminalMotionAndGuiChecks() {
         }
         all[row * 9 + 3] = ItemStack(Items.LIME_STAINED_GLASS_PANE)
     }
-    for (count in 3..4) for (r in 1..count) {
+    // Melody ships three content rows. The loop used to run 3..4 when the game
+    // had a fourth; it is pinned to three now, and the four-row fixtures below
+    // are the stale-data probes rather than the normal case.
+    for (count in listOf(3)) for (r in 1..count) {
         val all = melody(count, r)
         val slot = r * 9 + 7
         check(TerminalSolver.melodyRows(all).map { it.buttonSlot } == (1..count).map { it * 9 + 7 })
@@ -83,7 +101,12 @@ internal fun terminalMotionAndGuiChecks() {
     val four = melody(4, 4)
     four[3] = ItemStack(Items.BLACK_STAINED_GLASS_PANE)
     four[48] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
-    check(TerminalSolver.melodyCandidate(four) == 43) { "four rows may put the lower marker in row five" }
+    check(TerminalSolver.melodyCandidate(four) == null) {
+        "melody ships three rows: a fourth row's note is the indicator, never a candidate"
+    }
+    check(TerminalSolver.melodyRows(four).map { it.buttonSlot } == listOf(16, 25, 34)) {
+        "a row-4 button must not be read as a fourth content row"
+    }
     val three = melody(3, 3)
     three[3] = ItemStack(Items.BLACK_STAINED_GLASS_PANE)
     three[48] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
@@ -111,11 +134,15 @@ internal fun terminalMotionAndGuiChecks() {
         check(AutoTerminal.MELODY_RETRY_TOTAL_MS == AutoTerminal.MELODY_ROW_RETRY_MS + AutoTerminal.MELODY_UPDATE_GRACE_MS)
         check(AutoTerminal.MELODY_UPDATE_TICKS == 3L && AutoTerminal.MELODY_UPDATE_GRACE_MS == 150L)
         val queue = AutoTerminal::class.java.getDeclaredField("melodySkipQueue").apply { isAccessible = true }
-        check((queue.get(AutoTerminal) as Collection<*>).toList() == listOf(25, 34, 43))
+        check((queue.get(AutoTerminal) as Collection<*>).toList() == listOf(25, 34)) {
+            "skipping queues the two content rows below the one clicked, and no phantom third"
+        }
         AutoTerminal.recordMelodyClick(pending, 16, 3_000L, skip = true, dontSkipFirst = true)
         check((queue.get(AutoTerminal) as Collection<*>).isEmpty())
         AutoTerminal.recordMelodyClick(pending, 34, 3_100L, skip = true, dontSkipFirst = true)
-        check(AutoTerminal.melodyAimSlot(melody(4, 3), 3_101L) == 43)
+        check(AutoTerminal.melodyAimSlot(melody(4, 3), 3_101L) == 34) {
+            "row three is the last content row: with no row below, the pointer stays put"
+        }
         AutoTerminal.recordMelodyClick(pending, 43, 3_200L, skip = true, dontSkipFirst = true)
         check((queue.get(AutoTerminal) as Collection<*>).isEmpty())
         AutoTerminal.onEscape()
@@ -142,8 +169,14 @@ internal fun terminalMotionAndGuiChecks() {
                 (grid.originY + (tile.y + 12) * grid.scale).toDouble()) == null)
         }
     }
+    // A screen too small for the grid still lands it inside the screen, and
+    // the last slot it can draw is the indicator strip — the row under the
+    // three content rows, which has no button column of its own.
     val small = TermGui.layout(Kind.MELODY, 160, 120, 200, 12, listOf(1, 2, 3, 4))
-    check(small.originX >= 0 && small.originY >= 0 && small.center(43) != null)
+    check(small.originX >= 0 && small.originY >= 0 && small.center(41) != null) {
+        "the shrunk melody grid still reaches its last indicator pane"
+    }
+    check(small.center(43) == null) { "the indicator row has no button column to draw" }
     check(TermGui.layout(Kind.MELODY, 640, 360, 100, 4).center(43) == null)
 
     // ── The drawn grid must cover whatever screen it is on ─────────────────
@@ -162,7 +195,9 @@ internal fun terminalMotionAndGuiChecks() {
         check(TermGui.requiredSlots(Kind.SELECT) == 44)  // rows 1..4, cols 1..7
         check(TermGui.requiredSlots(Kind.STARTS) == 35)  // rows 1..3, cols 1..7
         check(TermGui.requiredSlots(Kind.MELODY) == 42)  // three rows, col 6 and the tail's col 7 skipped
-        check(TermGui.requiredSlots(Kind.MELODY, listOf(1, 2, 3, 4)) == 51) { "a fourth content row draws two rows lower" }
+        check(TermGui.requiredSlots(Kind.MELODY, listOf(1, 2, 3, 4)) == 42) {
+            "a stale fourth content row must not inflate the grid — melody ships three"
+        }
         for (kind in Kind.entries) {
             check(TermGui.requiredSlots(kind) <= kind.slotCount) {
                 "$kind must never ask for more than the terminal itself ships"
@@ -178,8 +213,10 @@ internal fun terminalMotionAndGuiChecks() {
         check(TermGui.covers(Kind.SELECT, 44) && !TermGui.covers(Kind.SELECT, 43))
         check(TermGui.covers(Kind.STARTS, 35) && !TermGui.covers(Kind.STARTS, 34))
         check(TermGui.covers(Kind.MELODY, 54) && !TermGui.covers(Kind.MELODY, 41))
-        check(TermGui.covers(Kind.MELODY, 51, listOf(1, 2, 3, 4))) { "melody's requirement follows its live rows" }
-        check(!TermGui.covers(Kind.MELODY, 50, listOf(1, 2, 3, 4))) { "one slot short of the drawn rows is not covered" }
+        check(TermGui.covers(Kind.MELODY, 42, listOf(1, 2, 3, 4))) {
+            "a stale fourth row must not raise what the menu has to reach"
+        }
+        check(!TermGui.covers(Kind.MELODY, 41, listOf(1, 2, 3, 4))) { "one slot short of the drawn rows is not covered" }
     }
 
     // ── The progress readout's denominator ───────────────────────────────
@@ -189,10 +226,13 @@ internal fun terminalMotionAndGuiChecks() {
         // numbered pane on the board. Counting candidates here would show a
         // readout pinned at 1/1 for the whole terminal.
         val order = MutableList(36) { ItemStack(Items.WHITE_STAINED_GLASS_PANE) }
-        val reds = listOf(0, 4, 7, 13, 20, 24, 30, 33)
+        val reds = listOf(0, 4, 7, 13, 18, 20, 24, 28, 30, 33)
+        check(reds.size == TerminalSolver.NUMBER_TERM_COUNT) { "numbers ships ten panes" }
         reds.forEachIndexed { i, slot -> order[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE, i + 1) }
         check(TerminalSolver.clickCandidates("Click in order!", order).size == 1) { "numbers is a chain" }
-        check(TerminalSolver.goalFor("Click in order!", order) == reds.size) { "every numbered pane counts" }
+        check(TerminalSolver.goalFor("Click in order!", order) == reds.size) {
+            "all ten numbered panes count, not the one the chain happens to offer"
+        }
         check(TerminalSolver.goalFor("Chest", order) == 0) { "a non-terminal wants nothing" }
 
         // Rubix counts clicks, not panes: a pane two rings from the target is
@@ -225,8 +265,8 @@ internal fun terminalMotionAndGuiChecks() {
         select[5] = ItemStack(Items.WHITE_STAINED_GLASS_PANE) // wrong colour, never a target
         check(TerminalSolver.goalFor("Select all the red items!", select) == 3)
 
-        check(TerminalSolver.goalFor("Click the button on time!", melody(4, 1)) == 4) {
-            "melody's goal is its rows"
+        check(TerminalSolver.goalFor("Click the button on time!", melody(3, 1)) == 3) {
+            "melody's goal is its three content rows"
         }
 
         check(TerminalSolver.displayName(Kind.SELECT) == "Colors")
@@ -377,6 +417,14 @@ internal fun terminalMotionAndGuiChecks() {
 
     val oldConfig = Gson().fromJson("{\"autoTerminalClickDelayMs\":95,\"autoTerminalCursorArc\":60}", Config.Data::class.java)
     check(oldConfig.autoTerminalClickDelayMs == 95 && oldConfig.autoTerminalCursorArc == 60)
-    check(!oldConfig.termGuiEnabled && oldConfig.termGuiSize == 2.0f)
+    // Fields the old file never had keep the shipped default, and the shipped
+    // default is the look the clicker and the pointer are built on: the grid
+    // and the pointer on, Click Order on Human.
+    check(oldConfig.termGuiEnabled && oldConfig.termGuiSize == 2.0f) {
+        "a config written before the grid existed must still get the grid"
+    }
+    check(oldConfig.autoTerminalCursorMelody && oldConfig.autoTerminalClickOrder == TerminalClickOrder.ORDER_HUMAN) {
+        "the pointer ships on for melody and Click Order ships on Human"
+    }
     check(oldConfig.autoTerminalEaseX1 == 20 && oldConfig.autoTerminalEaseY2 == 100)
 }

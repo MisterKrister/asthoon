@@ -22,6 +22,7 @@ import java.util.regex.Pattern
  * packet path the player would use by hand.
  */
 object TerminalSolver {
+    /** How many panes the number terminal ships with: ten, not nine. */
     internal const val NUMBER_TERM_COUNT = 10
 
     /**
@@ -252,9 +253,12 @@ object TerminalSolver {
     }
 
     /**
-     * The single slot a marker should ring: the nearest candidate to
-     * [lastSlot], so the picture and the pointer agree about where the next
-     * click is going. The slot it is already on is skipped while anything
+     * The single slot a marker should ring: the candidate the clicker is about
+     * to take, so the picture and the pointer agree about where the next
+     * click is going. Which candidate that is comes from [clickOrder] — the
+     * same setting the clicker reads, defaulting to Human (nearest) so a
+     * caller that does not care gets the shipped behaviour.
+     * The slot it is already on is skipped while anything
      * else is available — a marker sitting on the pane that was just clicked
      * says nothing about where to go next.
      */
@@ -263,14 +267,15 @@ object TerminalSolver {
         items: List<ItemStack>,
         blocked: Set<Int> = emptySet(),
         rubixTarget: Int? = null,
-        lastSlot: Int? = null
+        lastSlot: Int? = null,
+        clickOrder: Int = TerminalClickOrder.ORDER_HUMAN
     ): Int? {
         val kind = kindOf(screenTitle) ?: return null
         val candidates = clickCandidates(screenTitle, items, blocked, rubixTarget)
         if (candidates.isEmpty()) return null
         val elsewhere = lastSlot?.let { s -> candidates.filter { it != s } }.orEmpty()
         val pool = if (elsewhere.isNotEmpty()) elsewhere else candidates
-        return TerminalClickOrder.pickNearest(pool, lastSlot, kind.slotCount)
+        return TerminalClickOrder.pick(clickOrder, pool, lastSlot, kind.slotCount)
     }
 
     // ── Per-type target extraction ───────────────────────────────────────────
@@ -348,9 +353,14 @@ object TerminalSolver {
         val buttonSlot: Int get() = row * 9 + 7
     }
 
-    /** Button evidence distinguishes a fourth content row from the old indicator row.
-     * Only the terminal's six rows are read; inventory items cannot become notes. */
-    fun melodyRows(all: List<ItemStack>): List<MelodyRow> = (1..4).mapNotNull { row ->
+    /**
+     * Melody ships three content rows: 1, 2, 3. Row 0 above them carries the
+     * marker strip, row 4 below them is the indicator — and button evidence is
+     * what stops that indicator being read as a fourth note row, which is the
+     * mistake that used to park the clicker on a pane the server ignores.
+     * Only the terminal's own rows are read; inventory items cannot become notes.
+     */
+    fun melodyRows(all: List<ItemStack>): List<MelodyRow> = (1..3).mapNotNull { row ->
         val button = all.getOrNull(row * 9 + 7) ?: return@mapNotNull null
         val doneButton = button.`is`(Items.LIME_STAINED_GLASS_PANE) ||
             button.`is`(Items.GREEN_STAINED_GLASS_PANE) || button.`is`(Items.LIME_CONCRETE) ||

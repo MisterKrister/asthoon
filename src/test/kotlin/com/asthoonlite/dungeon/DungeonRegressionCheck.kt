@@ -171,6 +171,51 @@ fun main() {
             "Every pane blocked means nothing left to click, not a random pick"
         }
 
+        // ── Click Order ─────────────────────────────────────────────────────
+        // Four modes over the same ready set, in NoammAddons' numbering so
+        // the config field holds his index and the settings row prints his
+        // words. The shipped default is Human.
+        check(TerminalClickOrder.ORDER_HUMAN == 2 && TerminalClickOrder.MODE_COUNT == 4) {
+            "the stored index must stay NoammAddons' index"
+        }
+        check(TerminalClickOrder.modeName(TerminalClickOrder.ORDER_FIRST) == "None")
+        check(TerminalClickOrder.modeName(TerminalClickOrder.ORDER_RANDOM) == "Random")
+        check(TerminalClickOrder.modeName(TerminalClickOrder.ORDER_HUMAN) == "Human")
+        check(TerminalClickOrder.modeName(TerminalClickOrder.ORDER_SKIZO) == "Skizo")
+
+        val ready = listOf(1, 20, 44)
+        check(TerminalClickOrder.pick(TerminalClickOrder.ORDER_FIRST, ready, 44, 54) == 1) {
+            "None goes by slot number"
+        }
+        // The callers drop the pane the pointer is already on before asking;
+        // the picker itself only ever answers with a pane it was offered.
+        check(TerminalClickOrder.pick(TerminalClickOrder.ORDER_HUMAN, ready, 9, 54) == 1) {
+            "Human still means nearest to where the pointer is"
+        }
+        check(TerminalClickOrder.pick(TerminalClickOrder.ORDER_HUMAN, ready, 44, 54) == 44) {
+            "a picker offered the pane it is standing on may return it"
+        }
+        check(TerminalClickOrder.pick(TerminalClickOrder.ORDER_SKIZO, ready, 1, 54) == 44) {
+            "Skizo sends it to the far end of the pane"
+        }
+        // Random takes one of the ready panes and never an unready one, and
+        // every mode collapses to the same answer when only one thing is left.
+        for (mode in 0 until TerminalClickOrder.MODE_COUNT) {
+            val pick = TerminalClickOrder.pick(mode, ready, lastSlot = null, slotCount = 54)
+            check(pick in ready) { "mode $mode handed back a pane that was not ready" }
+            check(TerminalClickOrder.pick(mode, ready, lastSlot = 1, slotCount = 54) in ready)
+            check(TerminalClickOrder.pick(mode, listOf(20), lastSlot = 1, slotCount = 54) == 20) {
+                "mode $mode must not invent a second pane"
+            }
+            check(TerminalClickOrder.pick(mode, emptyList(), lastSlot = null, slotCount = 54) == null)
+        }
+        // The marker reads the mode the clicker does — same list, same order,
+        // so the ring can never sit on a pane the packets are not going to.
+        check(TerminalSolver.nextClickSlot(selectTitle, select, lastSlot = 44,
+            clickOrder = TerminalClickOrder.ORDER_FIRST) == 1)
+        check(TerminalSolver.nextClickSlot(selectTitle, select, lastSlot = 1,
+            clickOrder = TerminalClickOrder.ORDER_SKIZO) == 44)
+
         // The number terminal only accepts the lowest count next.
         val order = paneGrid(36)
         order[4] = ItemStack(Items.RED_STAINED_GLASS_PANE, 1)
@@ -241,9 +286,12 @@ fun main() {
         val filler = Items.WHITE_STAINED_GLASS_PANE
         val blank = { ArrayList<ItemStack>(54).apply { repeat(54) { add(ItemStack(filler)) } } }
 
-        // Row 0 carries the magenta marker (column 3). Rows 1..4 hold a
-        // button at column 7 and panes at columns 1..5. Row 5 is filler
-        // outside the content window. Buttons sit at 16, 25, 34, 43.
+        // Row 0 carries the magenta marker (column 3). Rows 1..3 are the
+        // content rows melody ships: a button at column 7 and panes at columns
+        // 1..5, so the buttons sit at 16, 25, 34. Row 4 is the indicator below
+        // them — the fixture still plants a note-looking button at 43 on
+        // purpose, because that is exactly the shape the row reader has to
+        // refuse. Row 5 is filler outside the content window.
         fun melody(magentaCol: Int, lime: Int, button: Int = 16): ArrayList<ItemStack> {
             val b = blank()
             b[magentaCol] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
@@ -273,13 +321,16 @@ fun main() {
             "row 2's button is slot 25"
         }
 
-        // The fourth content row: button slot 43, pane strip 37..41. This is
-        // the row Hypixel is expected to cut when melody goes back to three —
-        // until it does, a solver that stops at row 3 silently drops every
-        // click that lands there, which is why the clicker sat idle on a
-        // terminal that was still solvable.
-        check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 39)) == 43) {
-            "row 4's button is slot 43"
+        // Melody ships three content rows, so row 4 is the indicator under
+        // them — and the indicator's slot (43) is the one a fourth-row reader
+        // would have taken for a note. A button planted there must never
+        // become a candidate: a click the server ignores is a click the
+        // clicker sits there repeating.
+        check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 39)) == null) {
+            "row 4 is the indicator now, not a note"
+        }
+        check(TerminalSolver.melodyRows(melody(magentaCol = 3, lime = 39)).map { it.buttonSlot } == listOf(16, 25, 34)) {
+            "only the three content rows are read"
         }
 
         // A struck-out button is still finished, even with the pane aligned.
@@ -356,22 +407,33 @@ fun main() {
     // file can see: that the grid is pinned to the slot sets the *solver*
     // works from, so the two cannot drift apart silently.
     run {
-        fun slotsOf(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3, 4)) =
+        fun slotsOf(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3)) =
             TermGui.layout(kind, 640, 360, 100, 4, melodyRows).tiles.map { it.slot }
 
         check(slotsOf(Kind.RUBIX) == TerminalSolver.RUBIX_SLOTS) {
             "the rubix grid drifted off the nine panes"
         }
         check(slotsOf(Kind.ORDER).size == TerminalSolver.NUMBER_TERM_COUNT) {
-            "the number grid drifted off the panes it ships with"
+            "the number grid drifted off the ten panes it ships with"
         }
 
-        // Melody: marker strip, all four content rows, and their buttons at
-        // column 7. Row 5 is the bottom indicator and is drawn as one — it is
-        // the same row melodyMarker reads for a lower marker.
+        // Melody: marker strip, its three content rows with the buttons at
+        // column 7, and the indicator strip below them. The indicator row is
+        // the one melodyMarker reads for a lower marker, and it has no button
+        // column — 43 belongs to it only in the four-row layout the game used
+        // to run.
         val melodySlots = slotsOf(Kind.MELODY)
-        check(melodySlots.containsAll(listOf(16, 25, 34, 43))) {
+        check(melodySlots.containsAll(listOf(16, 25, 34))) {
             "the melody grid is missing a button"
+        }
+        check(melodySlots.containsAll((37..41).toList())) {
+            "the melody grid is missing the indicator strip under the three rows"
+        }
+        check(43 !in melodySlots) {
+            "the indicator row has no button column to draw"
+        }
+        check(melodySlots == slotsOf(Kind.MELODY, listOf(1, 2, 3, 4))) {
+            "a stale fourth content row must not change the grid melody draws"
         }
         check(melodySlots.containsAll((1..5).toList())) {
             "the melody grid is missing the marker strip"

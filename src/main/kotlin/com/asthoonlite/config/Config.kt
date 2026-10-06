@@ -205,7 +205,10 @@ object Config {
         var autoTerminalCursorSpeed : Int = 100,  // % of natural travel speed
         var autoTerminalCursorArc   : Int = 25,   // % of distance bowed off-straight
         var autoTerminalCursorJitter: Int = 35,   // % tremor while travelling
-        var autoTerminalCursorMelody: Boolean = false,
+        // Melody ships three content rows now, so the trip between two of them
+        // fits the click beat easily enough for the drawn pointer to keep up
+        // with the packets — which is the whole point of having one on screen.
+        var autoTerminalCursorMelody: Boolean = true,
         // Two pointers on one screen is one pointer too many: the real cursor
         // steps aside for the drawn one while it is up.
         var autoTerminalCursorHideReal: Boolean = true,
@@ -232,8 +235,10 @@ object Config {
         // ── Custom terminal GUI ─────────────────────────────────────────────
         // A grid centred in screen space instead of highlights painted onto
         // Hypixel's chest slots — see [com.asthoonlite.dungeon.TermGui].
+        // On by default: this is the look the clicker and the drawn pointer
+        // are built to sit on top of, so a fresh config gets all three.
         // Appended at the end of Data: existing config files keep loading.
-        var termGuiEnabled   : Boolean = false,
+        var termGuiEnabled   : Boolean = true,
         var termGuiSize      : Float   = 2.0f,
         var termGuiMelodySize: Float   = 1.5f,
         var termGuiGap       : Int     = 2,
@@ -268,6 +273,12 @@ object Config {
         // which pane it was for.
         var autoTerminalHudProgress: Boolean = true,
         var termGuiClickFlash      : Boolean = true,
+
+        // Which candidate the clicker takes when several are ready at once —
+        // NoammAddons' Click Order dropdown, in his numbering so the settings
+        // row can print the same words: 0 None (slot order), 1 Random,
+        // 2 Human (nearest to where the pointer already is), 3 Skizo (furthest).
+        var autoTerminalClickOrder : Int = 2,
     )
 
     var data = Data()
@@ -581,6 +592,10 @@ object Config {
         get() = data.termGuiClickFlash
         set(v) { data.termGuiClickFlash = v; save() }
 
+    var autoTerminalClickOrder: Int
+        get() = data.autoTerminalClickOrder
+        set(v) { data.autoTerminalClickOrder = v.coerceIn(0, 3); save() }
+
     var autoTerminalEnabled: Boolean
         get() = data.autoTerminalEnabled
         set(v) { data.autoTerminalEnabled = v; save() }
@@ -694,6 +709,16 @@ object Config {
     fun applyRsmAutoPreset() {
         data.autoTerminalEnabled = true
         data.terminalSolverEnabled = true
+        // The look the clicker is built to sit on: the grid instead of
+        // Hypixel's chest slots, the drawn pointer doing the pointing, and the
+        // pointer's real-cursor twin stepping aside while it is up.
+        data.termGuiEnabled = true
+        data.autoTerminalCursorGlide = true
+        data.autoTerminalCursorHideReal = true
+        data.autoTerminalCursorMelody = true
+        data.autoTerminalHudProgress = true
+        data.termGuiClickFlash = true
+        data.autoTerminalClickOrder = 2
         data.autoTerminalRandomDelay = true
         data.autoTerminalFirstClickDelayMs = 430
         data.autoTerminalMelodyFirstClickDelayMs = 0

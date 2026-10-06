@@ -436,7 +436,8 @@ abstract class MixinHandledScreen {
             items = all,
             blocked = AutoTerminal.unsettledSlots(now),
             rubixTarget = AutoTerminal.rubixTargetOrNull(),
-            lastSlot = AutoTerminal.lastClickedSlot()
+            lastSlot = AutoTerminal.lastClickedSlot(),
+            clickOrder = Config.autoTerminalClickOrder
         )
         return markerNext
     }
