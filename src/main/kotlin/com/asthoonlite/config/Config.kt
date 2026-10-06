@@ -89,6 +89,10 @@ object Config {
         var dungeonMapNamesOnlyLeap : Boolean = false,
         var dungeonMapPlayerHeadScale : Float = 1.0f,
         var dungeonMapMarkerScale   : Float   = 1.0f,
+        // Off (default) = only markers that resolve to a real teammate are
+        // drawn, so Hypixel's mob/waypoint markers never show up as heads.
+        // On = dump every non-frame decoration from the map packet.
+        var dungeonMapAllDecorations : Boolean = false,
 
         // ── Dungeon: F7/M7 ──────────────────────────────────────────────
         var dungeonTickTimersEnabled : Boolean = false,
@@ -105,24 +109,33 @@ object Config {
         var dragonHudY               : Int     = 170,
         var terminalSolverEnabled    : Boolean = false,
         var autoTerminalEnabled     : Boolean = false,
-        var autoTerminalRandomDelay : Boolean = false,
+        // Random Delay defaults on with a window that is wider downward than
+        // upward around the mean: NoammAddons ships the same shape (a gaussian
+        // between a min and a max, random on out of the box), and a fixed
+        // interval is what a metronome looks like, not a hand.
+        var autoTerminalRandomDelay : Boolean = true,
         var autoTerminalFirstClickDelayMs : Int = 430,
         var autoTerminalMelodyFirstClickDelayMs : Int = 0,
         var autoTerminalClickDelayMs : Int = 180,
         var autoTerminalBreakThresholdMs : Int = 500,
-        var autoTerminalMinRandomDelayMs : Int = 160,
-        var autoTerminalMaxRandomDelayMs : Int = 200,
+        var autoTerminalMinRandomDelayMs : Int = 150,
+        var autoTerminalMaxRandomDelayMs : Int = 240,
         var autoTerminalMelodySkip  : Boolean = false,
         var autoTerminalNoBreak     : Boolean = false,
         var autoTerminalDontSkipFirst : Boolean = false,
         var autoTerminalAnnounceMelody : Boolean = false,
         var autoTerminalMelodyMessage : String = "melody",
-        var autoTermColors          : Boolean = false,
-        var autoTermMelody          : Boolean = false,
-        var autoTermNumbers         : Boolean = false,
-        var autoTermRedGreen        : Boolean = false,
-        var autoTermRubix           : Boolean = false,
-        var autoTermStartsWith      : Boolean = false,
+        // Per-terminal-type switches default ON: "Auto Terminal" on its own has
+        // to solve something. A config where they are all off is treated as
+        // "no filter chosen" rather than "nothing may run" — see
+        // AutoTerminal.isTypeEnabled. They stay real toggles, so switching a
+        // type off still stops it.
+        var autoTermColors          : Boolean = true,
+        var autoTermMelody          : Boolean = true,
+        var autoTermNumbers         : Boolean = true,
+        var autoTermRedGreen        : Boolean = true,
+        var autoTermRubix           : Boolean = true,
+        var autoTermStartsWith      : Boolean = true,
         var autoI4Enabled           : Boolean = false,
         var autoSimonSaysEnabled    : Boolean = false,
         var autoSimonSaysStart      : Boolean = false,
@@ -173,6 +186,99 @@ object Config {
         var inventoryAutoClickerEnabled : Boolean = false,
         var inventoryAutoClickerCps     : Int     = 5,
         var inventoryAutoClickerKey     : Int     = -1,
+
+        // ── Session ─────────────────────────────────────────────────────────
+        var quietModeEnabled        : Boolean = false,
+        var quietModeKey            : Int     = -1,
+
+        // ── Window separation ───────────────────────────────────────────────
+        var dungeonMapExternalWindow: Boolean = false,
+        var dungeonMapLegitBase    : Boolean = true,
+        var dungeonMapWindowX      : Int     = -1,
+        var dungeonMapWindowY      : Int     = -1,
+        var espExternalOverlay     : Boolean = false,
+        var autoTerminalCursorGlide: Boolean = true,
+        var starMobOutlineOnly     : Boolean = true,
+
+        // ── AutoTerminal pointer (visual only; clicks still go by packet) ─
+        // Appended at the end of Data so existing config files keep loading.
+        var autoTerminalCursorSpeed : Int = 100,  // % of natural travel speed
+        var autoTerminalCursorArc   : Int = 25,   // % of distance bowed off-straight
+        var autoTerminalCursorJitter: Int = 35,   // % tremor while travelling
+        // Melody ships three content rows now, so the trip between two of them
+        // fits the click beat easily enough for the drawn pointer to keep up
+        // with the packets — which is the whole point of having one on screen.
+        var autoTerminalCursorMelody: Boolean = true,
+        // Two pointers on one screen is one pointer too many: the real cursor
+        // steps aside for the drawn one while it is up.
+        var autoTerminalCursorHideReal: Boolean = true,
+        // Terminals outside a real dungeon run (p3 simulator, practice worlds):
+        // the screen title alone is what identifies a terminal, so the dungeon
+        // check is only ever a safety net.
+        var autoTerminalAnywhere: Boolean = true,
+
+        // ── Per-block hitbox size (each a multiplier on secretHitboxSize) ──
+        // Separated so a lever can be left forgiving while a button stays
+        // close to stock, which is what one shared slider could never do.
+        // Appended at the end of Data: existing config files keep loading.
+        var secretLeverHitboxSize   : Int = 100,
+        var secretButtonHitboxSize  : Int = 100,
+        var secretSkullHitboxSize   : Int = 100,
+        var secretMushroomHitboxSize: Int = 100,
+
+        // ── Settings screen ─────────────────────────────────────────────────
+        // Section headers the player has folded away. Keyed by title rather
+        // than index, so renaming or reordering a section only ever costs one
+        // row coming back open — it can never fold the wrong one.
+        var collapsedSections: MutableSet<String> = mutableSetOf(),
+
+        // ── Custom terminal GUI ─────────────────────────────────────────────
+        // A grid centred in screen space instead of highlights painted onto
+        // Hypixel's chest slots — see [com.asthoonlite.dungeon.TermGui].
+        // On by default: this is the look the clicker and the drawn pointer
+        // are built to sit on top of, so a fresh config gets all three.
+        // Appended at the end of Data: existing config files keep loading.
+        var termGuiEnabled   : Boolean = true,
+        var termGuiSize      : Float   = 2.0f,
+        var termGuiMelodySize: Float   = 1.5f,
+        var termGuiGap       : Int     = 2,
+        var termGuiRoundness : Int     = 5,
+
+        // CSS timing curve for the pointer, percent mapping to 0..1. Melody and
+        // the pane terminals share it; the shape is the whole of the accel.
+        var autoTerminalEaseX1: Int = 20,
+        var autoTerminalEaseY1: Int = 0,
+        var autoTerminalEaseX2: Int = 0,
+        var autoTerminalEaseY2: Int = 100,
+
+        // ── How imperfect a hand is ────────────────────────────────────────
+        // Appended at the end of Data, same as the pointer block above, so
+        // existing config files keep loading. The individual sliders above
+        // set how *much* of a trait exists; this sets how much of it varies
+        // and is allowed to be wrong — timing spread, arc variation, tremor,
+        // easing jitter, the pre-move hesitation, and the overshoot that
+        // carries past the pane before settling. 0 is a machine: every hop
+        // over the same distance is the same hop.
+        var autoTerminalHumanize: Int = 50,
+
+        // ── What the clicker looks like on screen ──────────────────────────
+        // Appended at the end of Data, same as the blocks above, so existing
+        // config files keep loading.
+        //
+        // [autoTerminalHudProgress] draws the terminal's name and how far
+        // through it the clicker is — the readout NoammAddons shows beside its
+        // auto clicker instead of the solution. [termGuiClickFlash] marks the
+        // pane that was just clicked on the custom grid, so a click leaves a
+        // mark instead of a cursor that lands somewhere and says nothing about
+        // which pane it was for.
+        var autoTerminalHudProgress: Boolean = true,
+        var termGuiClickFlash      : Boolean = true,
+
+        // Which candidate the clicker takes when several are ready at once —
+        // NoammAddons' Click Order dropdown, in his numbering so the settings
+        // row can print the same words: 0 None (slot order), 1 Random,
+        // 2 Human (nearest to where the pointer already is), 3 Skizo (furthest).
+        var autoTerminalClickOrder : Int = 2,
     )
 
     var data = Data()
@@ -397,6 +503,11 @@ object Config {
         get() = data.dungeonMapMarkerScale
         set(v) { data.dungeonMapMarkerScale = v.coerceIn(0.5f, 3.0f); save() }
 
+    /** Draw every decoration the map packet carries, not just teammate markers. */
+    var dungeonMapAllDecorations: Boolean
+        get() = data.dungeonMapAllDecorations
+        set(v) { data.dungeonMapAllDecorations = v; save() }
+
     var dungeonTickTimersEnabled: Boolean
         get() = data.dungeonTickTimersEnabled
         set(v) { data.dungeonTickTimersEnabled = v; save() }
@@ -449,6 +560,42 @@ object Config {
         get() = data.terminalSolverEnabled
         set(v) { data.terminalSolverEnabled = v; save() }
 
+    // ── Custom terminal GUI ─────────────────────────────────────────────────
+
+    var termGuiEnabled: Boolean
+        get() = data.termGuiEnabled
+        set(v) { data.termGuiEnabled = v; save() }
+
+    /** Tile scale. Melody carries its own — five rows of seven does not fit at the term size. */
+    var termGuiSize: Float
+        get() = data.termGuiSize
+        set(v) { data.termGuiSize = v; save() }
+
+    var termGuiMelodySize: Float
+        get() = data.termGuiMelodySize
+        set(v) { data.termGuiMelodySize = v; save() }
+
+    /** Gap between tiles, before scaling. */
+    var termGuiGap: Int
+        get() = data.termGuiGap
+        set(v) { data.termGuiGap = v; save() }
+
+    var termGuiRoundness: Int
+        get() = data.termGuiRoundness
+        set(v) { data.termGuiRoundness = v; save() }
+
+    var autoTerminalHudProgress: Boolean
+        get() = data.autoTerminalHudProgress
+        set(v) { data.autoTerminalHudProgress = v; save() }
+
+    var termGuiClickFlash: Boolean
+        get() = data.termGuiClickFlash
+        set(v) { data.termGuiClickFlash = v; save() }
+
+    var autoTerminalClickOrder: Int
+        get() = data.autoTerminalClickOrder
+        set(v) { data.autoTerminalClickOrder = v.coerceIn(0, 3); save() }
+
     var autoTerminalEnabled: Boolean
         get() = data.autoTerminalEnabled
         set(v) { data.autoTerminalEnabled = v; save() }
@@ -467,8 +614,22 @@ object Config {
 
     var autoTerminalClickDelayMs: Int
         get() = data.autoTerminalClickDelayMs
-        set(v) { data.autoTerminalClickDelayMs = v.coerceIn(0, 1000); save() }
+        set(v) {
+            // The window travels with the mean rather than being left behind
+            // by it: Drag Click Delay and the spread you chose stays the spread
+            // you have, instead of silently becoming lopsided.
+            val keep = autoTerminalDelaySpreadMs
+            data.autoTerminalClickDelayMs = v.coerceIn(0, 1000)
+            val (low, high) = spreadWindow(data.autoTerminalClickDelayMs, keep)
+            data.autoTerminalMinRandomDelayMs = low
+            data.autoTerminalMaxRandomDelayMs = high
+            save()
+        }
 
+    // Unwired: `AutoTerminal` reads neither of these and the Terminal tab
+    // rows that used to expose them are gone. They stay because the file is
+    // on disk — dropping the field would drop the user's value with it, and
+    // there is nothing to gain from that. Re-wire before re-exposing.
     var autoTerminalBreakThresholdMs: Int
         get() = data.autoTerminalBreakThresholdMs
         set(v) { data.autoTerminalBreakThresholdMs = v.coerceIn(0, 2000); save() }
@@ -481,10 +642,30 @@ object Config {
         get() = data.autoTerminalMaxRandomDelayMs
         set(v) { data.autoTerminalMaxRandomDelayMs = v.coerceIn(0, 1000); save() }
 
+    /**
+     * The jitter window as one number: how far either side of the Click Delay
+     * the beat may stray.
+     *
+     * It is read back as the half-width of the stored Min/Max pair and written
+     * as that pair centred on the Click Delay, so the two sliders that used to
+     * have to agree with a third become one control that cannot disagree with
+     * anything. The pair stays on disk under its old names because that is
+     * where users' settings already live.
+     */
+    var autoTerminalDelaySpreadMs: Int
+        get() = ((data.autoTerminalMaxRandomDelayMs - data.autoTerminalMinRandomDelayMs) / 2).coerceIn(0, 500)
+        set(v) {
+            val (low, high) = spreadWindow(data.autoTerminalClickDelayMs, v)
+            data.autoTerminalMinRandomDelayMs = low
+            data.autoTerminalMaxRandomDelayMs = high
+            save()
+        }
+
     var autoTerminalMelodySkip: Boolean
         get() = data.autoTerminalMelodySkip
         set(v) { data.autoTerminalMelodySkip = v; save() }
 
+    /** See [autoTerminalBreakThresholdMs] — unwired, kept for the on-disk value. */
     var autoTerminalNoBreak: Boolean
         get() = data.autoTerminalNoBreak
         set(v) { data.autoTerminalNoBreak = v; save() }
@@ -528,6 +709,16 @@ object Config {
     fun applyRsmAutoPreset() {
         data.autoTerminalEnabled = true
         data.terminalSolverEnabled = true
+        // The look the clicker is built to sit on: the grid instead of
+        // Hypixel's chest slots, the drawn pointer doing the pointing, and the
+        // pointer's real-cursor twin stepping aside while it is up.
+        data.termGuiEnabled = true
+        data.autoTerminalCursorGlide = true
+        data.autoTerminalCursorHideReal = true
+        data.autoTerminalCursorMelody = true
+        data.autoTerminalHudProgress = true
+        data.termGuiClickFlash = true
+        data.autoTerminalClickOrder = 2
         data.autoTerminalRandomDelay = true
         data.autoTerminalFirstClickDelayMs = 430
         data.autoTerminalMelodyFirstClickDelayMs = 0
@@ -668,7 +859,31 @@ object Config {
 
     var secretHitboxSize: Int
         get() = data.secretHitboxSize
-        set(v) { data.secretHitboxSize = v.coerceIn(10, 100); save() }
+        set(v) { data.secretHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretLeverHitboxSize: Int
+        get() = data.secretLeverHitboxSize
+        set(v) { data.secretLeverHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretButtonHitboxSize: Int
+        get() = data.secretButtonHitboxSize
+        set(v) { data.secretButtonHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretSkullHitboxSize: Int
+        get() = data.secretSkullHitboxSize
+        set(v) { data.secretSkullHitboxSize = v.coerceIn(0, 100); save() }
+
+    var secretMushroomHitboxSize: Int
+        get() = data.secretMushroomHitboxSize
+        set(v) { data.secretMushroomHitboxSize = v.coerceIn(0, 100); save() }
+
+    fun isSectionCollapsed(title: String): Boolean = data.collapsedSections.contains(title)
+
+    /** Fold or unfold a settings section and remember which. */
+    fun toggleSectionCollapsed(title: String) {
+        if (!data.collapsedSections.remove(title)) data.collapsedSections.add(title)
+        save()
+    }
 
     var moddedHitboxDisplayEnabled: Boolean
         get() = data.moddedHitboxDisplayEnabled
@@ -793,6 +1008,102 @@ object Config {
         get() = data.inventoryAutoClickerKey
         set(v) { data.inventoryAutoClickerKey = v; save() }
 
+    var quietModeEnabled: Boolean
+        get() = data.quietModeEnabled
+        set(v) { data.quietModeEnabled = v; save() }
+
+    var quietModeKey: Int
+        get() = data.quietModeKey
+        set(v) { data.quietModeKey = v; save() }
+
+    var dungeonMapExternalWindow: Boolean
+        get() = data.dungeonMapExternalWindow
+        set(v) { data.dungeonMapExternalWindow = v; save() }
+
+    var dungeonMapLegitBase: Boolean
+        get() = data.dungeonMapLegitBase
+        set(v) { data.dungeonMapLegitBase = v; save() }
+
+    // -1 = pick the default top-left spot; the map window drag writes these.
+    var dungeonMapWindowX: Int
+        get() = data.dungeonMapWindowX
+        set(v) { data.dungeonMapWindowX = v; save() }
+
+    var dungeonMapWindowY: Int
+        get() = data.dungeonMapWindowY
+        set(v) { data.dungeonMapWindowY = v; save() }
+
+    var espExternalOverlay: Boolean
+        get() = data.espExternalOverlay
+        set(v) { data.espExternalOverlay = v; save() }
+
+    var autoTerminalCursorGlide: Boolean
+        get() = data.autoTerminalCursorGlide
+        set(v) { data.autoTerminalCursorGlide = v; save() }
+
+    /** Pointer travel speed, 100 = natural. Higher reaches the pane sooner. */
+    var autoTerminalCursorSpeed: Int
+        get() = data.autoTerminalCursorSpeed
+        set(v) { data.autoTerminalCursorSpeed = v.coerceIn(25, 400); save() }
+
+    /** How far the path bows off a straight line, as a percent of the distance. */
+    var autoTerminalCursorArc: Int
+        get() = data.autoTerminalCursorArc
+        set(v) { data.autoTerminalCursorArc = v.coerceIn(0, 100); save() }
+
+    /** Tremor amplitude while travelling, as a percent. */
+    var autoTerminalCursorJitter: Int
+        get() = data.autoTerminalCursorJitter
+        set(v) { data.autoTerminalCursorJitter = v.coerceIn(0, 100); save() }
+
+    /** Glide and premove on Melody without delaying its click clock. */
+    var autoTerminalCursorMelody: Boolean
+        get() = data.autoTerminalCursorMelody
+        set(v) { data.autoTerminalCursorMelody = v; save() }
+
+    /** Hide the real cursor while the drawn pointer is on screen. Two
+     *  pointers over one pane reads as a bug, and the drawn one is the one
+     *  that is about to click. */
+    var autoTerminalCursorHideReal: Boolean
+        get() = data.autoTerminalCursorHideReal
+        set(v) { data.autoTerminalCursorHideReal = v; save() }
+
+    /** Run the terminal clicker outside a real dungeon run — the p3 simulator
+     *  and practice worlds never set `DungeonContext.inDungeon`, and a terminal
+     *  title is all the identification any of them need. */
+    var autoTerminalAnywhere: Boolean
+        get() = data.autoTerminalAnywhere
+        set(v) { data.autoTerminalAnywhere = v; save() }
+
+    /** How imperfect the pointer's hand is, 0-100. Scales the *variation* of
+     *  every trait above rather than their size: at 0 the arc, the tremor and
+     *  the timing are still configured, they are just identical every time. */
+    var autoTerminalHumanize: Int
+        get() = data.autoTerminalHumanize.coerceIn(0, 100)
+        set(v) { data.autoTerminalHumanize = v.coerceIn(0, 100); save() }
+
+    // The grid's own fields kept their original `termGui*` names: Config.Data
+    // is Gson-serialised to disk, so renaming one silently resets the setting
+    // for anyone who already has it. The curve below was new in the same
+    // change and landed under these names.
+
+    var autoTerminalEaseX1: Int
+        get() = data.autoTerminalEaseX1.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseX1 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseY1: Int
+        get() = data.autoTerminalEaseY1.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseY1 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseX2: Int
+        get() = data.autoTerminalEaseX2.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseX2 = v.coerceIn(0, 100); save() }
+    var autoTerminalEaseY2: Int
+        get() = data.autoTerminalEaseY2.coerceIn(0, 100)
+        set(v) { data.autoTerminalEaseY2 = v.coerceIn(0, 100); save() }
+
+    var starMobOutlineOnly: Boolean
+        get() = data.starMobOutlineOnly
+        set(v) { data.starMobOutlineOnly = v; save() }
+
     fun load() {
         if (!configDir.exists()) configDir.mkdirs()
 
@@ -820,4 +1131,20 @@ object Config {
             AsthoonLite.LOGGER.warn("[AsthoonLite] Failed to save config", it)
         }
     }
+}
+
+/**
+ * The Min/Max pair one Delay Spread value writes: [spread] wide either side of
+ * [mean], clamped to what the fields can hold.
+ *
+ * Top-level rather than a member of [Config] on purpose: initialising that
+ * object asks FabricLoader for a config directory, which the offline
+ * regression harness does not have. This is the whole policy behind the one
+ * Delay Spread slider, so the harness has to be able to reach it — and it
+ * never touches the settings on disk itself.
+ */
+internal fun spreadWindow(mean: Int, spread: Int): Pair<Int, Int> {
+    val s = spread.coerceIn(0, 500)
+    val centre = mean.coerceAtLeast(0)
+    return (centre - s).coerceAtLeast(0) to (centre + s).coerceAtMost(1000)
 }

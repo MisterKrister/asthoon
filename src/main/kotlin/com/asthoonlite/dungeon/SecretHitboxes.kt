@@ -1,146 +1,149 @@
 package com.asthoonlite.dungeon
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.render.WorldBoxRenderer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
+import net.minecraft.world.level.BlockGetter
+import net.minecraft.world.level.block.AbstractSkullBlock
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.ButtonBlock
 import net.minecraft.world.level.block.LeverBlock
-import net.minecraft.world.phys.Vec3
-import net.minecraft.world.phys.shapes.CollisionContext
+import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.phys.shapes.Shapes
+import net.minecraft.world.phys.shapes.VoxelShape
 
 /**
- * Full-tile lever/button secret hitboxes.
+ * Enlarged interaction shapes for dungeon secret controls (levers, buttons,
+ * skull heads, mushrooms) plus the visualisation of those shapes.
  *
- * The important distinction from the old implementation is that the enlarged
- * hitbox is a 2D surface on the block face the control is attached to. It does
- * not become a one-block-deep cube, so aiming slightly beside a button on a
- * wall can select the button without making the whole block volumetrically
- * clickable.
+ * How the override actually reaches the game — the important part, because
+ * this is what was broken before:
+ *
+ *   Minecraft.pick() -> Entity.pick() -> Level.clip(ClipContext.Block.OUTLINE)
+ *       -> BlockStateBase.getShape(level, pos, ctx)      <-- MixinBlockStateShape
+ *           -> Block.getShape(...) virtual -> LeverBlock.getShape / ...
+ *
+ * The old implementation mixed into `LeverBlock#getShape` and
+ * `ButtonBlock#getShape` only. That worked for those two classes and did
+ * literally nothing for skulls and mushrooms (no mixin existed), which is why
+ * the skull/mushroom toggles drew a box you could not click. It also had no
+ * way to reach `WallSkullBlock`, which does not extend `SkullBlock` at all —
+ * it extends `AbstractSkullBlock` directly.
+ *
+ * Now a single injection sits on `BlockStateBase#getShape`, ahead of the
+ * virtual dispatch, so every block type goes through the same gate.
+ *
+ * How the slider behaves: the box is a per-axis lerp from the *real* vanilla
+ * footprint to a per-family target box. 0 % hands the call straight back to
+ * vanilla ("normal"), 100 % lands on the target ("full block"). Nothing in
+ * between ever shrinks below vanilla or overshoots the target.
+ *
+ * Physics safety: `BlockBehaviour#getCollisionShape()` falls back to the
+ * 2-arg `BlockStateBase#getShape()`, which always passes
+ * `CollisionContext.empty()`. We never override on an empty context, so the
+ * enlarged shape can only ever be seen by picking/outline code, never by the
+ * collision system. See MixinBlockStateShape for the full note.
  */
 object SecretHitboxes {
+
+    /** One of the four block families this module owns. */
+    enum class Kind { LEVER, BUTTON, SKULL, MUSHROOM }
+
+    /** A tracked secret control, rebuilt every client tick. */
+    data class SecretBlock(val pos: BlockPos, val kind: Kind, val state: BlockState)
+
     private val pressedUntil = HashMap<BlockPos, Long>()
     private val previousPowered = HashMap<BlockPos, Boolean>()
 
-    fun markPressed(pos: BlockPos) {
-        if (Config.pressedHitboxEnabled) pressedUntil[pos] = System.currentTimeMillis() + Config.pressedHitboxDuration
-    }
+    /** Render list. Rebuilt on the tick thread (20 Hz), read on the render
+     *  thread (once per frame) — never scanned block-by-block per frame. */
+    @Volatile
+    private var tracked = emptyList<SecretBlock>()
 
-    fun register() {
-        ClientTickEvents.END_CLIENT_TICK.register { tick() }
-        LevelRenderEvents.END_EXTRACTION.register { render() }
-    }
+    /** Bounded VoxelShape memo so the per-raycast shape build stops allocating.
+     *  Key covers the state identity *and* the slider value — both the shape
+     *  and its vanilla base depend on them. */
+    private val shapeCache = HashMap<Long, VoxelShape>()
+    private var shapeCacheSignature = -1L
 
-    private fun tick() {
-        if (!DungeonContext.inDungeon) {
-            pressedUntil.clear(); previousPowered.clear(); return
-        }
-        val mc = Minecraft.getInstance()
-        val level = mc.level ?: return
-        val player = mc.player ?: return
-        val radius = 8
-        val live = HashSet<BlockPos>()
-        for (x in (player.x - radius).toInt()..(player.x + radius).toInt())
-            for (y in (player.y - radius).toInt()..(player.y + radius).toInt())
-                for (z in (player.z - radius).toInt()..(player.z + radius).toInt()) {
-                    val pos = BlockPos(x, y, z)
-                    val state = level.getBlockState(pos)
-                    if (!isTracked(state.block)) continue
-                    live += pos
-                    val powered = powered(state)
-                    val old = previousPowered.put(pos, powered)
-                    if (Config.pressedHitboxEnabled && old == false && powered) {
-                        pressedUntil[pos] = System.currentTimeMillis() + Config.pressedHitboxDuration
-                    }
-                }
-        previousPowered.keys.removeIf { it !in live }
-        pressedUntil.entries.removeIf { it.value < System.currentTimeMillis() }
-
-    }
+    private fun shapeKey(state: BlockState, sizePercent: Int): Long =
+        (state.hashCode().toLong() and 0xFFFFFFFFL) shl 10 or (sizePercent.toLong() and 0x3FF)
 
     /**
-     * Noamm-style interaction shape.  The important part is that this is the
-     * block shape used by Minecraft's normal raycast, rather than replacing
-     * Minecraft.hitResult after the raycast has already happened.
+     * Every size setting, packed. The memo is keyed on the *resulting* size,
+     * so stale entries can only ever be wasteful, never wrong — but a slider
+     * that has been moved should not leave the old boxes sitting in memory
+     * either, and five separate fields cannot be watched with one integer.
+     */
+    private fun sizeSignature(): Long {
+        var s = Config.secretHitboxSize.toLong() and 0x7FL
+        s = (s shl 7) or (Config.secretLeverHitboxSize.toLong() and 0x7FL)
+        s = (s shl 7) or (Config.secretButtonHitboxSize.toLong() and 0x7FL)
+        s = (s shl 7) or (Config.secretSkullHitboxSize.toLong() and 0x7FL)
+        s = (s shl 7) or (Config.secretMushroomHitboxSize.toLong() and 0x7FL)
+        return s
+    }
+
+    // ── Hot path ────────────────────────────────────────────────────────────
+
+    /**
+     * Gate called from MixinBlockStateShape for *every* block shape lookup in
+     * the world. Two boolean reads, no allocation, no map access.
      */
     @JvmStatic
-    fun getButtonRelativeBounds(state: net.minecraft.world.level.block.state.BlockState, sizePercent: Int): DoubleArray {
-        val size = (sizePercent / 100.0).coerceIn(0.1, 1.0)
-        val half = size / 2.0
-        val face = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE)
-        val dir = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACING)
-        val powered = state.getValue(ButtonBlock.POWERED)
-        val f2 = (if (powered) 1 else 2) / 16.0
+    fun shapeOverrideEnabled(): Boolean =
+        DungeonContext.inDungeon && Config.secretHitboxesEnabled
 
-        return when (face) {
-            net.minecraft.world.level.block.state.properties.AttachFace.FLOOR -> doubleArrayOf(
-                0.5 - half, 0.0, 0.5 - half,
-                0.5 + half, f2, 0.5 + half
-            )
-            net.minecraft.world.level.block.state.properties.AttachFace.CEILING -> doubleArrayOf(
-                0.5 - half, 1.0 - f2, 0.5 - half,
-                0.5 + half, 1.0, 0.5 + half
-            )
-            else -> when (dir) {
-                net.minecraft.core.Direction.EAST -> doubleArrayOf(
-                    0.0, 0.5 - half, 0.5 - half,
-                    f2, 0.5 + half, 0.5 + half
-                )
-                net.minecraft.core.Direction.WEST -> doubleArrayOf(
-                    1.0 - f2, 0.5 - half, 0.5 - half,
-                    1.0, 0.5 + half, 0.5 + half
-                )
-                net.minecraft.core.Direction.SOUTH -> doubleArrayOf(
-                    0.5 - half, 0.5 - half, 0.0,
-                    0.5 + half, 0.5 + half, f2
-                )
-                net.minecraft.core.Direction.NORTH -> doubleArrayOf(
-                    0.5 - half, 0.5 - half, 1.0 - f2,
-                    0.5 + half, 0.5 + half, 1.0
-                )
-                else -> doubleArrayOf(
-                    0.5 - half, 0.0, 0.5 - half,
-                    0.5 + half, f2, 0.5 + half
-                )
-            }
+    /**
+     * Enlarged interaction shape for this state/pos, or null to let vanilla
+     * through untouched. `null` is the normal answer — only the four tracked
+     * block families inside a dungeon ever return a shape.
+     *
+     * At 0 % it returns null on purpose: "normal" means vanilla decides, so
+     * the mixin is never cancelled and there is nothing to approximate.
+     */
+    @JvmStatic
+    fun interactionShape(state: BlockState, pos: BlockPos, level: BlockGetter): VoxelShape? {
+        if (!shapeOverrideEnabled()) return null
+        val kind = kindOf(state) ?: return null
+        if (!isKindEnabled(kind, pos)) return null
+        val sizePercent = sizePercentFor(kind)
+        if (sizePercent <= 0) return null
+
+        val key = shapeKey(state, sizePercent)
+        shapeCache[key]?.let { return it }
+
+        val vanilla = vanillaBounds(state, level, pos) ?: return null
+        val bounds = lerpBounds(vanilla, targetBounds(kind, vanilla), sizePercent)
+        val made = Shapes.box(bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5])
+
+        // Defensive ceiling: the key space is small by construction, but never
+        // let a pathological case turn this into an unbounded map.
+        if (shapeCache.size > 256) shapeCache.clear()
+        shapeCache[key] = made
+        return made
+    }
+
+    /** Fast classifier. `AbstractSkullBlock` rather than `SkullBlock` because
+     *  `WallSkullBlock` is a sibling, not a subclass, of `SkullBlock`. */
+    @JvmStatic
+    fun kindOf(state: BlockState): Kind? {
+        val block = state.block
+        return when {
+            block is LeverBlock -> Kind.LEVER
+            block is ButtonBlock -> Kind.BUTTON
+            block is AbstractSkullBlock -> Kind.SKULL
+            block === Blocks.RED_MUSHROOM || block === Blocks.BROWN_MUSHROOM ||
+                block === Blocks.RED_MUSHROOM_BLOCK || block === Blocks.BROWN_MUSHROOM_BLOCK -> Kind.MUSHROOM
+            else -> null
         }
     }
 
-    @JvmStatic
-    fun buttonShape(state: net.minecraft.world.level.block.state.BlockState): net.minecraft.world.phys.shapes.VoxelShape {
-        val b = getButtonRelativeBounds(state, Config.secretHitboxSize)
-        return net.minecraft.world.phys.shapes.Shapes.box(b[0], b[1], b[2], b[3], b[4], b[5])
-    }
-
-    /** Full interaction area of the attached wall/floor/ceiling face, with only a
-     * tiny depth so the hitbox never extrudes through the backing block. */
-    @JvmStatic
-    fun getAttachedFaceShape(state: net.minecraft.world.level.block.state.BlockState): net.minecraft.world.phys.shapes.VoxelShape {
-        val face = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE)
-        val dir = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACING)
-        val d = 0.002
-        return when (face) {
-            net.minecraft.world.level.block.state.properties.AttachFace.FLOOR -> net.minecraft.world.phys.shapes.Shapes.box(0.0, 0.0, 0.0, 1.0, d, 1.0)
-            net.minecraft.world.level.block.state.properties.AttachFace.CEILING -> net.minecraft.world.phys.shapes.Shapes.box(0.0, 1.0-d, 0.0, 1.0, 1.0, 1.0)
-            else -> when (dir) {
-                net.minecraft.core.Direction.EAST -> net.minecraft.world.phys.shapes.Shapes.box(0.0, 0.0, 0.0, d, 1.0, 1.0)
-                net.minecraft.core.Direction.WEST -> net.minecraft.world.phys.shapes.Shapes.box(1.0-d, 0.0, 0.0, 1.0, 1.0, 1.0)
-                net.minecraft.core.Direction.SOUTH -> net.minecraft.world.phys.shapes.Shapes.box(0.0, 0.0, 0.0, 1.0, 1.0, d)
-                net.minecraft.core.Direction.NORTH -> net.minecraft.world.phys.shapes.Shapes.box(0.0, 0.0, 1.0-d, 1.0, 1.0, 1.0)
-                else -> net.minecraft.world.phys.shapes.Shapes.block()
-            }
-        }
-    }
-
-    private val blackListedLevers = setOf(
-        BlockPos(61, 136, 142), BlockPos(60, 136, 142), BlockPos(59, 136, 142),
-        BlockPos(62, 135, 142), BlockPos(61, 135, 142), BlockPos(59, 135, 142),
-        BlockPos(58, 135, 142), BlockPos(62, 134, 142), BlockPos(61, 134, 142),
-        BlockPos(59, 134, 142), BlockPos(58, 134, 142), BlockPos(61, 133, 142),
-        BlockPos(60, 133, 142), BlockPos(59, 133, 142)
-    )
+    // ── Per-type enable checks ──────────────────────────────────────────────
 
     @JvmStatic
     fun isValidLever(pos: BlockPos): Boolean =
@@ -161,237 +164,300 @@ object SecretHitboxes {
     @JvmStatic
     fun isLeverHitboxEnabled(pos: BlockPos): Boolean = isValidLever(pos)
 
+    /**
+     * True when the block outline renderer should hand control to us.
+     *
+     * Quiet mode drops the override so the outline vanilla itself would draw
+     * is what shows up — an untouched client draws a selection outline when
+     * you look at a block, so showing that is the legitimate-looking result,
+     * not a missing one. The click target is untouched by this: it comes from
+     * [interactionShape], which does not consult quiet mode.
+     */
     @JvmStatic
-    fun shouldOverrideOutline(state: net.minecraft.world.level.block.state.BlockState, pos: BlockPos): Boolean {
-        if (!DungeonContext.inDungeon || !Config.secretHitboxesEnabled) return false
-        if (state.block is LeverBlock && isValidLever(pos)) return true
-        if (state.block is ButtonBlock && isButtonHitboxEnabled()) return true
-        return false
+    fun shouldOverrideOutline(state: BlockState, pos: BlockPos): Boolean {
+        if (QuietMode.suppressing()) return false
+        if (!shapeOverrideEnabled()) return false
+        return when (kindOf(state)) {
+            Kind.LEVER -> isValidLever(pos)
+            Kind.BUTTON -> isButtonHitboxEnabled()
+            Kind.SKULL -> isSkullHitboxEnabled()
+            Kind.MUSHROOM -> isMushroomHitboxEnabled()
+            null -> false
+        }
     }
 
+    /**
+     * What actually gets drawn as the block selection outline.
+     *
+     * - `secretHitboxHideOutline` -> nothing at all.
+     * - `secretHitboxVanillaOutline` -> the *real* vanilla shape, read through
+     *   the 2-arg overload which runs with CollisionContext.empty() and is
+     *   therefore immune to our own override. The previous build re-implemented
+     *   vanilla's button/lever geometry by hand here; it disagreed with the
+     *   real 26.1.2 shape (vanilla now builds buttons from
+     *   `Shapes.join(cube(14), rotated plate, ONLY_FIRST)` over the full 1..15
+     *   face, not the old 5..11 inset), so the outline was drawn on the wrong
+     *   footprint. Read it, don't guess it.
+     * - otherwise -> the enlarged shape, so what you see is what you click.
+     */
     @JvmStatic
-    fun getLeverRelativeBounds(state: net.minecraft.world.level.block.state.BlockState, sizePercent: Int): DoubleArray {
-        val size = (sizePercent / 100.0).coerceIn(0.1, 1.0)
-        val half = size / 2.0
-        val face = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE)
-        val dir = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACING)
+    fun getOutlineShape(state: BlockState, pos: BlockPos, level: BlockGetter): VoxelShape {
+        if (Config.secretHitboxHideOutline) return Shapes.empty()
+        if (Config.secretHitboxVanillaOutline) return vanillaShape(state, level, pos)
+        return interactionShape(state, pos, level) ?: vanillaShape(state, level, pos)
+    }
 
-        return when (face) {
-            net.minecraft.world.level.block.state.properties.AttachFace.FLOOR -> {
-                doubleArrayOf(
-                    0.5 - half, 0.0, 0.5 - half,
-                    0.5 + half, size, 0.5 + half
-                )
+    /**
+     * The untouched vanilla shape for this state.
+     *
+     * The 2-arg `getShape(BlockGetter, BlockPos)` always resolves through
+     * `CollisionContext.empty()`, and MixinBlockStateShape refuses to run on
+     * an empty context — so this is a guaranteed clean read even while the
+     * feature is switched on. It is also what terminates the recursion: an
+     * override that needs the vanilla base can always ask for it safely.
+     */
+    @JvmStatic
+    fun vanillaShape(state: BlockState, level: BlockGetter, pos: BlockPos): VoxelShape =
+        state.getShape(level, pos)
+
+    // ── Expansion: normal (0 %) → full block (100 %) ────────────────────────
+
+    /**
+     * 0.0 at the slider minimum, 1.0 at the maximum. Clamped on both ends so
+     * a stale config value can never produce an inverted box.
+     */
+    @JvmStatic
+    fun expansionFraction(sizePercent: Int): Double = sizePercent.coerceIn(0, 100) / 100.0
+
+    /**
+     * The block-local box the expansion grows *toward*.
+     *
+     * levers / skulls / mushrooms grow all the way to the cell walls: that is
+     * "full block", and it is what their GUI rows already promise.
+     *
+     * buttons are the interesting one. A button sticks out of a face by 2 px
+     * and presents a plate 6–8 px across, so one axis is always about a
+     * quarter as thick as the others — and *which* axis it is depends on where
+     * the button is mounted. Floor and ceiling buttons carry their depth in Y,
+     * wall buttons carry it in X or Z. Measured from 26.1.2:
+     *
+     *   floor   ext (0.375, 0.125, 0.250)   depth = Y
+     *   wall    ext (0.375, 0.250, 0.125)   depth = Z
+     *   ceiling ext (0.375, 0.125, 0.250)   depth = Y
+     *
+     * So the rule is not "Y stays" — that only held for buttons on the floor,
+     * and it made wall buttons protrude a whole block. The rule is: the
+     * thinnest axis is the depth, it stays exactly vanilla, the other two go
+     * to the cell walls. Length and width grow; how far it sticks out does not.
+     */
+    @JvmStatic
+    fun targetBounds(kind: Kind, vanilla: DoubleArray): DoubleArray = when (kind) {
+        Kind.BUTTON -> buttonTargetBounds(vanilla)
+        else -> doubleArrayOf(0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+    }
+
+    private fun buttonTargetBounds(vanilla: DoubleArray): DoubleArray {
+        val ex = vanilla[3] - vanilla[0]
+        val ey = vanilla[4] - vanilla[1]
+        val ez = vanilla[5] - vanilla[2]
+        val extents = doubleArrayOf(ex, ey, ez)
+
+        // Smallest extent is the depth — unless nothing is meaningfully
+        // smaller than anything else, in which case the shape is not a plate
+        // on a face and there is no depth to preserve. Keep Y then: it is the
+        // orientation buttons are most often found in and the old behaviour.
+        val depth = extents.indices.minByOrNull { extents[it] } ?: 1
+        if (extents.max() >= extents[depth] * 2.0) {
+            return when (depth) {
+                0 -> doubleArrayOf(vanilla[0], 0.0, 0.0, vanilla[3], 1.0, 1.0)
+                2 -> doubleArrayOf(0.0, 0.0, vanilla[2], 1.0, 1.0, vanilla[5])
+                else -> doubleArrayOf(0.0, vanilla[1], 0.0, 1.0, vanilla[4], 1.0)
             }
-            net.minecraft.world.level.block.state.properties.AttachFace.CEILING -> {
-                doubleArrayOf(
-                    0.5 - half, 1.0 - size, 0.5 - half,
-                    0.5 + half, 1.0, 0.5 + half
-                )
+        }
+        return doubleArrayOf(0.0, vanilla[1], 0.0, 1.0, vanilla[4], 1.0)
+    }
+
+    /**
+     * The slider actually applied to [kind]: the master expansion multiplied
+     * by this block family's own setting.
+     *
+     * Two numbers rather than one so a lever can stay forgiving while a
+     * button sits close to stock — which is what a single shared slider could
+     * never express. 100 % on the per-kind slider means "follow the master",
+     * so a config that never touches them behaves exactly as it did before
+     * they existed.
+     */
+    @JvmStatic
+    fun sizePercentFor(kind: Kind): Int {
+        val perKind = when (kind) {
+            Kind.LEVER -> Config.secretLeverHitboxSize
+            Kind.BUTTON -> Config.secretButtonHitboxSize
+            Kind.SKULL -> Config.secretSkullHitboxSize
+            Kind.MUSHROOM -> Config.secretMushroomHitboxSize
+        }
+        return sizePercent(Config.secretHitboxSize, perKind)
+    }
+
+    /** The combination itself, kept pure so it can be pinned by a test. */
+    @JvmStatic
+    fun sizePercent(master: Int, perKind: Int): Int =
+        (master.coerceIn(0, 100) * perKind.coerceIn(0, 100)) / 100
+
+    /**
+     * Per-axis interpolation from the vanilla footprint to the target box.
+     *
+     * 0 % returns vanilla untouched, 100 % returns the target untouched, and
+     * every step in between is monotone: the result can never fall below
+     * vanilla (so we never make a control harder to click than the game does)
+     * and can never overshoot the target (so it never leaves the block — the
+     * server validates the reported hit within ±1.0000001 of block centre).
+     */
+    @JvmStatic
+    fun lerpBounds(vanilla: DoubleArray, target: DoubleArray, sizePercent: Int): DoubleArray {
+        val t = expansionFraction(sizePercent)
+        if (t <= 0.0) return vanilla.copyOf()
+        if (t >= 1.0) return target.copyOf()
+        return DoubleArray(6) { i -> vanilla[i] + (target[i] - vanilla[i]) * t }
+    }
+
+    /** Vanilla footprint as a block-local min/max box, or null when empty. */
+    @JvmStatic
+    fun vanillaBounds(state: BlockState, level: BlockGetter, pos: BlockPos): DoubleArray? {
+        val shape = vanillaShape(state, level, pos)
+        if (shape.isEmpty()) return null
+        val b = shape.bounds()
+        return doubleArrayOf(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ)
+    }
+
+    /**
+     * The box drawn on screen for a tracked control: the picker's shape, or
+     * vanilla's when the picker has nothing to add (0 %, feature off).
+     * Display and click target are derived from one call so they cannot drift.
+     */
+    private fun displayBounds(state: BlockState, pos: BlockPos, level: BlockGetter): DoubleArray? {
+        val shape = interactionShape(state, pos, level) ?: vanillaShape(state, level, pos)
+        if (shape.isEmpty()) return null
+        val b = shape.bounds()
+        return doubleArrayOf(b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ)
+    }
+
+    // ── Pressed-state flash ─────────────────────────────────────────────────
+
+    @JvmStatic
+    fun markPressed(pos: BlockPos) {
+        if (Config.pressedHitboxEnabled) pressedUntil[pos] = System.currentTimeMillis() + Config.pressedHitboxDuration
+    }
+
+    // ── Tick / render ───────────────────────────────────────────────────────
+
+    fun register() {
+        ClientTickEvents.END_CLIENT_TICK.register { tick() }
+        LevelRenderEvents.END_EXTRACTION.register { render() }
+    }
+
+    private fun tick() {
+        if (!DungeonContext.inDungeon) {
+            if (tracked.isNotEmpty() || pressedUntil.isNotEmpty() || previousPowered.isNotEmpty()) {
+                pressedUntil.clear()
+                previousPowered.clear()
+                tracked = emptyList()
             }
-            else -> {
-                when (dir) {
-                    net.minecraft.core.Direction.NORTH -> doubleArrayOf(
-                        0.5 - half, 0.5 - half, 1.0 - size,
-                        0.5 + half, 0.5 + half, 1.0
-                    )
-                    net.minecraft.core.Direction.SOUTH -> doubleArrayOf(
-                        0.5 - half, 0.5 - half, 0.0,
-                        0.5 + half, 0.5 + half, size
-                    )
-                    net.minecraft.core.Direction.WEST -> doubleArrayOf(
-                        1.0 - size, 0.5 - half, 0.5 - half,
-                        1.0, 0.5 + half, 0.5 + half
-                    )
-                    net.minecraft.core.Direction.EAST -> doubleArrayOf(
-                        0.0, 0.5 - half, 0.5 - half,
-                        size, 0.5 + half, 0.5 + half
-                    )
-                    else -> doubleArrayOf(0.5 - half, 0.0, 0.5 - half, 0.5 + half, size, 0.5 + half)
+            return
+        }
+
+        // Config can change at any moment from the GUI; drop stale shapes.
+        val signature = sizeSignature()
+        if (signature != shapeCacheSignature) {
+            shapeCacheSignature = signature
+            shapeCache.clear()
+        }
+
+        val mc = Minecraft.getInstance()
+        val level = mc.level ?: return
+        val player = mc.player ?: return
+        val radius = 8
+
+        val floor = player.y.toInt()
+        val found = ArrayList<SecretBlock>(32)
+        val live = HashSet<BlockPos>()
+        val now = System.currentTimeMillis()
+
+        var x = player.x.toInt() - radius
+        val xEnd = player.x.toInt() + radius
+        while (x <= xEnd) {
+            var y = floor - radius
+            val yEnd = floor + radius
+            while (y <= yEnd) {
+                var z = player.z.toInt() - radius
+                val zEnd = player.z.toInt() + radius
+                while (z <= zEnd) {
+                    val pos = BlockPos(x, y, z)
+                    val state = level.getBlockState(pos)
+                    val kind = kindOf(state)
+                    if (kind != null && isKindEnabled(kind, pos)) {
+                        found.add(SecretBlock(pos, kind, state))
+                        live.add(pos)
+                    }
+                    if (kind == Kind.LEVER || kind == Kind.BUTTON) {
+                        val powered = powered(state)
+                        val old = previousPowered.put(pos, powered)
+                        if (Config.pressedHitboxEnabled && old == false && powered) {
+                            pressedUntil[pos] = now + Config.pressedHitboxDuration
+                        }
+                    }
+                    z++
                 }
+                y++
             }
+            x++
         }
+
+        previousPowered.keys.retainAll(live)
+        pressedUntil.entries.removeIf { it.value < now }
+        tracked = found
     }
 
-    @JvmStatic
-    fun getLeverShape(state: net.minecraft.world.level.block.state.BlockState, pos: BlockPos): net.minecraft.world.phys.shapes.VoxelShape {
-        if (!isValidLever(pos)) return vanillaShape(state)
-        val b = getLeverRelativeBounds(state, Config.secretHitboxSize)
-        return net.minecraft.world.phys.shapes.Shapes.box(b[0], b[1], b[2], b[3], b[4], b[5])
-    }
-
-    @JvmStatic
-    fun getOutlineShape(
-        state: net.minecraft.world.level.block.state.BlockState,
-        pos: BlockPos,
-        original: net.minecraft.world.phys.shapes.VoxelShape
-    ): net.minecraft.world.phys.shapes.VoxelShape {
-        if (Config.secretHitboxHideOutline) {
-            return net.minecraft.world.phys.shapes.Shapes.empty()
-        }
-        if (Config.secretHitboxVanillaOutline) {
-            return vanillaShape(state)
-        }
-        if (state.block is LeverBlock && isValidLever(pos)) {
-            return getLeverShape(state, pos)
-        }
-        if (state.block is ButtonBlock && isButtonHitboxEnabled()) {
-            return buttonShape(state)
-        }
-        return original
-    }
-
-    private data class SurfaceTarget(val pos: BlockPos, val point: Vec3, val face: net.minecraft.core.Direction, val distanceSq: Double)
-    private data class PlaneHit(val point: Vec3, val face: net.minecraft.core.Direction)
-    private data class Surface(val minX: Double, val minY: Double, val minZ: Double, val maxX: Double, val maxY: Double, val maxZ: Double, val face: net.minecraft.core.Direction)
-
-    private fun intersectRayPlane(origin: Vec3, dir: Vec3, s: Surface): PlaneHit? {
-        val axis: Int
-        val plane: Double
-        when (s.face) {
-            net.minecraft.core.Direction.WEST -> { axis = 0; plane = s.minX }
-            net.minecraft.core.Direction.EAST -> { axis = 0; plane = s.maxX }
-            net.minecraft.core.Direction.DOWN -> { axis = 1; plane = s.minY }
-            net.minecraft.core.Direction.UP -> { axis = 1; plane = s.maxY }
-            net.minecraft.core.Direction.NORTH -> { axis = 2; plane = s.minZ }
-            net.minecraft.core.Direction.SOUTH -> { axis = 2; plane = s.maxZ }
-        }
-        val d = when (axis) { 0 -> dir.x; 1 -> dir.y; else -> dir.z }
-        if (kotlin.math.abs(d) < 1.0e-7) return null
-        val o = when (axis) { 0 -> origin.x; 1 -> origin.y; else -> origin.z }
-        val t = (plane - o) / d
-        if (t < 0.0) return null
-        val p = origin.add(dir.scale(t))
-        if (p.x < s.minX || p.x > s.maxX || p.y < s.minY || p.y > s.maxY || p.z < s.minZ || p.z > s.maxZ) return null
-        return PlaneHit(p, s.face)
-    }
-
-    private fun surfaceFor(pos: BlockPos, state: net.minecraft.world.level.block.state.BlockState, size: Double): Surface? {
-        val sx = size.coerceIn(0.1, 1.0)
-        val pad = (1.0 - sx) / 2.0
-        val face = when {
-            state.hasProperty(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE) &&
-                state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE) == net.minecraft.world.level.block.state.properties.AttachFace.FLOOR -> net.minecraft.core.Direction.DOWN
-            state.hasProperty(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE) &&
-                state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE) == net.minecraft.world.level.block.state.properties.AttachFace.CEILING -> net.minecraft.core.Direction.UP
-            state.hasProperty(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE) -> state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACING).opposite
-            else -> return null
-        }
-        val minX = pos.x + pad; val maxX = pos.x + 1.0 - pad
-        val minY = pos.y + pad; val maxY = pos.y + 1.0 - pad
-        val minZ = pos.z + pad; val maxZ = pos.z + 1.0 - pad
-        return when (face) {
-            net.minecraft.core.Direction.WEST -> Surface(pos.x.toDouble(), minY, minZ, pos.x.toDouble() + 0.002, maxY, maxZ, face)
-            net.minecraft.core.Direction.EAST -> Surface(pos.x + 0.998, minY, minZ, pos.x + 1.0, maxY, maxZ, face)
-            net.minecraft.core.Direction.DOWN -> Surface(minX, pos.y.toDouble(), minZ, maxX, pos.y.toDouble() + 0.002, maxZ, face)
-            net.minecraft.core.Direction.UP -> Surface(minX, pos.y + 0.998, minZ, maxX, pos.y + 1.0, maxZ, face)
-            net.minecraft.core.Direction.NORTH -> Surface(minX, minY, pos.z.toDouble(), maxX, maxY, pos.z.toDouble() + 0.002, face)
-            net.minecraft.core.Direction.SOUTH -> Surface(minX, minY, pos.z + 0.998, maxX, maxY, pos.z + 1.0, face)
-        }
-    }
-
-    @JvmStatic
-    fun vanillaShape(state: net.minecraft.world.level.block.state.BlockState): net.minecraft.world.phys.shapes.VoxelShape {
-        val face = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACE)
-        val dir = state.getValue(net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock.FACING)
-        val isButton = state.block is ButtonBlock
-        if (isButton) {
-            val t = if (state.getValue(ButtonBlock.POWERED)) 2.0 / 16.0 else 4.0 / 16.0
-            val w0 = 5.0 / 16.0; val w1 = 11.0 / 16.0
-            val h0 = 5.0 / 16.0; val h1 = 11.0 / 16.0
-            return when (face) {
-                net.minecraft.world.level.block.state.properties.AttachFace.FLOOR -> net.minecraft.world.phys.shapes.Shapes.box(w0, 0.0, w0, w1, t, w1)
-                net.minecraft.world.level.block.state.properties.AttachFace.CEILING -> net.minecraft.world.phys.shapes.Shapes.box(w0, 1.0-t, w0, w1, 1.0, w1)
-                else -> when (dir) {
-                    net.minecraft.core.Direction.EAST -> net.minecraft.world.phys.shapes.Shapes.box(0.0, h0, w0, t, h1, w1)
-                    net.minecraft.core.Direction.WEST -> net.minecraft.world.phys.shapes.Shapes.box(1.0-t, h0, w0, 1.0, h1, w1)
-                    net.minecraft.core.Direction.SOUTH -> net.minecraft.world.phys.shapes.Shapes.box(w0, h0, 0.0, w1, h1, t)
-                    net.minecraft.core.Direction.NORTH -> net.minecraft.world.phys.shapes.Shapes.box(w0, h0, 1.0-t, w1, h1, 1.0)
-                    else -> net.minecraft.world.phys.shapes.Shapes.box(w0, 0.0, w0, w1, t, w1)
-                }
-            }
-        }
-        // Vanilla lever is a small centered control rather than the whole tile.
-        val w0 = 5.0 / 16.0; val w1 = 11.0 / 16.0
-        return when (face) {
-            net.minecraft.world.level.block.state.properties.AttachFace.FLOOR -> net.minecraft.world.phys.shapes.Shapes.box(w0, 0.0, w0, w1, 0.5, w1)
-            net.minecraft.world.level.block.state.properties.AttachFace.CEILING -> net.minecraft.world.phys.shapes.Shapes.box(w0, 0.5, w0, w1, 1.0, w1)
-            else -> when (dir) {
-                net.minecraft.core.Direction.EAST -> net.minecraft.world.phys.shapes.Shapes.box(0.0, w0, w0, 0.5, w1, w1)
-                net.minecraft.core.Direction.WEST -> net.minecraft.world.phys.shapes.Shapes.box(0.5, w0, w0, 1.0, w1, w1)
-                net.minecraft.core.Direction.SOUTH -> net.minecraft.world.phys.shapes.Shapes.box(w0, w0, 0.0, w1, w1, 0.5)
-                net.minecraft.core.Direction.NORTH -> net.minecraft.world.phys.shapes.Shapes.box(w0, w0, 0.5, w1, w1, 1.0)
-                else -> net.minecraft.world.phys.shapes.Shapes.box(w0, 0.0, w0, w1, 0.5, w1)
-            }
-        }
+    private fun isKindEnabled(kind: Kind, pos: BlockPos): Boolean = when (kind) {
+        Kind.LEVER -> isValidLever(pos)
+        Kind.BUTTON -> isButtonHitboxEnabled()
+        Kind.SKULL -> isSkullHitboxEnabled()
+        Kind.MUSHROOM -> isMushroomHitboxEnabled()
     }
 
     private fun render() {
         if (!Config.secretHitboxesEnabled || !DungeonContext.inDungeon) return
-        val mc = Minecraft.getInstance(); val level = mc.level ?: return; val player = mc.player ?: return
-        val radius = 8
+        val mc = Minecraft.getInstance()
+        val level = mc.level ?: return
+
+        // Visualised boxes come from the tick-built list — no world scan here.
+        // They are the *same* value the picker uses, so what is drawn is
+        // exactly what is clickable; at 0 % that falls back to vanilla.
         if (Config.moddedHitboxDisplayEnabled) {
-            val size = (Config.secretHitboxSize / 100.0).coerceIn(0.1, 1.0)
-            val pad = (1.0 - size) / 2.0
-            for (x in (player.x - radius).toInt()..(player.x + radius).toInt())
-                for (y in (player.y - radius).toInt()..(player.y + radius).toInt())
-                    for (z in (player.z - radius).toInt()..(player.z + radius).toInt()) {
-                        val pos = BlockPos(x, y, z)
-                        val state = level.getBlockState(pos)
-                        val block = state.block
-
-                        val isLever = block is LeverBlock && isValidLever(pos)
-                        val isButton = block is ButtonBlock && isButtonHitboxEnabled()
-                        val isSkull = (block == net.minecraft.world.level.block.Blocks.PLAYER_HEAD || block == net.minecraft.world.level.block.Blocks.PLAYER_WALL_HEAD) && isSkullHitboxEnabled()
-                        val isMushroom = (block == net.minecraft.world.level.block.Blocks.RED_MUSHROOM || block == net.minecraft.world.level.block.Blocks.BROWN_MUSHROOM) && isMushroomHitboxEnabled()
-
-                        if (!isLever && !isButton && !isSkull && !isMushroom) continue
-
-                        val minX: Double
-                        val minY: Double
-                        val minZ: Double
-                        val maxX: Double
-                        val maxY: Double
-                        val maxZ: Double
-
-                        if (isLever) {
-                            val b = getLeverRelativeBounds(state, Config.secretHitboxSize)
-                            minX = pos.x + b[0]
-                            minY = pos.y + b[1]
-                            minZ = pos.z + b[2]
-                            maxX = pos.x + b[3]
-                            maxY = pos.y + b[4]
-                            maxZ = pos.z + b[5]
-                        } else if (isButton) {
-                            val b = getButtonRelativeBounds(state, Config.secretHitboxSize)
-                            minX = pos.x + b[0]
-                            minY = pos.y + b[1]
-                            minZ = pos.z + b[2]
-                            maxX = pos.x + b[3]
-                            maxY = pos.y + b[4]
-                            maxZ = pos.z + b[5]
-                        } else {
-                            // Skull, Mushroom: Full 3D block box (scaled by size)
-                            minX = pos.x + pad
-                            minY = pos.y + pad
-                            minZ = pos.z + pad
-                            maxX = pos.x + 1.0 - pad
-                            maxY = pos.y + 1.0 - pad
-                            maxZ = pos.z + 1.0 - pad
-                        }
-
-                        // Render the actual 3D box of the hitbox
-                        WorldBoxRenderer.queueOutline(minX, minY, minZ, maxX, maxY, maxZ, 0.12f, 0.70f, 1f, 1f, thickness = 0.025)
-                        WorldBoxRenderer.queueFilled(minX, minY, minZ, maxX, maxY, maxZ, 0.12f, 0.70f, 1f, 0.08f)
-                    }
+            for (secret in tracked) {
+                val b = displayBounds(secret.state, secret.pos, level) ?: continue
+                val px = secret.pos.x.toDouble()
+                val py = secret.pos.y.toDouble()
+                val pz = secret.pos.z.toDouble()
+                WorldBoxRenderer.queueOutline(
+                    px + b[0], py + b[1], pz + b[2], px + b[3], py + b[4], pz + b[5],
+                    0.12f, 0.70f, 1f, 1f, thickness = 0.025
+                )
+                WorldBoxRenderer.queueFilled(
+                    px + b[0], py + b[1], pz + b[2], px + b[3], py + b[4], pz + b[5],
+                    0.12f, 0.70f, 1f, 0.08f
+                )
+            }
         }
 
-        if (!Config.pressedHitboxEnabled) return
+        if (!Config.pressedHitboxEnabled || pressedUntil.isEmpty()) return
+        val now = System.currentTimeMillis()
         for ((pos, until) in pressedUntil) {
-            if (until < System.currentTimeMillis()) continue
+            if (until < now) continue
             val state = level.getBlockState(pos)
-            if (!isTracked(state.block)) continue
-            val shape = vanillaShape(state).bounds()
+            if (kindOf(state) == null) continue
+            // 2-arg getShape == CollisionContext.empty() == guaranteed vanilla
+            // footprint, even with the feature live.
+            val shape = state.getShape(level, pos).bounds()
             WorldBoxRenderer.queueOutline(
                 pos.x + shape.minX, pos.y + shape.minY, pos.z + shape.minZ,
                 pos.x + shape.maxX, pos.y + shape.maxY, pos.z + shape.maxZ,
@@ -400,8 +466,19 @@ object SecretHitboxes {
         }
     }
 
-    private fun isTracked(block: net.minecraft.world.level.block.Block) = block is LeverBlock || block is ButtonBlock
-    private fun powered(state: net.minecraft.world.level.block.state.BlockState): Boolean = when {
+    /**
+     * Levers on the F7/M7 blood-door mechanism. Clicking these with an
+     * enlarged box desyncs the door sequence, so they are excluded outright.
+     */
+    private val blackListedLevers = setOf(
+        BlockPos(61, 136, 142), BlockPos(60, 136, 142), BlockPos(59, 136, 142),
+        BlockPos(62, 135, 142), BlockPos(61, 135, 142), BlockPos(59, 135, 142),
+        BlockPos(58, 135, 142), BlockPos(62, 134, 142), BlockPos(61, 134, 142),
+        BlockPos(59, 134, 142), BlockPos(58, 134, 142), BlockPos(61, 133, 142),
+        BlockPos(60, 133, 142), BlockPos(59, 133, 142)
+    )
+
+    private fun powered(state: BlockState): Boolean = when {
         state.hasProperty(LeverBlock.POWERED) -> state.getValue(LeverBlock.POWERED)
         state.hasProperty(ButtonBlock.POWERED) -> state.getValue(ButtonBlock.POWERED)
         else -> false

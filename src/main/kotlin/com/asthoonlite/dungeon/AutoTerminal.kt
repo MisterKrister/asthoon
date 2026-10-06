@@ -1,28 +1,22 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.config.Config
+import com.asthoonlite.dungeon.TerminalSolver.Kind
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
-import net.minecraft.ChatFormatting
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
-import net.minecraft.core.component.DataComponents
 import net.minecraft.world.inventory.ContainerInput
 import net.minecraft.world.item.ItemStack
-import net.minecraft.world.item.Items
-import kotlin.math.abs
-import kotlin.math.floor
 import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.sqrt
 import kotlin.math.PI
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.random.Random
 
 /**
  * Advanced automatic terminal clicker with RSM-compatible preset support,
- * safe Gaussian random delay intervals, break threshold protection,
- * and Melody skip / party announce features.
+ * safe Gaussian random delay intervals, and Melody skip / party announce
+ * features.
  */
 object AutoTerminal {
     private var lastClickAt = 0L
@@ -34,20 +28,93 @@ object AutoTerminal {
     private val melodySkipQueue = ArrayDeque<Int>()
     private val clickedSlotsWithTime = HashMap<Int, Long>()
     private var lastRubixTarget: Int? = null
-    private val rubixLastClickedColor = HashMap<Int, Int>()
+    /** Each pane's ring position as *we* last knew it. Advanced the moment a
+     *  packet leaves, not when the reply lands — see [fireClick]. */
+    private val rubixPredicted = HashMap<Int, Int>()
     private var lastMelodyRow = -1
     private var lastMelodyRowClickAt = 0L
+    /** Clicks this terminal has taken since it opened, and how many it wants.
+     *  Latched once on the first tick so a pane the server has already
+     *  settled cannot quietly lower the denominator halfway through. */
+    private var clicksMade = 0
+    private var clickGoal = -1
 
+    /**
+     * How long a slot stays off limits after a click.
+     *
+     * The window is really a guess at the server round trip: long enough that
+     * a pane whose state we have already changed is not clicked again before
+     * the reply lands, because on the panes, colours and starts-with terminals
+     * a second click *undoes* the first. It is a ceiling, not a delay —
+     * [clickGuardMs] is what decides how much of it a terminal actually gets.
+     */
     private const val CLICK_TIMEOUT_MS = 350L
     private const val RUBIX_REPEAT_GUARD_MS = 70L
+
+    /**
+     * How long the same Melody row waits before it is clicked again, before
+     * [MELODY_UPDATE_GRACE_MS] is added on top.
+     *
+     * Melody is the one terminal whose pace is the puzzle: the beat is the row
+     * moving into place, so this doubles as the retry window for a click the
+     * server never acknowledged and as the pointer's travel budget on the way
+     * to the next row.
+     */
+    internal const val MELODY_ROW_RETRY_MS = 250L
+
+    /**
+     * Extra ticks a row is given to show up before anything reacts to it.
+     *
+     * The retry window alone was tight enough that a row arriving a few ticks
+     * late read as "never updated": the aim walked back to the row just
+     * clicked, the retry fired on it, and the pointer shuttled instead of
+     * sitting on the new row. This is time spent waiting rather than answering
+     * — three ticks at 20 Hz, 150 ms — and it only costs anything on the one
+     * path where the server is already behind. [MELODY_RETRY_TOTAL_MS] is the
+     * sum, because the aim and the click have to use the same number or they
+     * disagree about where the pointer belongs.
+     */
+    internal const val MELODY_UPDATE_TICKS = 3L
+    internal const val MELODY_UPDATE_GRACE_MS = MELODY_UPDATE_TICKS * 50L
+    internal const val MELODY_RETRY_TOTAL_MS = MELODY_ROW_RETRY_MS + MELODY_UPDATE_GRACE_MS
+
+    /**
+     * How far the opening beat of a terminal may stray from its setting.
+     *
+     * One event per terminal, so it gets a fixed spread rather than a window
+     * built from the slider that governs the repeating cadence — nobody chose
+     * that window, they chose the number.
+     */
+    private const val FIRST_CLICK_SPREAD_MS = 30L
+
+    /** Side of the mean the jitter reaches when the Min/Max window says
+     *  nothing useful about it. Matches the spread `gaussianRandom` used to
+     *  synthesise when a bound was missing. */
+    private const val DEFAULT_SPREAD_MS = 20L
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
     }
 
-    private fun isRecentlyClicked(slot: Int, now: Long): Boolean {
+    /**
+     * The per-slot guard a terminal runs on, in milliseconds.
+     *
+     * Everywhere gets the round-trip ceiling except the number terminal, and
+     * the exception is the whole reason this is per kind. Numbers is a chain:
+     * the next candidate is *the button just clicked*, still showing the old
+     * count until the reply lands, so a fixed 350 ms safety window is not a
+     * safety margin there — it is the terminal's entire cadence, and it is
+     * why this one ran two and a half times slower than every terminal beside
+     * it. Clicking a spent number does nothing server-side, so its guard only
+     * has to stop packet spam, which the click delay already does. Equal to
+     * the beat, it can never outlast it.
+     */
+    internal fun clickGuardMs(kind: Kind, clickDelayMs: Long): Long =
+        if (kind == Kind.ORDER) clickDelayMs else CLICK_TIMEOUT_MS
+
+    private fun isRecentlyClicked(slot: Int, now: Long, timeoutMs: Long): Boolean {
         val last = clickedSlotsWithTime[slot] ?: return false
-        return now - last < CLICK_TIMEOUT_MS
+        return now - last < timeoutMs
     }
 
     private fun clearCarried(screen: AbstractContainerScreen<*>, player: net.minecraft.world.entity.player.Player) {
@@ -59,102 +126,160 @@ object AutoTerminal {
         }
     }
 
-    private fun tick() {
-        if (!Config.autoTerminalEnabled || !DungeonContext.inDungeon) {
+    /** Internal rather than private only because [TerminalCursor] drives it per
+     *  frame — see the note where it is called. The END_CLIENT_TICK listener
+     *  below stays as the floor for frames that do not extract. */
+    internal fun tick() {
+        if (!Config.autoTerminalEnabled || (!DungeonContext.inDungeon && !Config.autoTerminalAnywhere)) {
             reset()
             return
         }
-
         val mc = Minecraft.getInstance()
         val screen = mc.screen as? AbstractContainerScreen<*> ?: run { reset(); return }
-        val player = mc.player ?: return
-        clearCarried(screen, player)
-
-        val title = screen.title.string
-        val cleanTitle = ChatFormatting.stripFormatting(title)?.trim() ?: title.trim()
-        if (suppressReopenUntil > System.currentTimeMillis() && typeFor(cleanTitle) != null) {
+        val player = mc.player ?: run { reset(); return }
+        val title = TerminalSolver.cleanTitle(screen.title.string)
+        val kind = TerminalSolver.kindOf(title) ?: run { reset(); return }
+        val now = System.currentTimeMillis()
+        if (suppressReopenUntil > now) {
+            reset()
             mc.setScreen(null)
             return
         }
-        val type = typeFor(cleanTitle) ?: run { reset(); return }
-        if (!isTypeEnabled(type)) { reset(); return }
-
-        val gameMode = mc.gameMode ?: return
-        val now = System.currentTimeMillis()
-        val windowId = screen.menu.containerId
-
-        // Hypixel replaces the window ID after clicks; the terminal session continues.
-        if (beginTerminal(cleanTitle, now)) {
-            currentClickDelayMs = if (type == Type.MELODY) {
-                Config.autoTerminalMelodyFirstClickDelayMs.toLong()
-            } else {
-                nextFirstClickDelayMs()
-            }
-
-            // Melody party announcement
-            if (type == Type.MELODY && Config.autoTerminalAnnounceMelody) {
-                val msg = Config.autoTerminalMelodyMessage.trim()
-                if (msg.isNotEmpty()) {
-                    mc.player?.connection?.sendCommand("pc $msg")
-                }
+        clearCarried(screen, player)
+        val glide = Config.autoTerminalCursorGlide && (kind != Kind.MELODY || Config.autoTerminalCursorMelody)
+        if (!isTypeEnabled(kind)) {
+            resetSolver()
+            if (glide) TerminalCursor.show() else TerminalCursor.reset()
+            return
+        }
+        if (beginTerminal(title, now)) {
+            currentClickDelayMs = if (kind == Kind.MELODY) Config.autoTerminalMelodyFirstClickDelayMs.toLong()
+                else nextFirstClickDelayMs()
+            if (kind == Kind.MELODY && Config.autoTerminalAnnounceMelody) {
+                val message = Config.autoTerminalMelodyMessage.trim()
+                if (message.isNotEmpty()) player.connection.sendCommand("pc $message")
             }
         }
+        if (glide) TerminalCursor.show() else TerminalCursor.reset()
+        val items = screen.menu.slots.take(kind.slotCount).map { it.item }
+        // The clicker stops at what it actually needs — the slots the tiles
+        // land on — not at the full chest the real terminal ships underneath
+        // its own rows. Same test TermGui.covers asks, for the same reason.
+        if (screen.menu.slots.size < TermGui.requiredSlotsFor(kind, items)) return
+        if (clickGoal < 0) clickGoal = TerminalSolver.goalFor(title, items, lastRubixTarget)
 
-        // Dedicated Melody handling: does not stall behind standard click delays
-        if (type == Type.MELODY) {
-            if (firstClickPending && now - terminalOpenedAt < currentClickDelayMs) {
-                return
-            }
-            firstClickPending = false
-
-            val slots = screen.menu.slots
-            val size = type.slotCount
-            if (slots.size < size) return
-            val items = slots.take(size).map { it.item }
+        if (kind == Kind.MELODY) {
+            if (!Config.autoTerminalMelodySkip) melodySkipQueue.clear()
+            // One aim per tick, and always at the pane the click is for when
+            // there is one: aiming the resting slot first and the click slot
+            // second restarted the trip on every frame and the pointer never
+            // got anywhere. The deadline is the click beat — the same clock
+            // every other terminal aims against — so the travel is fitted
+            // into the wait rather than racing it. Without a click ready the
+            // aim falls back to where the hand belongs while it waits: one
+            // move, down to the row below, staying there until this terminal
+            // says otherwise.
             val click = melodyClick(items, now)
-
+            (click?.slot ?: melodyAimSlot(items, now))?.let { aim(screen, kind, it, clickNotBeforeAt()) }
+            if (!canClick(now)) return
             if (click != null) {
-                gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
-                clearCarried(screen, player)
-                recordClick(now, click.slot, 40L)
-                return
-            }
-
-            // Process queued Melody skip clicks only if the real active note is not ready right now
-            if (melodySkipQueue.isNotEmpty()) {
-                if (now - lastClickAt >= 40L) {
-                    val nextSlot = melodySkipQueue.removeFirst()
-                    gameMode.handleContainerInput(windowId, nextSlot, 2, ContainerInput.CLONE, player)
-                    clearCarried(screen, player)
-                    recordClick(now, nextSlot, 40L)
+                if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
+                // Same clock as every other terminal. This used to be a flat
+                // 40 ms, which is 25 clicks a second — the row debounce only
+                // guards one row, so two rows ready at once fired back to
+                // back and the whole thing read as a machine gun.
+                if (fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs())) {
+                    recordMelodyClick(items, click.slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
+                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
                 }
                 return
+            }
+            // A real aligned note takes priority. Revalidate queued buttons against the live rows.
+            val remaining = TerminalSolver.melodyRows(items).filter { !it.completed }.map { it.buttonSlot }.toSet()
+            while (melodySkipQueue.isNotEmpty()) {
+                val slot = melodySkipQueue.removeFirst()
+                if (slot !in remaining || slot / 9 <= lastMelodyRow) continue
+                aim(screen, kind, slot, clickNotBeforeAt())
+                // The queue entry is dropped when the pointer is still on its
+                // way — put it back, or the row it was for would be skipped
+                // without ever being clicked.
+                if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) {
+                    melodySkipQueue.addFirst(slot)
+                    break
+                }
+                if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), nextClickDelayMs())) {
+                    recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
+                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
+                }
+                break
             }
             return
         }
 
-        // Delay timer check: first click delay applies ONLY to the first click from opening
+        // Selection and travel run during the delay. Re-read live candidates each tick:
+        // no callback can retain an obsolete slot, player or window ID.
+        val click = nextClick(kind, title, items, now) ?: return
+        aim(screen, kind, click.slot, clickNotBeforeAt())
         if (!canClick(now)) return
+        // The packet waits for the hand: a click has to read as the pointer
+        // landing on the pane and pressing it, not as a packet that left
+        // while the pointer was still crossing the grid.
+        if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
+        if (kind == Kind.RUBIX && click.slot == lastSlot && now - lastClickAt < RUBIX_REPEAT_GUARD_MS) return
+        fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs())
+    }
 
-        val slots = screen.menu.slots
-        val size = type.slotCount
-        if (slots.size < size) return
-        val items = slots.take(size).map { it.item }
-        val click = nextClick(type, cleanTitle, items, now) ?: return
+    /**
+     * Whether the drawn pointer is still travelling to the pane this click is
+     * for. True means the packet waits one more frame.
+     *
+     * Split out so the decision can be pinned without a config file behind it:
+     * no glide means no pointer on screen, so there is nothing to wait for,
+     * and a pointer that has already landed never delays anything.
+     */
+    internal fun pointerBlocksClick(glideOn: Boolean, pointerMoving: Boolean): Boolean =
+        glideOn && pointerMoving
 
-        // Rubix repeat guard
-        if (click.slot == lastSlot && type == Type.RUBIX && now - lastClickAt < RUBIX_REPEAT_GUARD_MS) return
+    private fun clickNotBeforeAt(): Long =
+        (if (firstClickPending) terminalOpenedAt else lastClickAt) + currentClickDelayMs
 
+    private fun aim(screen: AbstractContainerScreen<*>, kind: Kind, slot: Int, deadline: Long) {
+        if (!Config.autoTerminalCursorGlide || (kind == Kind.MELODY && !Config.autoTerminalCursorMelody)) return
+        val target = TerminalCursor.targetFor(screen, slot) ?: return
+        TerminalCursor.glideTo(target.first, target.second, deadline)
+    }
+
+    /** Send against the live menu. Pointer position is deliberately irrelevant. */
+    private fun fireClick(
+        screen: AbstractContainerScreen<*>,
+        player: net.minecraft.world.entity.player.Player,
+        windowId: Int,
+        kind: Kind,
+        click: Click,
+        clickDelayMs: Long
+    ): Boolean {
+        val mc = Minecraft.getInstance()
+        if (mc.screen !== screen || mc.player !== player || screen.menu.containerId != windowId) return false
         // Rubix accepts left-click (0) with PICKUP.
         // Other terminals use middle-click (CLONE) to prevent client inventory desyncs.
-        if (type == Type.RUBIX) {
-            gameMode.handleContainerInput(windowId, click.slot, click.button, ContainerInput.PICKUP, player)
-        } else {
-            gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
-        }
+        // TerminalInput picks the door: the player's window sends packets, a
+        // screen holding its own menu drives that menu directly.
+        val sent = TerminalInput.send(
+            screen, click.slot,
+            if (kind == Kind.RUBIX) click.button else 2,
+            if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE
+        )
+        if (!sent) return false
         clearCarried(screen, player)
-
-        recordClick(now, click.slot, nextClickDelayMs())
+        recordClick(System.currentTimeMillis(), click.slot, clickDelayMs)
+        // Predict on send, not on reply. The pane has been asked to move the
+        // moment the packet leaves, and Rubix's next decision is made from
+        // that number rather than from whatever colour is still on screen.
+        if (kind == Kind.RUBIX) {
+            val here = rubixPredicted[click.slot]
+            if (here != null) rubixPredicted[click.slot] = TerminalSolver.rubixAdvance(here, click.button)
+        }
+        return true
     }
 
     private var lastSlot = -1
@@ -174,226 +299,283 @@ object AutoTerminal {
     internal fun recordClick(now: Long, slot: Int, delayMs: Long) {
         lastClickAt = now
         lastSlot = slot
+        clicksMade++
         clickedSlotsWithTime[slot] = now
         firstClickPending = false
         currentClickDelayMs = delayMs
     }
 
+    /**
+     * The clicker's live view of the terminal, read by the next-click marker
+     * so the ring lands on the pane the packets are actually about to go to.
+     *
+     * [unsettledSlots] are panes hit but not yet confirmed by the server —
+     * clicking one again is what makes a solver look stuck. [lastClickedSlot]
+     * is where the pointer is coming from. [rubixTargetOrNull] is the colour
+     * Rubix has committed to; null before the first read.
+     */
+    internal fun unsettledSlots(now: Long = System.currentTimeMillis()): Set<Int> =
+        clickedSlotsWithTime.filterValues { now - it < CLICK_TIMEOUT_MS }.keys.toSet()
+
+    internal fun lastClickedSlot(): Int? = lastSlot.takeIf { it >= 0 }
+
+    /** The pane that was last clicked and the moment it happened, for the
+     *  grid's flash. Null before the first click of a terminal. */
+    internal fun lastClickFlash(): Pair<Int, Long>? =
+        lastSlot.takeIf { it >= 0 }?.let { it to lastClickAt }
+
+    /** What the progress HUD prints: the terminal by name and how far through
+     *  it the clicker is. Null when no terminal is open or the count has not
+     *  been latched yet — a HUD that flickers into existence on the first
+     *  tick is worse than one that waits for a number to exist. */
+    internal fun progress(): Progress? {
+        val title = lastTerminalTitle ?: return null
+        val kind = TerminalSolver.kindOf(title) ?: return null
+        val goal = clickGoal.takeIf { it > 0 } ?: return null
+        return Progress(TerminalSolver.displayName(kind), clicksMade.coerceIn(0, goal), goal)
+    }
+
+    internal data class Progress(val name: String, val done: Int, val goal: Int)
+
+    internal fun rubixTargetOrNull(): Int? = lastRubixTarget
+
     private data class Click(val slot: Int, val button: Int = 0)
-    private enum class Type(val slotCount: Int) { COLORS(54), MELODY(54), NUMBERS(36), REDGREEN(45), RUBIX(45), STARTWITH(45) }
 
-    fun isTerminalTitle(title: String): Boolean {
-        val clean = ChatFormatting.stripFormatting(title)?.trim() ?: title.trim()
-        return typeFor(clean) != null
+    fun isTerminalTitle(title: String): Boolean = TerminalSolver.isTerminalTitle(title)
+
+    /**
+     * Whether this terminal type is switched on.
+     *
+     * All six off used to mean "nothing may run", which is how a player who
+     * had only ever touched the master switch got a clicker that sat there.
+     * It now means "no filter chosen": every terminal runs. The switches stay
+     * real — turn any one of them on and the rest are excluded, which is what
+     * a filter is for.
+     */
+    private fun isTypeEnabled(kind: Kind): Boolean = typeAllowed(kind, selectedTypes())
+
+    /** The types the player has explicitly allowed. Empty == no filter. */
+    private fun selectedTypes(): Set<Kind> = buildSet {
+        if (Config.autoTermColors) add(Kind.SELECT)
+        if (Config.autoTermMelody) add(Kind.MELODY)
+        if (Config.autoTermNumbers) add(Kind.ORDER)
+        if (Config.autoTermRedGreen) add(Kind.PANES)
+        if (Config.autoTermRubix) add(Kind.RUBIX)
+        if (Config.autoTermStartsWith) add(Kind.STARTS)
     }
 
-    private fun isTypeEnabled(type: Type): Boolean = when (type) {
-        Type.COLORS -> Config.autoTermColors
-        Type.MELODY -> Config.autoTermMelody
-        Type.NUMBERS -> Config.autoTermNumbers
-        Type.REDGREEN -> Config.autoTermRedGreen
-        Type.RUBIX -> Config.autoTermRubix
-        Type.STARTWITH -> Config.autoTermStartsWith
+    /**
+     * The policy itself, split out so it can be pinned without a config file.
+     * An empty [selected] is not "nothing is allowed" — it is "the player has
+     * not expressed a preference", and the master switch alone has to be
+     * enough to make the clicker do something.
+     */
+    internal fun typeAllowed(kind: Kind, selected: Set<Kind>): Boolean =
+        selected.isEmpty() || kind in selected
+
+    /**
+     * The next pane to click, ordered by where the pointer already is rather
+     * than by slot number.
+     *
+     * Candidate selection lives in [TerminalSolver] — the same list the
+     * highlight reads — so the drawn solver and the packets cannot disagree.
+     * What is left here are the guards that belong to *clicking*: the
+     * server-round-trip window, Rubix's sticky target and its per-slot
+     * colour bookkeeping.
+     */
+    private fun nextClick(kind: Kind, title: String, items: List<ItemStack>, now: Long): Click? {
+        // Slots whose last click has not come back yet are off limits: picking
+        // one means clicking a pane the solver has already dealt with. How
+        // long "not come back yet" lasts is per terminal — see clickGuardMs.
+        val guard = clickGuardMs(kind, currentClickDelayMs)
+        val blocked = items.indices.filterTo(mutableSetOf()) { isRecentlyClicked(it, now, guard) }
+
+        if (kind == Kind.RUBIX) return rubixClick(kind, title, items, blocked, now)
+
+        val candidates = TerminalSolver.clickCandidates(title, items, blocked)
+        val slot = choose(candidates, kind) ?: return null
+        return Click(slot)
     }
 
-    private fun typeFor(title: String): Type? = when {
-        title.startsWith("Select all the ", true) -> Type.COLORS
-        title.startsWith("Click the button on time!", true) -> Type.MELODY
-        title.startsWith("Click in order!", true) -> Type.NUMBERS
-        title.startsWith("Correct all the panes!", true) -> Type.REDGREEN
-        title.startsWith("Change all to same color!", true) -> Type.RUBIX
-        title.startsWith("What starts with:", true) -> Type.STARTWITH
-        else -> null
+    /**
+     * The ready candidate the clicker takes, ordered by where the pointer
+     * already is rather than by slot number — unless Click Order says
+     * otherwise, in which case all four modes run off this same list.
+     * Ignoring that pane itself while anything else is available stays true
+     * under every mode: otherwise "nearest" is always "the one I just
+     * clicked" and the clicker would sit on it forever.
+     */
+    private fun choose(candidates: List<Int>, kind: Kind): Int? {
+        if (candidates.isEmpty()) return null
+        val elsewhere = candidates.filter { it != lastSlot }
+        val pool = if (elsewhere.isNotEmpty()) elsewhere else candidates
+        return TerminalClickOrder.pick(
+            Config.autoTerminalClickOrder,
+            pool,
+            lastSlot.takeIf { it >= 0 },
+            kind.slotCount
+        )
     }
 
-    private fun nextClick(type: Type, title: String, items: List<ItemStack>, now: Long): Click? = when (type) {
-        Type.NUMBERS -> items.mapIndexedNotNull { i, stack ->
-            if (isRecentlyClicked(i, now)) null
-            else if (stack.`is`(Items.RED_STAINED_GLASS_PANE)) i to stack.count
-            else null
+    private fun rubixClick(kind: Kind, title: String, items: List<ItemStack>, blocked: Set<Int>, now: Long): Click? {
+        // The target colour sticks for the life of the terminal: switching
+        // target mid-solve would leave panes stranded between two colours.
+        if (lastRubixTarget == null) {
+            lastRubixTarget = TerminalSolver.optimalRubixTarget(items.take(kind.slotCount)) ?: return null
         }
-            .sortedBy { it.second }
-            .take(NUMBER_TERM_COUNT)
-            .minByOrNull { it.second }
-            ?.let { Click(it.first) }
+        val target = lastRubixTarget ?: return null
 
-        Type.REDGREEN -> items.indices.firstOrNull { i ->
-            if (isRecentlyClicked(i, now)) false
-            else items[i].`is`(Items.RED_STAINED_GLASS_PANE)
-        }?.let { Click(it) }
-
-        Type.COLORS -> {
-            val match = Regex("Select all the (.+?) items!?", RegexOption.IGNORE_CASE).find(title)
-                ?: return null
-            val wanted = match.groupValues[1]
-            items.indices.firstOrNull { i ->
-                if (isRecentlyClicked(i, now)) return@firstOrNull false
-                val stack = items[i]
-                if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return@firstOrNull false
-                if (TerminalHelper.isSelected(stack)) return@firstOrNull false
-                TerminalHelper.matchesColor(stack, wanted)
-            }?.let { Click(it) }
+        // Reconcile every pane the server has caught up on. A pane with a
+        // click in flight keeps our number — its colour on screen is the one
+        // from before the burst.
+        for (slot in TerminalSolver.RUBIX_SLOTS) {
+            val actual = TerminalHelper.rubixColorIndex(items.getOrNull(slot) ?: continue)
+            if (actual < 0) continue
+            val inFlight = now - (clickedSlotsWithTime[slot] ?: 0L) < CLICK_TIMEOUT_MS
+            if (!inFlight || rubixPredicted[slot] == null) rubixPredicted[slot] = actual
         }
 
-        Type.STARTWITH -> {
-            val match = Regex("What starts with: '(.+?)'\\??", RegexOption.IGNORE_CASE).find(title)
-                ?: return null
-            val wanted = match.groupValues[1].lowercase(java.util.Locale.ROOT)
-            items.indices.firstOrNull { i ->
-                if (isRecentlyClicked(i, now)) return@firstOrNull false
-                val stack = items[i]
-                if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return@firstOrNull false
-                if (TerminalHelper.isSelected(stack)) return@firstOrNull false
-                val name = ChatFormatting.stripFormatting(stack.hoverName.string)?.lowercase(java.util.Locale.ROOT) ?: return@firstOrNull false
-                name.startsWith(wanted)
-            }?.let { Click(it) }
-        }
-
-        Type.RUBIX -> rubixClick(items, now)
-        Type.MELODY -> melodyClick(items, now)
-    }
-
-    private fun rubixClick(items: List<ItemStack>, now: Long): Click? {
-        val allowed = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
-        val panes = allowed.mapNotNull { slot ->
-            val stack = items.getOrNull(slot) ?: return@mapNotNull null
-            val idx = TerminalHelper.rubixColorIndex(stack)
-            if (idx >= 0) slot to idx else null
-        }
-        if (panes.size < 9) return null
-
-        val target: Int
-        if (lastRubixTarget != null) {
-            target = lastRubixTarget!!
-        } else {
-            val costs = IntArray(5)
-            for (t in 0..4) {
-                for (p in panes) {
-                    val fwd = (t - p.second + 5) % 5
-                    costs[t] += fwd
-                }
+        // Spam: stay on the pane already being worked and hit it again until
+        // it lands on the target. Bouncing to another pane between clicks is
+        // what cost a full round trip per click — and it is why this terminal
+        // used to be the slowest one in the room. Deliberately ignores
+        // [blocked]: not waiting for the server is the entire point.
+        if (lastSlot >= 0 && lastSlot in TerminalSolver.RUBIX_SLOTS) {
+            val here = rubixPredicted[lastSlot]
+            if (here != null && here != target) {
+                return Click(lastSlot, TerminalSolver.rubixButton(here, target))
             }
-            target = costs.indices.minByOrNull { costs[it] } ?: return null
-            lastRubixTarget = target
         }
 
-        val mismatches = panes.filter { it.second != target }
-        if (mismatches.isEmpty()) return null
-
-        // Round-robin: pick a slot whose server packet has updated or whose click timed out
-        val readyMismatches = mismatches.filter { (slot, color) ->
-            val lastClicked = rubixLastClickedColor[slot]
-            lastClicked == null || lastClicked != color || (now - (clickedSlotsWithTime[slot] ?: 0L) >= CLICK_TIMEOUT_MS)
+        val pending = TerminalSolver.RUBIX_SLOTS.filter { slot ->
+            val predicted = rubixPredicted[slot] ?: return@filter false
+            slot !in blocked && predicted != target
         }
-
-        val chosen = readyMismatches.firstOrNull { it.first != lastSlot }
-            ?: readyMismatches.firstOrNull()
-            ?: return null
-
-        rubixLastClickedColor[chosen.first] = chosen.second
-        // Use left click (button 0) to cycle forward (+1)
-        return Click(chosen.first, 0)
+        if (pending.isEmpty()) return null
+        val slot = choose(pending, kind) ?: return null
+        val here = rubixPredicted[slot] ?: return null
+        return Click(slot, TerminalSolver.rubixButton(here, target))
     }
 
     private fun melodyClick(items: List<ItemStack>, now: Long): Click? {
-        val magentaSlot = (45..53).firstOrNull { slot ->
-            items.getOrNull(slot)?.`is`(Items.MAGENTA_STAINED_GLASS_PANE) == true
-        } ?: items.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
-        if (magentaSlot < 0) return null
-        val targetCol = (magentaSlot % 9) - 1
-        if (targetCol !in 0..4) return null
-
-        var activeRow = -1
-        var movingCol = -1
-
-        for (r in 0..3) {
-            val buttonSlot = (r + 1) * 9 + 7
-            val buttonStack = items.getOrNull(buttonSlot) ?: continue
-            val rowPaneSlots = ((r + 1) * 9 + 1)..((r + 1) * 9 + 5)
-            val rowPanes = rowPaneSlots.mapNotNull { items.getOrNull(it) }
-
-            val isRowCompleted = buttonStack.`is`(Items.LIME_TERRACOTTA) ||
-                buttonStack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
-                buttonStack.`is`(Items.LIME_CONCRETE) ||
-                buttonStack.`is`(Items.EMERALD_BLOCK) ||
-                rowPanes.all { it.`is`(Items.LIME_STAINED_GLASS_PANE) || it.`is`(Items.GREEN_STAINED_GLASS_PANE) }
-
-            if (isRowCompleted) continue
-
-            val limePaneIndex = rowPaneSlots.firstOrNull { slot ->
-                val stack = items.getOrNull(slot) ?: return@firstOrNull false
-                stack.`is`(Items.LIME_STAINED_GLASS_PANE) || stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
-            }
-
-            if (limePaneIndex != null) {
-                activeRow = r
-                movingCol = (limePaneIndex % 9) - 1
-                break
-            }
-        }
-
-        if (activeRow !in 0..3 || movingCol != targetCol) return null
-
-        // Prevent spam-clicking the same row during a single alignment window (debounce 250ms)
-        if (activeRow == lastMelodyRow && now - lastMelodyRowClickAt < 250L) return null
-
-        val clickedSlot = (activeRow + 1) * 9 + 7
-
-        // Melody Skip feature
-        if (Config.autoTerminalMelodySkip) {
-            val skipAllowed = !(activeRow == 0 && Config.autoTerminalDontSkipFirst)
-            if (skipAllowed && activeRow < 3) {
-                melodySkipQueue.clear()
-                for (r in (activeRow + 1)..3) {
-                    melodySkipQueue.add((r + 1) * 9 + 7)
-                }
-            }
-        }
-
-        lastMelodyRow = activeRow
-        lastMelodyRowClickAt = now
-        return Click(clickedSlot)
+        val slot = TerminalSolver.melodyCandidate(items) ?: return null
+        if (!melodyRowReady(slot, now)) return null
+        return Click(slot)
     }
 
-    private const val NUMBER_TERM_COUNT = 10
+    internal fun melodyRowReady(slot: Int, now: Long): Boolean =
+        slot / 9 != lastMelodyRow || now - lastMelodyRowClickAt >= MELODY_RETRY_TOTAL_MS
 
-    private fun gaussianRandom(minimum: Int, maximum: Int): Int {
-        val minValue = min(minimum, maximum)
-        val maxValue = max(minimum, maximum)
-        if (minValue == maxValue) return minValue
+    /**
+     * Where the pointer sits while Melody runs — and, crucially, the same
+     * thing the click is aimed at, so the two can never disagree.
+     *
+     * Melody's pace is row position, so the aim has exactly one move: after
+     * the click it drops to the row below and stays there while the row above
+     * is acknowledged. It comes back only when the retry window closes with
+     * the server still showing the old row — at which point the click really
+     * is due on that row again and the pointer belongs on it. Reading
+     * [TerminalSolver.melodyCandidate] (what would be clicked) rather than
+     * the moving pointer's row (what the server is drawing) is what stops the
+     * hand shuttling back and forth between two rows at once.
+     */
+    internal fun melodyAimSlot(items: List<ItemStack>, now: Long): Int? {
+        val pending = TerminalSolver.melodyCandidate(items)
+            ?: TerminalSolver.melodyActiveButton(items)
+            ?: TerminalSolver.melodyRows(items).firstOrNull { !it.completed }?.buttonSlot
+        val sinceClick = now - lastMelodyRowClickAt
+        if (lastMelodyRow >= 0 && sinceClick in 0 until MELODY_RETRY_TOTAL_MS) {
+            // Down once, onto the row below — or stay put when there is none.
+            return TerminalSolver.melodyNextButton(items, lastMelodyRow * 9 + 7) ?: pending
+        }
+        return pending
+    }
 
+    /** Commit debounce and skip bookkeeping only after an input was actually sent. */
+    internal fun recordMelodyClick(items: List<ItemStack>, slot: Int, now: Long, skip: Boolean, dontSkipFirst: Boolean) {
+        lastMelodyRow = slot / 9
+        lastMelodyRowClickAt = now
+        melodySkipQueue.clear()
+        val rows = TerminalSolver.melodyRows(items)
+        val firstRow = rows.firstOrNull()?.row
+        if (skip && !(lastMelodyRow == firstRow && dontSkipFirst)) {
+            rows.filter { !it.completed && it.row > lastMelodyRow }.forEach { melodySkipQueue.add(it.buttonSlot) }
+        }
+    }
+
+    /**
+     * One sample from a gaussian in standard deviations, unclamped.
+     *
+     * [delayFor] owns where the sample lands; this only produces it, so the
+     * distribution's shape is pinned here and its *policy* is pinned there.
+     */
+    private fun gaussianSample(): Double {
         val u1 = 1.0 - Random.nextDouble()
         val u2 = 1.0 - Random.nextDouble()
-        val gaussian = sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)
+        return sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)
+    }
 
-        val mean = minValue + (maxValue - minValue) / 2.0
-        val stdDev = (maxValue - minValue) / 6.0
-        val result = gaussian * stdDev + mean
+    /**
+     * The next beat of the click clock.
+     *
+     * [meanMs] is the Click Delay — the number the player actually drags — and
+     * it is what the sample centres on. [fasterMs]/[slowerMs] are how far
+     * either side of it the jitter may reach; they come from the Min/Max
+     * window, which used to *be* an absolute range that swallowed the mean
+     * whole. Set Click Delay outside that range and nothing the player typed
+     * made any difference, which is the whole reason this is a mean with a
+     * spread rather than a range with a midpoint.
+     *
+     * Sigma spans six deviations across the combined spread, which is what
+     * `gaussianRandom` used: a symmetric window around the mean reproduces the
+     * old numbers exactly, so presets keep the cadence they shipped with.
+     *
+     * [sample] is passed in so the harness can pin the policy without
+     * waiting on a distribution.
+     */
+    internal fun delayFor(meanMs: Long, fasterMs: Long, slowerMs: Long, sample: Double): Long {
+        val mean = meanMs.coerceAtLeast(0L)
+        val faster = fasterMs.coerceAtLeast(0L)
+        val slower = slowerMs.coerceAtLeast(0L)
+        if (faster == 0L && slower == 0L) return mean
+        val sigma = (faster + slower) / 6.0
+        return (mean + sample * sigma)
+            .coerceIn((mean - faster).toDouble(), (mean + slower).toDouble())
+            .toLong()
+    }
 
-        return result.coerceIn(minValue.toDouble(), maxValue.toDouble()).toInt()
+    /**
+     * How far either side of the Click Delay the jitter may reach, read from
+     * the stored Min/Max window as *distances* rather than as bounds.
+     *
+     * A bound on the wrong side of the mean (Max set below the Click Delay, or
+     * Min above it) describes a window the player cannot have wanted, so it
+     * falls back to a plain default rather than inverting the spread. A bound
+     * *on* the mean is the opposite case and reads as no spread at all: the
+     * one Delay Spread slider writes exactly that when asked for zero.
+     *
+     * The window is passed in rather than read here so the whole policy is one
+     * function the harness can pin.
+     */
+    internal fun delaySpread(mean: Int, minDelay: Int, maxDelay: Int): Pair<Long, Long> {
+        val faster = if (mean > 0 && minDelay in 1..mean) (mean - minDelay).toLong() else DEFAULT_SPREAD_MS
+        val slower = if (maxDelay >= mean) (maxDelay - mean).toLong() else DEFAULT_SPREAD_MS
+        return faster to slower
     }
 
     private fun nextFirstClickDelayMs(): Long {
-        val base = Config.autoTerminalFirstClickDelayMs.coerceAtLeast(0)
-        if (!Config.autoTerminalRandomDelay) return base.toLong()
-        val min = (base - 30).coerceAtLeast(50)
-        val max = base + 30
-        return gaussianRandom(min, max).toLong()
+        val base = Config.autoTerminalFirstClickDelayMs.coerceAtLeast(0).toLong()
+        if (!Config.autoTerminalRandomDelay) return base
+        return delayFor(base, FIRST_CLICK_SPREAD_MS, FIRST_CLICK_SPREAD_MS, gaussianSample())
     }
 
     private fun nextClickDelayMs(): Long {
-        if (!Config.autoTerminalRandomDelay) {
-            return Config.autoTerminalClickDelayMs.coerceAtLeast(0).toLong()
-        }
-
-        val target = Config.autoTerminalClickDelayMs.coerceAtLeast(0)
-        val minDelay = Config.autoTerminalMinRandomDelayMs.coerceAtLeast(0)
-        val maxDelay = Config.autoTerminalMaxRandomDelayMs.coerceAtLeast(0)
-
-        val lower = if (minDelay > 0 && maxDelay >= minDelay) minDelay else (target - 20).coerceAtLeast(50)
-        val upper = if (maxDelay > 0 && maxDelay >= lower) maxDelay else (target + 20).coerceAtLeast(lower)
-
-        return gaussianRandom(lower, upper).toLong()
+        val mean = Config.autoTerminalClickDelayMs.coerceAtLeast(0).toLong()
+        if (!Config.autoTerminalRandomDelay) return mean
+        val (faster, slower) = delaySpread(
+            mean.toInt(), Config.autoTerminalMinRandomDelayMs, Config.autoTerminalMaxRandomDelayMs
+        )
+        return delayFor(mean, faster, slower, gaussianSample())
     }
 
     fun onEscape() {
@@ -401,7 +583,15 @@ object AutoTerminal {
         reset()
     }
 
-    private fun reset() {
+    /**
+     * Clears solver state without taking the pointer off the screen.
+     *
+     * [reset] is the "this terminal is gone" path and drops the pointer with
+     * it. When a terminal is open but its type is switched off, the clicker
+     * has nothing to forget — the pointer stays where it is, because the
+     * thing that made it appear (a terminal on screen) is still true.
+     */
+    private fun resetSolver() {
         lastClickAt = 0L
         terminalOpenedAt = 0L
         lastSlot = -1
@@ -411,8 +601,15 @@ object AutoTerminal {
         melodySkipQueue.clear()
         clickedSlotsWithTime.clear()
         lastRubixTarget = null
-        rubixLastClickedColor.clear()
+        rubixPredicted.clear()
         lastMelodyRow = -1
         lastMelodyRowClickAt = 0L
+        clicksMade = 0
+        clickGoal = -1
+    }
+
+    private fun reset() {
+        TerminalCursor.reset()
+        resetSolver()
     }
 }

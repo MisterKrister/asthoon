@@ -1,5 +1,6 @@
 package com.asthoonlite.render
 
+import com.asthoonlite.QuietMode
 import com.mojang.blaze3d.vertex.PoseStack
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
@@ -35,10 +36,17 @@ object WorldTextRenderer {
         color: Int = 0xFFFFFF,
         throughWalls: Boolean = true
     ) {
+        if (QuietMode.suppressing()) return
         queue.add(TextEntry(text, x, y, z, scale, color, throughWalls))
     }
 
     private fun render(context: LevelRenderContext) {
+        // Quiet mode can flip mid-frame; drop anything already queued rather
+        // than drawing a label the capture would have seen last frame.
+        if (QuietMode.suppressing()) {
+            queue.clear()
+            return
+        }
         if (queue.isEmpty()) return
         val mc = Minecraft.getInstance()
         val camera = mc.gameRenderer.mainCamera

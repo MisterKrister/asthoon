@@ -1,11 +1,13 @@
 package com.asthoonlite.dungeon.map
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.DungeonContext
 import com.asthoonlite.dungeon.api.*
 import com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes
 import com.asthoonlite.dungeon.api.mapEnums.DoorTypes
 import com.asthoonlite.dungeon.api.mapEnums.RoomTypes
+import com.asthoonlite.mixin.IMapState
 import com.asthoonlite.utils.MathUtils
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
@@ -31,6 +33,10 @@ object DungeonMapScanner {
     private var lastMapId: MapId? = null
     private var scanTicks = 0
     var playerIcons = mutableListOf<PlayerIcon>()
+    /** Raw 128×128 packed colours of the map currently being scanned; the
+     *  legit base draws its pixels from here. Null until the first map packet. */
+    var mapColors: ByteArray? = null
+        private set
 
     data class PlayerIcon(val x: Double, val z: Double, val rot: Double, val name: String?)
 
@@ -50,6 +56,7 @@ object DungeonMapScanner {
         playerIcons.clear()
         lastMapId = null
         scanTicks = 0
+        mapColors = null
     }
 
     private enum class MapColors(val color: Byte) {
@@ -149,6 +156,7 @@ object DungeonMapScanner {
             return
         }
         lastMapId = mapId
+        mapColors = colors
 
         val floor = if (DungeonContext.floor != FloorType.None) DungeonContext.floor else FloorType.M7
         if (roomSize == -1 && !scanMapDimensions(colors, floor)) {
@@ -157,10 +165,53 @@ object DungeonMapScanner {
         }
 
         updateRooms(colors)
-        updatePlayerIcons(mapState.decorations.toList())
+        // The keyed map, not `mapState.decorations` (that getter throws the keys
+        // away, and the key is the only thing that ties a decoration back to a
+        // named player — see updatePlayerIcons).
+        val keyed = (mapState as? IMapState)?.`asthoonlite$getDecorations`() ?: return
+        updatePlayerIcons(keyed)
     }
 
-    private fun updatePlayerIcons(decorations: List<MapDecoration>) {
+    /**
+     * Decoration types that vanilla uses for actual players. Everything else on
+     * the map (markers, targets, banners, and whatever Hypixel drops in for mobs
+     * and waypoints) is not a player and must not be drawn as one.
+     */
+    internal fun isPlayerDecoration(type: net.minecraft.world.level.saveddata.maps.MapDecorationType): Boolean =
+        type === MapDecorationTypes.PLAYER.value() ||
+            type === MapDecorationTypes.PLAYER_OFF_MAP.value() ||
+            type === MapDecorationTypes.PLAYER_OFF_LIMITS.value()
+
+    /**
+     * The decoration key when — and only when — it is a bare index ("0",
+     * "+3"). Hypixel has used both index-style and opaque keys for player
+     * markers over the years, so anything else (a UUID, a name, "mob-2")
+     * returns null rather than guessing: a key that only *ends* in a digit
+     * would otherwise bind a mob marker to whichever teammate that digit
+     * happened to index. The ordered-name fallback in [updatePlayerIcons]
+     * covers the opaque-key case.
+     */
+    internal fun indexKeyFrom(key: String): Int? {
+        val body = key.removePrefix("+")
+        if (body.isEmpty() || !body.all { it in '0'..'9' }) return null
+        return body.toIntOrNull()
+    }
+
+    /**
+     * Turns the raw decoration map into the icons the map draws.
+     *
+     * The rule is the one that keeps mobs off the map: a decoration is only
+     * drawn if it is a player-type marker AND it resolves to a name — either
+     * the name Hypixel attached to it, or the teammate its key index points at.
+     * A marker with no player behind it is dropped instead of being handed a
+     * teammate's name by list position, which is what used to put mob markers
+     * on the map wearing somebody else's face.
+     *
+     * `Config.dungeonMapAllDecorations` opts back in to drawing every non-frame
+     * decoration for people who do want the extra markers; those keep whatever
+     * name the packet carried, or none at all.
+     */
+    private fun updatePlayerIcons(decorations: Map<String, MapDecoration>) {
         if (roomGap <= 0) return
         val icons = mutableListOf<PlayerIcon>()
         val mc = Minecraft.getInstance()
@@ -170,49 +221,96 @@ object DungeonMapScanner {
         val selfGx = (localPlayer.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize.toDouble()
         val selfGz = (localPlayer.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize.toDouble()
 
-        val onlineTeammates = mc.connection?.onlinePlayers
+        val teammates = mc.connection?.onlinePlayers
             ?.filter { !it.profile.name.equals(localName, ignoreCase = true) }
             ?.map { it.profile.name }
-            ?.toMutableList() ?: mutableListOf()
+            ?: emptyList()
 
-        val validDecs = decorations.filter { it.type().value() != MapDecorationTypes.FRAME.value() }
-
-        var selfDecIndex = -1
+        // The self marker is identified by position, not by key: it is the
+        // decoration sitting in the grid cell the player is standing in.
+        var selfKey: String? = null
         var minSelfDist = Double.MAX_VALUE
-        validDecs.forEachIndexed { i, dec ->
-            val gx = MathUtils.rescale((dec.x().toDouble() + 128.0) * 0.5, mapOffsetX.toDouble(), (mapOffsetX + roomGap * 6).toDouble(), 0.0, 12.0) / 2.0
-            val gz = MathUtils.rescale((dec.y().toDouble() + 128.0) * 0.5, mapOffsetZ.toDouble(), (mapOffsetZ + roomGap * 6).toDouble(), 0.0, 12.0) / 2.0
+        for ((key, dec) in decorations) {
+            if (dec.type().value() == MapDecorationTypes.FRAME.value()) continue
+            // /2.0: rescale lands in the map's 0..12 half-cell space, selfGx is
+            // in 0..6 grid cells — same conversion the icon draw path applies.
+            val gx = rescaleDecX(dec) / 2.0
+            val gz = rescaleDecZ(dec) / 2.0
             val dist = kotlin.math.hypot(gx - selfGx, gz - selfGz)
             if (dist < minSelfDist) {
                 minSelfDist = dist
-                selfDecIndex = i
+                selfKey = key
             }
         }
+        val dropSelf = minSelfDist < 0.8
 
-        validDecs.forEachIndexed { i, dec ->
-            // Exclude local player's own decoration
-            if (i == selfDecIndex && minSelfDist < 0.8) return@forEachIndexed
+        // Naming, in order of authority: the name Hypixel attached to the
+        // decoration, then the teammate its index key points at, then the next
+        // unused name from the tab list (for opaque keys). Each name is claimed
+        // exactly once, so two markers can never wear the same player's face —
+        // and a marker that cannot claim one is not a player, so it is dropped.
+        val namePool = ArrayDeque(teammates)
+        val usedNames = HashSet<String>()
 
-            val x = MathUtils.rescale(
-                (dec.x().toDouble() + 128.0) * 0.5,
-                mapOffsetX.toDouble(), (mapOffsetX + roomGap * 6).toDouble(),
-                0.0, 12.0
-            )
-            val z = MathUtils.rescale(
-                (dec.y().toDouble() + 128.0) * 0.5,
-                mapOffsetZ.toDouble(), (mapOffsetZ + roomGap * 6).toDouble(),
-                0.0, 12.0
-            )
-            val r = -(dec.rot() / 16.0 * 360.0 + 90.0) / 180.0 * PI
+        fun claim(candidate: String?): String? {
+            if (candidate == null) return null
+            return if (usedNames.add(candidate.lowercase(java.util.Locale.ROOT))) candidate else null
+        }
+
+        fun claimFromPool(): String? {
+            while (namePool.isNotEmpty()) {
+                val claimed = claim(namePool.removeFirst())
+                if (claimed != null) return claimed
+            }
+            return null
+        }
+
+        for ((key, dec) in decorations) {
+            if (dec.type().value() == MapDecorationTypes.FRAME.value()) continue
+            if (dropSelf && key == selfKey) continue
+
+            val playerType = isPlayerDecoration(dec.type().value())
             val explicitName = dec.name().map { it.string }.orElse(null)
-            val name = explicitName ?: if (onlineTeammates.isNotEmpty()) onlineTeammates.removeAt(0) else null
-            icons.add(PlayerIcon(x, z, r, name))
+
+            var name: String? = null
+            if (explicitName != null) name = claim(explicitName)
+            if (name == null) name = claim(indexKeyFrom(key)?.let { teammates.getOrNull(it) })
+            if (name == null && playerType) name = claimFromPool()
+
+            when {
+                // A player marker we could name: the normal case.
+                playerType && name != null -> Unit
+                // Opt-in dump of everything else on the map (mob and waypoint
+                // markers): keep it, with whatever name the packet carried.
+                Config.dungeonMapAllDecorations -> Unit
+                // No player behind this marker: leave it off the map.
+                else -> continue
+            }
+
+            icons.add(PlayerIcon(rescaleDecX(dec), rescaleDecZ(dec), decRot(dec), name))
         }
         playerIcons = icons
         if (decorations.isNotEmpty()) {
             AsthoonLite.LOGGER.info("[AsthoonLite-Debug] DungeonMapScanner.updatePlayerIcons: ${decorations.size} decorations -> ${icons.size} player icons: ${icons.map { "${it.name}@(${it.x.toInt()},${it.z.toInt()})" }}")
         }
     }
+
+    private fun rescaleDecX(dec: MapDecoration): Double =
+        MathUtils.rescale(
+            (dec.x().toDouble() + 128.0) * 0.5,
+            mapOffsetX.toDouble(), (mapOffsetX + roomGap * 6).toDouble(),
+            0.0, 12.0
+        )
+
+    private fun rescaleDecZ(dec: MapDecoration): Double =
+        MathUtils.rescale(
+            (dec.y().toDouble() + 128.0) * 0.5,
+            mapOffsetZ.toDouble(), (mapOffsetZ + roomGap * 6).toDouble(),
+            0.0, 12.0
+        )
+
+    private fun decRot(dec: MapDecoration): Double =
+        -(dec.rot() / 16.0 * 360.0 + 90.0) / 180.0 * PI
 
     internal fun colorAt(colors: ByteArray, x: Int, z: Int): Byte? =
         if (x in 0 until SCAN && z in 0 until SCAN) colors.getOrNull(x + z * SCAN) else null

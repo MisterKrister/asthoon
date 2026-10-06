@@ -1,5 +1,6 @@
 package com.asthoonlite.render
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.etherwarp.EtherwarpHelper
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelExtractionContext
@@ -45,6 +46,7 @@ object EtherwarpOverlay {
 
     private fun extract(context: LevelExtractionContext) {
         targetPos = null
+        if (QuietMode.suppressing()) return
         if (!Config.etherwarpEnabled) return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return

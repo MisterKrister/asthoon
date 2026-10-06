@@ -1,6 +1,7 @@
 package com.asthoonlite.mining
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.hud.AlertHud
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
@@ -118,6 +119,7 @@ object PickaxeAbilityTimer : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         if (!Config.pickaxeAbilityTimerEnabled) return
         if (cooldownEndMs < 0) return
 

@@ -1,6 +1,8 @@
 package com.asthoonlite.gui
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
+import com.asthoonlite.dungeon.TerminalClickOrder
 import com.asthoonlite.pet.PetHudEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
 import net.minecraft.client.Minecraft
@@ -95,6 +97,15 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         override val height: Int = ROW_H
     }
 
+    /**
+     * A non-interactive line of explanation, drawn under the section it is
+     * about. A setting is only easy to use when the consequence of flipping it
+     * is written next to the switch instead of guessed at.
+     */
+    private data class NoteRow(val text: String) : ContentItem {
+        override val height: Int = 15
+    }
+
     private data class WidgetRow(val widget: AbstractWidget) : ContentItem {
         override val height: Int = widget.height
     }
@@ -110,6 +121,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var listeningForAutoClickerKey = false
     private lateinit var btnInventoryAutoClickerKey: ModernButton
     private var listeningForInventoryAutoClickerKey = false
+    private lateinit var btnQuietModeKey: ModernButton
+    private var listeningForQuietModeKey = false
     private lateinit var searchBox: EditBox
     private var searchQuery = ""
     private var scrollOffset = 0
@@ -188,6 +201,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         dungeonSectionButtons.clear()
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
+        listeningForQuietModeKey = false
 
         val px = px()
         val py = py()
@@ -215,7 +229,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             }
         }
 
-        currentItems = buildItemsForTab(tab, px)
+        currentItems = applyCollapse(buildItemsForTab(tab, px))
 
         var relY = 0
         for (item in currentItems) {
@@ -226,7 +240,34 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             relY += item.height + ROW_GAP
         }
 
+        // Folding a section shortens the list, so the viewport can now sit
+        // past the end of it. Clamping here rather than on the next scroll
+        // keeps the first frame after a fold on screen instead of blank.
+        scrollOffset = scrollOffset.coerceIn(0, maxScroll())
         updateWidgetPositions()
+    }
+
+    /**
+     * Drops the rows of every section the player has folded away, keeping the
+     * headers themselves so the folded state stays visible and clickable.
+     *
+     * Nothing is deleted — the settings are all still there, one click on the
+     * header from being back. That is the whole point: a long tab should be
+     * *short by default*, not short by removal.
+     */
+    private fun applyCollapse(items: List<ContentItem>): List<ContentItem> {
+        if (items.none { it is SectionHeader && Config.isSectionCollapsed(it.title) }) return items
+        val out = ArrayList<ContentItem>(items.size)
+        var hidden = false
+        for (item in items) {
+            if (item is SectionHeader) {
+                hidden = Config.isSectionCollapsed(item.title)
+                out.add(item)
+            } else if (!hidden) {
+                out.add(item)
+            }
+        }
+        return out
     }
 
     private fun updateWidgetPositions() {
@@ -286,6 +327,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         dungeonSectionButtons.clear()
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
+        listeningForQuietModeKey = false
 
         val px = px()
         val all = getAllSearchableItems(px)
@@ -331,6 +373,16 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 }),
                 ToggleRow("Pet Menu Highlight", "Glows active pet in Pets GUI",
                     { Config.petMenuHighlightEnabled }, { Config.petMenuHighlightEnabled = it }),
+                SectionHeader("Session"),
+                ToggleRow("Quiet Mode", "Draws nothing in-game so a window capture looks vanilla",
+                    { Config.quietModeEnabled }, { QuietMode.setEnabled(it) }),
+                WidgetRow(run {
+                    btnQuietModeKey = ModernButton(subX, 0, subW, 24, Component.literal(quietModeKeyLabel())) {
+                        listeningForQuietModeKey = true
+                        btnQuietModeKey.message = Component.literal("Press a key (ESC = NONE)")
+                    }
+                    btnQuietModeKey
+                }),
                 SectionHeader("Configuration"),
                 WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Reset All Settings to Clean Defaults")) {
                     Config.resetToCleanDefaults()
@@ -350,8 +402,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapAlwaysShow }, { Config.dungeonMapAlwaysShow = it }),
                 ToggleRow("  ↳ Full Map / Unopened", "Show unopened rooms from map packet",
                     { Config.dungeonMapFullGrid }, { Config.dungeonMapFullGrid = it }),
+                ToggleRow("  ↳ Legit Base", "Draw only what the held map item shows: explored rooms, cleared-room checkmarks, no names or counters",
+                    { Config.dungeonMapLegitBase }, { Config.dungeonMapLegitBase = it }),
                 ToggleRow("  ↳ Hide Map in Boss", "Automatically hide map during boss fights",
                     { Config.dungeonMapHideInBoss }, { Config.dungeonMapHideInBoss = it }),
+                ToggleRow("  ↳ External Overlay Window",
+                    "Draw the map in its own always-on-top window, outside the game window, so a window capture never sees it",
+                    { Config.dungeonMapExternalWindow }, { Config.dungeonMapExternalWindow = it }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 1, 6, Config.dungeonMapScale.toInt(), "Map Scale: ", "x") {
                     Config.dungeonMapScale = it.toFloat()
                     Config.save()
@@ -379,6 +436,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapPlayerNames }, { Config.dungeonMapPlayerNames = it }),
                 ToggleRow("    ↳ Only When Holding Leap", "Only show names while holding Spirit Leap",
                     { Config.dungeonMapNamesOnlyLeap }, { Config.dungeonMapNamesOnlyLeap = it }),
+                ToggleRow("  ↳ All Map Markers", "Draw every decoration from the map packet, including mob and waypoint markers (off = teammate markers only)",
+                    { Config.dungeonMapAllDecorations }, { Config.dungeonMapAllDecorations = it }),
                 SectionHeader("Room Labels & Secrets"),
                 ToggleRow("  ↳ Show Room Names", "Display room titles on the map",
                     { Config.dungeonMapShowNames }, { Config.dungeonMapShowNames = it }),
@@ -394,47 +453,104 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapDontRenderFairyCheckmark }, { Config.dungeonMapDontRenderFairyCheckmark = it }),
             )
             Tab.TERMINALS -> listOf(
-                SectionHeader("Presets"),
+                // Grouped by what the row is *for*: what runs, when it clicks,
+                // how it moves, what it looks like. Two controls that had to
+                // agree with a third became one — Delay Spread is the whole
+                // Min/Max window centred on Click Delay — the duplicated First
+                // Click Delay row is gone, and Melody moved out of the timing
+                // list into a section of its own, which is where its rows were
+                // reading from all along.
+                SectionHeader("Solver & Automation"),
                 WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Load AutoTerm Preset")) {
                     Config.applyRsmAutoPreset()
                     rebuildTab(Tab.TERMINALS)
                 }),
-                SectionHeader("Solver & Automation"),
                 ToggleRow("Auto Terminal", "Automatically clicks the correct terminal buttons",
                     { Config.autoTerminalEnabled }, { Config.autoTerminalEnabled = it }),
+                ToggleRow("  ↳ Run Anywhere (P3 Sim)", "Also runs outside a real dungeon — the terminal title is all the identification needed, so the p3 simulator and practice worlds work",
+                    { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
-                SectionHeader("Click Timing & Delays"),
+                ToggleRow("Terminal Progress", "Shows the terminal's name and how far through it the clicker is, centred near the top while a terminal is open",
+                    { Config.autoTerminalHudProgress }, { Config.autoTerminalHudProgress = it }),
+                WidgetRow(clickOrderButton(fullX, fullW)),
+                NoteRow("Which ready pane the clicker takes next. Human works outwards from where the pointer already is, Random takes any of them, None goes by slot number, and Skizo sends it to the far side of the pane every time."),
+                SectionHeader("Click Timing"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 500, Config.autoTerminalMinRandomDelayMs, "Min Random Delay: ", " ms") {
-                    Config.autoTerminalMinRandomDelayMs = it
-                }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 500, Config.autoTerminalMaxRandomDelayMs, "Max Random Delay: ", " ms") {
-                    Config.autoTerminalMaxRandomDelayMs = it
-                }),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 600, Config.autoTerminalFirstClickDelayMs, "First Click Delay: ", " ms") {
-                    Config.autoTerminalFirstClickDelayMs = it
-                }),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalClickDelayMs, "Click Delay: ", " ms") {
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 1000, Config.autoTerminalClickDelayMs, "Click Delay: ", " ms") {
                     Config.autoTerminalClickDelayMs = it
                 }),
-                ToggleRow("No Break", "Clicks continuously without pause",
-                    { Config.autoTerminalNoBreak }, { Config.autoTerminalNoBreak = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 100, 1000, Config.autoTerminalBreakThresholdMs, "Break Threshold: ", " ms") {
-                    Config.autoTerminalBreakThresholdMs = it
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 500, Config.autoTerminalDelaySpreadMs, "Delay Spread: ±", " ms") {
+                    Config.autoTerminalDelaySpreadMs = it
                 }),
-                SectionHeader("Melody Settings"),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
-                    Config.autoTerminalMelodyFirstClickDelayMs = it
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 1000, Config.autoTerminalFirstClickDelayMs, "First Click Delay: ", " ms") {
+                    Config.autoTerminalFirstClickDelayMs = it
                 }),
+                NoteRow("Click Delay is the centre of every beat and Delay Spread is how far either side of it one beat may stray. One number instead of a Min and a Max that had to be kept in step with it, and the beat cannot end up outside a range that ignores what you set."),
+                SectionHeader("Melody"),
                 ToggleRow("Melody Skip", "Skips subsequent Melody rows on correct timing",
                     { Config.autoTerminalMelodySkip }, { Config.autoTerminalMelodySkip = it }),
                 ToggleRow("  ↳ Don't Skip First Row", "Waits for first row before skipping",
                     { Config.autoTerminalDontSkipFirst }, { Config.autoTerminalDontSkipFirst = it }),
                 ToggleRow("Announce Melody in Chat", "Sends party chat message when opening Melody",
                     { Config.autoTerminalAnnounceMelody }, { Config.autoTerminalAnnounceMelody = it }),
-                SectionHeader("Terminal Types"),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 1000, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
+                    Config.autoTerminalMelodyFirstClickDelayMs = it
+                }),
+                SectionHeader("Pointer"),
+                ToggleRow("Glide Pointer", "Draws a pointer that travels between panes while clicks follow the terminal timing",
+                    { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
+                ToggleRow("  ↳ Hide Real Cursor", "Steps the real cursor aside while the drawn pointer is on screen",
+                    { Config.autoTerminalCursorHideReal }, { Config.autoTerminalCursorHideReal = it }),
+                ToggleRow("  ↳ Glide On Melody", "Glides to the next row immediately after a click, without waiting for the row update",
+                    { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 25, 400, Config.autoTerminalCursorSpeed, "Pointer Speed: ", "%") {
+                    Config.autoTerminalCursorSpeed = it
+                }),
+                NoteRow("100% = natural hand speed. Higher is snappier. The trip is fitted into the beat, so Pointer Speed changes how it looks, never how fast the terminal runs — that is Click Delay."),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalHumanize, "Humanize: ", "%") {
+                    Config.autoTerminalHumanize = it
+                }),
+                NoteRow("Humanize scales how much everything below varies: timing, arc, tremor, curve, the pause before moving, and carrying past a pane before settling. 0 is a machine — identical hops every time."),
+                SectionHeader("Pointer Fine Tuning"),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorArc, "Pointer Arc: ", "%") {
+                    Config.autoTerminalCursorArc = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorJitter, "Pointer Tremor: ", "%") {
+                    Config.autoTerminalCursorJitter = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseX1, "Acceleration X1: ", "%") {
+                    Config.autoTerminalEaseX1 = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseY1, "Acceleration Y1: ", "%") {
+                    Config.autoTerminalEaseY1 = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseX2, "Landing X2: ", "%") {
+                    Config.autoTerminalEaseX2 = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseY2, "Landing Y2: ", "%") {
+                    Config.autoTerminalEaseY2 = it
+                }),
+                SectionHeader("Custom Terminal GUI"),
+                ToggleRow("Custom Terminal GUI", "Draws the terminal as its own grid centred on screen — sized, gapped and rounded here rather than inherited from the chest panel. Clicks are routed through the grid.",
+                    { Config.termGuiEnabled }, { Config.termGuiEnabled = it }),
+                WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 3.0f, Config.termGuiSize, "Term Size: ", "x") {
+                    Config.termGuiSize = it
+                }),
+                WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 3.0f, Config.termGuiMelodySize, "Melody Size: ", "x") {
+                    Config.termGuiMelodySize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 8, Config.termGuiGap, "Tile Gap: ", " px") {
+                    Config.termGuiGap = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 15, Config.termGuiRoundness, "Roundness: ", " px") {
+                    Config.termGuiRoundness = it
+                }),
+                NoteRow("Melody carries its own size — five rows of seven does not fit at the term size."),
+                ToggleRow("Click Flash", "Marks the pane a click was for, fading out over the same instant the click lands",
+                    { Config.termGuiClickFlash }, { Config.termGuiClickFlash = it }),
+                SectionHeader("Terminal Types — all on by default"),
                 ToggleRow("Automate Colours", "Solves 'Select all the X items'",
                     { Config.autoTermColors }, { Config.autoTermColors = it }),
                 ToggleRow("Automate Melody", "Solves 'Click the button on time!'",
@@ -460,12 +576,27 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.skullHitboxEnabled }, { Config.skullHitboxEnabled = it }),
                 ToggleRow("  ↳ Mushroom Hitbox", "Full block Mushroom hitbox",
                     { Config.mushroomHitboxEnabled }, { Config.mushroomHitboxEnabled = it }),
+                SectionHeader("Hitbox Sizes"),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretHitboxSize, "Expansion (all): ", "%") {
+                    Config.secretHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretLeverHitboxSize, "Lever Size: ", "%") {
+                    Config.secretLeverHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretButtonHitboxSize, "Button Size: ", "%") {
+                    Config.secretButtonHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretSkullHitboxSize, "Skull Size: ", "%") {
+                    Config.secretSkullHitboxSize = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretMushroomHitboxSize, "Mushroom Size: ", "%") {
+                    Config.secretMushroomHitboxSize = it
+                }),
+                NoteRow("Each size multiplies Expansion (all). 100% = follow it."),
+                NoteRow("Buttons keep their real depth — only length and width grow."),
                 SectionHeader("Hitbox Visuals & Outline"),
                 ToggleRow("Show 3D Hitbox Boxes", "Renders custom 3D boxes in-game",
                     { Config.moddedHitboxDisplayEnabled }, { Config.moddedHitboxDisplayEnabled = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 10, 100, Config.secretHitboxSize, "Hitbox Size: ", "%") {
-                    Config.secretHitboxSize = it
-                }),
                 ToggleRow("Legit Selection Outline", "Shows vanilla outline when looking at blocks",
                     { Config.secretHitboxVanillaOutline }, { Config.secretHitboxVanillaOutline = it }),
                 ToggleRow("Hide Selection Outline", "Completely hide the in-game black selection outline",
@@ -681,6 +812,26 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
     }
 
+    /**
+     * The Click Order row: one button that cycles None → Random → Human →
+     * Skizo → None. The label is rewritten on press rather than the row being
+     * rebuilt, so the button always reads the mode that is actually in force —
+     * a row that showed the old mode after a click would be a setting that
+     * lies about itself.
+     */
+    private fun clickOrderButton(x: Int, w: Int): ModernButton {
+        var button: ModernButton? = null
+        button = ModernButton(x, 0, w, 24, Component.literal(clickOrderLabel())) {
+            Config.autoTerminalClickOrder =
+                (Config.autoTerminalClickOrder + 1) % TerminalClickOrder.MODE_COUNT
+            button?.setMessage(Component.literal(clickOrderLabel()))
+        }
+        return button
+    }
+
+    private fun clickOrderLabel(): String =
+        "Click Order: ${TerminalClickOrder.modeName(Config.autoTerminalClickOrder)}"
+
     private fun autoClickerKeyLabel(): String {
         if (listeningForAutoClickerKey) return "Press a key (ESC = NONE)"
         val key = Config.autoClickerKey
@@ -697,7 +848,28 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return "Stash Macro Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
     }
 
+    private fun quietModeKeyLabel(): String {
+        if (listeningForQuietModeKey) return "Press a key (ESC = NONE)"
+        val key = Config.quietModeKey
+        if (key == InputConstants.UNKNOWN.value || key == GLFW.GLFW_KEY_UNKNOWN || key < 0) return "Quiet Mode Keybind: NONE"
+        if (key in 0..7) return "Quiet Mode Keybind: MOUSE $key"
+        return "Quiet Mode Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
+    }
+
     override fun keyPressed(event: KeyEvent): Boolean {
+        if (listeningForQuietModeKey) {
+            val keyCode = event.key()
+            Config.quietModeKey = if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                InputConstants.UNKNOWN.value
+            } else {
+                keyCode
+            }
+            listeningForQuietModeKey = false
+            if (::btnQuietModeKey.isInitialized) {
+                btnQuietModeKey.message = Component.literal(quietModeKeyLabel())
+            }
+            return true
+        }
         if (listeningForAutoClickerKey) {
             val keyCode = event.key()
             Config.autoClickerKey = if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
@@ -737,6 +909,14 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     }
 
     override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        if (listeningForQuietModeKey && event.button() != 0) {
+            Config.quietModeKey = event.button()
+            listeningForQuietModeKey = false
+            if (::btnQuietModeKey.isInitialized) {
+                btnQuietModeKey.message = Component.literal(quietModeKeyLabel())
+            }
+            return true
+        }
         if (listeningForAutoClickerKey && event.button() != 0) {
             Config.autoClickerKey = event.button()
             listeningForAutoClickerKey = false
@@ -770,6 +950,21 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 for (item in currentItems) {
                     val itemY = top - scrollOffset + curRelY
                     val itemH = item.height
+                    // A header folds its section. Only outside search: a search
+                    // result list has no sections to fold, only group labels.
+                    if (item is SectionHeader && searchQuery.isEmpty()) {
+                        val hx = px + 16
+                        val hw = PANEL_W - 32
+                        if (mx in hx..(hx + hw) && my in itemY..(itemY + itemH)) {
+                            if (::searchBox.isInitialized && searchBox.isFocused) {
+                                searchBox.isFocused = false
+                            }
+                            Config.toggleSectionCollapsed(item.title)
+                            AbstractWidget.playButtonClickSound(minecraft.soundManager)
+                            rebuildTab(activeTab)
+                            return true
+                        }
+                    }
                     if (item is ToggleRow) {
                         val isSub2 = item.label.startsWith("    ↳ ")
                         val isSub1 = !isSub2 && item.label.startsWith("  ↳ ")
@@ -876,7 +1071,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             if (itemY + itemH >= top && itemY <= bottom) {
                 when (item) {
                     is SectionHeader -> {
-                        drawSectionHeader(context, px + 16, itemY, PANEL_W - 32, itemH, item.title)
+                        val hx = px + 16
+                        val hw = PANEL_W - 32
+                        val hovered = searchQuery.isEmpty() &&
+                            mouseX in hx..(hx + hw) && mouseY in itemY..(itemY + itemH)
+                        drawSectionHeader(context, hx, itemY, hw, itemH, item.title, hovered)
                     }
                     is ToggleRow -> {
                         val isSub2 = item.label.startsWith("    ↳ ")
@@ -889,6 +1088,9 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     }
                     is WidgetRow -> {
                         item.widget.extractRenderState(context, mouseX, mouseY, delta)
+                    }
+                    is NoteRow -> {
+                        context.text(font, item.text, px + 20, itemY + 3, COL_TEXT_SUB)
                     }
                 }
             }
@@ -913,7 +1115,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
 
         // ── Footer hint ──────────────────────────────────────────────────────
-        val hint = "Click row to toggle • Scroll to view more"
+        val hint = "Click a header to fold • Click a row to toggle"
         val hintW = font.width(hint)
         context.text(font, hint, px + (PANEL_W - hintW) / 2, py + pH - 10, COL_TEXT_MUTED)
 
@@ -923,20 +1125,36 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private fun drawSectionHeader(
         ctx: GuiGraphicsExtractor,
         x: Int, y: Int, w: Int, h: Int,
-        title: String
+        title: String,
+        hovered: Boolean = false
     ) {
-        val titleText = "✦  ${title.uppercase()}"
+        // Search results are grouped, not sectioned — a caret there would
+        // promise a fold that does nothing.
+        val foldable = searchQuery.isEmpty()
+        val collapsed = foldable && Config.isSectionCollapsed(title)
+        if (hovered) ctx.fill(x - 6, y, x + w, y + h, COL_CARD_HOVER)
+
+        val caret = if (!foldable) "" else if (collapsed) "▸  " else "▾  "
+        val titleText = "✦  $caret${title.uppercase()}"
         val textW = font.width(titleText)
         val textY = y + (h - 8) / 2
 
         // Render accent colored section title
         ctx.text(font, titleText, x, textY, COL_ACCENT)
 
+        // The fold affordance only speaks up on hover: a label on every header
+        // would add exactly the clutter the folding is meant to remove.
+        if (foldable && hovered) {
+            val foldNote = if (collapsed) "click to open" else "click to fold"
+            ctx.text(font, foldNote, x + w - font.width(foldNote), textY, COL_TEXT_MUTED)
+        }
+
         // Subtle divider line extending from end of text to right edge
         val lineX = x + textW + 8
         val lineY = y + h / 2
-        if (lineX < x + w) {
-            ctx.fill(lineX, lineY, x + w, lineY + 1, 0xFF1E293B.toInt())
+        val lineEnd = if (foldable && hovered) x + w - 64 else x + w
+        if (lineX < lineEnd) {
+            ctx.fill(lineX, lineY, lineEnd, lineY + 1, 0xFF1E293B.toInt())
         }
     }
 

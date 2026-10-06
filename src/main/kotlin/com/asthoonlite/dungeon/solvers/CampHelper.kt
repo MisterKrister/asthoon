@@ -1,5 +1,6 @@
 package com.asthoonlite.dungeon.solvers
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.DungeonContext
 import com.asthoonlite.dungeon.DungeonServerTick
@@ -174,6 +175,7 @@ object CampHelper : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         if (!Config.bloodRoomSolverEnabled || !Config.campHelperShowTimer || bloodStands.isEmpty()) return
         val mc = Minecraft.getInstance()
         val st = DungeonServerTick.current.toInt()

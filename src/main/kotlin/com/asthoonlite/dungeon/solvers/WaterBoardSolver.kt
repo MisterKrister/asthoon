@@ -1,5 +1,6 @@
 package com.asthoonlite.dungeon.solvers
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.DungeonContext
 import com.asthoonlite.dungeon.map.DungeonScanner
@@ -220,6 +221,7 @@ object WaterBoardSolver : HudElement {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
+        if (QuietMode.suppressing()) return
         if (!Config.waterBoardSolverEnabled || !DungeonContext.inDungeon || patternId == -1 || solution.isEmpty()) return
         val mc = Minecraft.getInstance()
         val elapsed = if (waterLeverStartMs == -1L) 0.0 else (System.currentTimeMillis() - waterLeverStartMs) / 1000.0

@@ -1,6 +1,7 @@
 package com.asthoonlite.render
 
 import com.asthoonlite.AsthoonLite
+import com.asthoonlite.QuietMode
 import com.mojang.blaze3d.pipeline.BlendFunction
 import com.mojang.blaze3d.pipeline.ColorTargetState
 import com.mojang.blaze3d.buffers.GpuBuffer
@@ -116,6 +117,7 @@ object WorldBoxRenderer {
         x1: Double, y1: Double, z1: Double, x2: Double, y2: Double, z2: Double,
         r: Float, g: Float, b: Float, a: Float, throughWalls: Boolean = false
     ) {
+        if (QuietMode.suppressing()) return
         filledQueue.add(Box(x1, y1, z1, x2, y2, z2, r, g, b, a, throughWalls))
     }
 
@@ -125,6 +127,7 @@ object WorldBoxRenderer {
         r: Float, g: Float, b: Float, a: Float, thickness: Double = 0.02,
         throughWalls: Boolean = false
     ) {
+        if (QuietMode.suppressing()) return
         val t = thickness
         // 4 verticals
         edge(x1, y1, z1, x1 + t, y2, z1 + t, r, g, b, a, throughWalls)
@@ -150,6 +153,7 @@ object WorldBoxRenderer {
         thickness: Double = 0.04,
         throughWalls: Boolean = false
     ) {
+        if (QuietMode.suppressing()) return
         val dx = x2 - x1
         val dy = y2 - y1
         val dz = z2 - z1
@@ -194,6 +198,9 @@ object WorldBoxRenderer {
     }
 
     private fun renderAndDraw(context: LevelRenderContext) {
+        // Second gate: quiet mode can flip between the queue pass and here,
+        // and a frame queued before it flipped must not be drawn.
+        if (QuietMode.suppressing()) return
         if (filledQueue.isEmpty() && quadQueue.isEmpty()) return
 
         renderBoxes(context, throughWalls = false)
