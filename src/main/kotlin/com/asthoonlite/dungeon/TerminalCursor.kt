@@ -30,8 +30,9 @@ import kotlin.random.Random
  * Path shape, in order of importance:
  *  - a quadratic bezier whose control point is pushed off the straight line, so
  *    the pointer bows instead of tracking a ruler;
- *  - minimum-jerk easing (6t^5-15t^4+10t^3), which is what a real arm
- *    does — accelerate, then settle onto the target rather than stopping dead;
+ *  - a cubic bezier *timing* curve for acceleration (see [progressAt]), so the
+ *    pointer ramps up, covers the ground and settles onto the target rather
+ *    than starting at full speed or arriving at it;
  *  - a decaying tremor, because a hand does not hold still on the way in;
  *  - travel time scaled by distance with gaussian spread, so a far flick takes
  *    longer than a hop to the neighbouring pane.
@@ -219,14 +220,82 @@ object TerminalCursor {
 
     /**
      * Normalised progress along the path, before the bezier is evaluated.
-     * Minimum-jerk easing: zero velocity at both ends, which is what stops the
-     * pointer arriving at full speed and teleporting to a stop.
+     *
+     * This used to be a hard-coded minimum-jerk polynomial — one shape, no
+     * way to change it. It is now a cubic bezier timing curve, the same
+     * object CSS `cubic-bezier(x1, y1, x2, y2)` describes: x1/y1 and x2/y2
+     * are the control points of a curve in which *x is time* and *y is
+     * distance covered*, so the curve's slope at any point is the pointer's
+     * velocity. Move the control points and you move where it accelerates
+     * and where it settles.
+     *
+     * The defaults are CSS's `ease` — a short ramp in, most of the ground
+     * covered in the first half, then a soft landing. Against the polynomial
+     * it replaced that is roughly twice the distance at the halfway mark,
+     * which is the difference between a pointer that walks across the
+     * terminal and one that flicks.
      */
     internal fun progressAt(elapsedMs: Long, durationMs: Long): Float {
         if (durationMs <= 0L) return 1f
         val t = (elapsedMs.toDouble() / durationMs).toFloat().coerceIn(0f, 1f)
-        return t * t * t * (t * (t * 6f - 15f) + 10f)
+        return cubicBezierEase(t, ACCEL_X1, ACCEL_Y1, ACCEL_X2, ACCEL_Y2)
     }
+
+    /**
+     * Evaluates a cubic bezier timing curve at time [t].
+     *
+     * The curve is `(1-u)^3*P0 + 3(1-u)^2*u*P1 + 3(1-u)*u^2*P2 + u^3*P3`
+     * with P0 = 0 and P3 = 1 on both axes, which is what makes it a timing
+     * function: y already reads as progress, but y only means anything once
+     * you know *which* u produced the elapsed fraction [t] on the x axis.
+     * That inversion is the whole job here.
+     *
+     * Newton-Raphson lands on it in a couple of steps for any curve whose
+     * derivative is sane; when the control points make the x curve go flat
+     * (a vertical tangent at an endpoint, say) the derivative vanishes and
+     * it hands over to plain bisection, which cannot fail — it just takes
+     * about thirty halvings to reach the same tolerance.
+     */
+    internal fun cubicBezierEase(t: Float, x1: Float, y1: Float, x2: Float, y2: Float): Float {
+        if (t <= 0f) return 0f
+        if (t >= 1f) return 1f
+
+        // Both axes share this: P0 = 0, P3 = 1, control points inside [0, 1].
+        fun curve(c1: Float, c2: Float, u: Float): Float {
+            val v = 1f - u
+            return 3f * v * v * u * c1 + 3f * v * u * u * c2 + u * u * u
+        }
+        fun slope(c1: Float, c2: Float, u: Float): Float {
+            val v = 1f - u
+            return 3f * v * v * c1 + 6f * v * u * (c2 - c1) + 3f * u * u * (1f - c2)
+        }
+
+        var u = t
+        repeat(8) {
+            val err = curve(x1, x2, u) - t
+            if (abs(err) < 1e-6f) return curve(y1, y2, u)
+            val derivative = slope(x1, x2, u)
+            if (abs(derivative) < 1e-6f) return@repeat
+            u = (u - err / derivative).coerceIn(0f, 1f)
+        }
+
+        var lo = 0f
+        var hi = 1f
+        u = 0.5f
+        repeat(32) {
+            val x = curve(x1, x2, u)
+            if (abs(x - t) < 1e-6f) return curve(y1, y2, u)
+            if (x < t) lo = u else hi = u
+            u = (lo + hi) * 0.5f
+        }
+        return curve(y1, y2, u)
+    }
+
+    /** Control points of the acceleration curve — see [progressAt]. */
+    private const val ACCEL_X1 = 0.25f
+    private const val ACCEL_Y1 = 0.10f
+    private const val ACCEL_X2 = 0.25f
+    private const val ACCEL_Y2 = 1.00f
 
     /**
      * Milliseconds for a pointer covering [distance] screen pixels.

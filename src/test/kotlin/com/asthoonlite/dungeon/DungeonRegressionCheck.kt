@@ -776,9 +776,19 @@ fun main() {
             check(p >= previous) { "pointer progress went backwards at ${elapsed}ms" }
             previous = p
         }
-        // Minimum-jerk easing eases in and out: the first fifth of the trip
-        // must cover less than a fifth of the distance.
-        check(TerminalCursor.progressAt(20, 100) < 0.2f) { "pointer leaves the start too fast to read as a hand" }
+        // The accel curve has to ramp in — the first twentieth of the trip
+        // covers less than a twentieth of the distance, so it starts behind a
+        // straight line instead of jumping.
+        check(TerminalCursor.progressAt(5, 100) < 0.05f) { "pointer must accelerate out of rest, not jump" }
+
+        // ...and it has to be front-loaded. The minimum-jerk polynomial this
+        // replaced sat at exactly half the distance on the halfway mark; the
+        // bezier is meant to be well clear of that, because a pointer that is
+        // only half way across when its clock is half run is a pointer that
+        // spends the second half crawling.
+        check(TerminalCursor.progressAt(50, 100) > 0.65f) {
+            "accel curve must cover the ground early, not crawl the second half"
+        }
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)
@@ -796,6 +806,45 @@ fun main() {
         check(TerminalCursor.bezier(0f, 50f, 100f, 1f) == 100f) { "bezier must end at its last control point" }
         check(kotlin.math.abs(TerminalCursor.bezier(0f, 50f, 100f, 0.5f) - 50f) < 0.001f) {
             "bezier midpoint must sit on the control point when endpoints are symmetric"
+        }
+
+        // The accel curve itself. Control points on the diagonal are the
+        // identity, so a solver that has gone wrong cannot hide behind a
+        // plausible-looking number.
+        check(kotlin.math.abs(TerminalCursor.cubicBezierEase(0.37f, 0f, 0f, 1f, 1f) - 0.37f) < 1e-4f) {
+            "control points on the diagonal must be a straight line"
+        }
+
+        // Every shape ends exactly on 1 and never leaves [0,1] or goes
+        // backwards. Two of these have an x curve whose derivative vanishes
+        // — an inflection in the middle, or a flat tangent at an endpoint —
+        // which is what drops Newton onto the bisection fallback, so they are
+        // in the list for that reason as much as for their shape. A curve
+        // that finished short would leave the pointer a hair short of the
+        // pane, every frame, forever.
+        val accelShapes = listOf(
+            listOf(0.42f, 0f, 1f, 1f),       // ease-in
+            listOf(0f, 0f, 0.58f, 1f),       // ease-out
+            listOf(0.42f, 0f, 0.58f, 1f),    // ease-in-out
+            listOf(1f, 0f, 0f, 1f),          // flat derivative at the midpoint
+            listOf(0.25f, 0.1f, 0.25f, 1f),  // the curve the pointer ships with
+        )
+        for (shape in accelShapes) {
+            val (x1, y1, x2, y2) = shape
+            check(TerminalCursor.cubicBezierEase(0f, x1, y1, x2, y2) == 0f) {
+                "an accel curve must start at 0 for $shape"
+            }
+            check(TerminalCursor.cubicBezierEase(1f, x1, y1, x2, y2) == 1f) {
+                "an accel curve must finish at 1 for $shape"
+            }
+
+            var last = -1f
+            for (i in 0..20) {
+                val p = TerminalCursor.cubicBezierEase(i / 20f, x1, y1, x2, y2)
+                check(p in 0f..1f) { "accel curve left its own range: $p for $shape" }
+                check(p >= last) { "accel curve went backwards at ${i * 5}% for $shape" }
+                last = p
+            }
         }
 
         val runs = TerminalCursor.arrowRuns()
