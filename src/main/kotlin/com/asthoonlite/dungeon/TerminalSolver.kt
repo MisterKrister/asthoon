@@ -115,6 +115,23 @@ object TerminalSolver {
     }
 
     /**
+     * Text to print on a slot's tile, or null for none.
+     *
+     * Only the number terminal gets a label. It is the one whose tiles stop
+     * being self-describing the moment the solver paints over the item: the
+     * number *is* the item, and without it printed back the tile says "click
+     * here" with nothing to say what "here" is. Every other terminal says
+     * everything it needs to say in colour alone.
+     */
+    fun labelFor(slot: Int, stack: ItemStack?, kind: Kind): String? {
+        if (kind != Kind.ORDER) return null
+        if (stack == null || stack.isEmpty) return null
+        if (slot < 0 || slot >= kind.slotCount) return null
+        if (!stack.`is`(Items.RED_STAINED_GLASS_PANE)) return null
+        return stack.count.toString()
+    }
+
+    /**
      * Every slot in this terminal that still wants a click, unordered.
      *
      * [blocked] is a set of slots whose last click has not come back from the
@@ -259,30 +276,41 @@ object TerminalSolver {
      * Melody's next button: the row whose lime pane is aligned with the
      * magenta marker and is not already complete. Returns the slot to click,
      * or null when nothing is lined up right now.
+     *
+     * The marker lives in the first five rows — that is the terminal's
+     * content window; the sixth is filler and is never read. The row's button
+     * being lime terracotta is the *pressable* state, not a finished one, so
+     * it is not part of the completion test: every button sits in that colour
+     * while its row is live, and treating it as done skipped every row and
+     * left melody clicking nothing at all.
      */
     fun melodyCandidate(all: List<ItemStack>): Int? {
-        val magentaSlot = (45..53).firstOrNull { slot ->
-            all.getOrNull(slot)?.`is`(Items.MAGENTA_STAINED_GLASS_PANE) == true
-        } ?: all.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
-        if (magentaSlot < 0) return null
+        val last = minOf(all.lastIndex, CONTENT_LAST)
+        if (last < 0) return null
+
+        val magentaSlot = (0..last).firstOrNull { all[it].`is`(Items.MAGENTA_STAINED_GLASS_PANE) } ?: return null
         val targetCol = (magentaSlot % 9) - 1
         if (targetCol !in 0..4) return null
 
-        for (r in 0..3) {
+        for (r in 0..2) {
             val buttonSlot = (r + 1) * 9 + 7
             val buttonStack = all.getOrNull(buttonSlot) ?: continue
             val rowPaneSlots = ((r + 1) * 9 + 1)..((r + 1) * 9 + 5)
             val rowPanes = rowPaneSlots.mapNotNull { all.getOrNull(it) }
 
-            val isRowCompleted = buttonStack.`is`(Items.LIME_TERRACOTTA) ||
-                buttonStack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+            // Finished when the row has filled in or the button has been
+            // struck out with a completed marker. Lime terracotta is absent
+            // from this list on purpose — see above.
+            val isRowCompleted = buttonStack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
                 buttonStack.`is`(Items.LIME_CONCRETE) ||
                 buttonStack.`is`(Items.EMERALD_BLOCK) ||
-                rowPanes.all { it.`is`(Items.LIME_STAINED_GLASS_PANE) || it.`is`(Items.GREEN_STAINED_GLASS_PANE) }
+                rowPanes.size == 5 && rowPanes.all {
+                    it.`is`(Items.LIME_STAINED_GLASS_PANE) || it.`is`(Items.GREEN_STAINED_GLASS_PANE)
+                }
             if (isRowCompleted) continue
 
             val limePaneIndex = rowPaneSlots.firstOrNull { slot ->
-                val stack = all.getOrNull(slot) ?: return@firstOrNull false
+                val stack = all[slot]
                 stack.`is`(Items.LIME_STAINED_GLASS_PANE) || stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
             } ?: continue
 
@@ -291,6 +319,9 @@ object TerminalSolver {
         }
         return null
     }
+
+    /** Last slot of the terminal's content window: rows 0..4 of a 6-row container. */
+    private const val CONTENT_LAST = 44
 
     private val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
 
@@ -333,10 +364,13 @@ object TerminalSolver {
     }
 
     private fun melodyColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
-        val magenta = all.indexOfFirst { it.`is`(Items.MAGENTA_STAINED_GLASS_PANE) }
+        // Same content window the candidate reads — rows 0..4 only, so the
+        // fillers in the last row cannot be mistaken for the marker.
+        val magenta = (0..minOf(all.lastIndex, CONTENT_LAST))
+            .firstOrNull { all[it].`is`(Items.MAGENTA_STAINED_GLASS_PANE) } ?: return null
         val lime = all.indexOfLast { it.`is`(Items.LIME_STAINED_GLASS_PANE) }
         val clay = all.indexOfLast { it.`is`(Items.LIME_TERRACOTTA) }
-        if (magenta < 0 || lime < 0) return null
+        if (lime < 0) return null
 
         val row = lime / 9
         val magentaCol = magenta % 9

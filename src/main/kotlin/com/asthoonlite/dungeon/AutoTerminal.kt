@@ -17,8 +17,8 @@ import kotlin.random.Random
 
 /**
  * Advanced automatic terminal clicker with RSM-compatible preset support,
- * safe Gaussian random delay intervals, break threshold protection,
- * and Melody skip / party announce features.
+ * safe Gaussian random delay intervals, and Melody skip / party announce
+ * features.
  */
 object AutoTerminal {
     private var lastClickAt = 0L
@@ -207,9 +207,9 @@ object AutoTerminal {
      * switched off, when there is no screen coordinate for the slot, or when a
      * flight is already running.
      *
-     * [clickNotBeforeMs] is the terminal's own clock: the pointer is stretched
-     * to arrive on it when it has further to go, and the click is held at the
-     * pane when the pointer wins the race.
+     * [clickNotBeforeMs] is the terminal's own clock: the pointer fits its
+     * trip inside that window so it is never the thing pacing the terminal,
+     * and the click is held at the pane when the pointer wins the race.
      */
     private fun glideIfEnabled(
         screen: AbstractContainerScreen<*>,
@@ -394,13 +394,18 @@ object AutoTerminal {
         // Prevent spam-clicking the same row during a single alignment window (debounce 250ms)
         if (activeRow == lastMelodyRow && now - lastMelodyRowClickAt < 250L) return null
 
-        // Melody Skip feature
+        // Melody Skip feature: park the pointer on the rows still to come so
+        // they are already in place when their window opens. The buttons live
+        // at column 7 of rows 1..3 — slot 16, 25, 34 — and activeRow counts
+        // them from zero, so the last one is 2, not 3: queuing one past it
+        // used to send the pointer at slot 43, which is the indicator row and
+        // has nothing to click.
         if (Config.autoTerminalMelodySkip) {
             val skipAllowed = !(activeRow == 0 && Config.autoTerminalDontSkipFirst)
-            if (skipAllowed && activeRow < 3) {
+            if (skipAllowed && activeRow < 2) {
                 melodySkipQueue.clear()
-                for (r in (activeRow + 1)..3) {
-                    melodySkipQueue.add((r + 1) * TerminalClickOrder.COLS + 7)
+                for (row in (activeRow + 1)..2) {
+                    melodySkipQueue.add((row + 1) * TerminalClickOrder.COLS + 7)
                 }
             }
         }

@@ -1,5 +1,6 @@
 package com.asthoonlite.gui
 
+import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.pet.PetHudEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
@@ -373,7 +374,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.petMenuHighlightEnabled }, { Config.petMenuHighlightEnabled = it }),
                 SectionHeader("Session"),
                 ToggleRow("Quiet Mode", "Draws nothing in-game so a window capture looks vanilla",
-                    { Config.quietModeEnabled }, { Config.quietModeEnabled = it }),
+                    { Config.quietModeEnabled }, { QuietMode.setEnabled(it) }),
                 WidgetRow(run {
                     btnQuietModeKey = ModernButton(subX, 0, subW, 24, Component.literal(quietModeKeyLabel())) {
                         listeningForQuietModeKey = true
@@ -451,19 +452,30 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapDontRenderFairyCheckmark }, { Config.dungeonMapDontRenderFairyCheckmark = it }),
             )
             Tab.TERMINALS -> listOf(
-                SectionHeader("Presets"),
+                // Six headers became four. The preset button had a section of
+                // its own and the melody rows had another, and both already
+                // had a section they belonged under — the button is
+                // automation, the melody delays are delays, the melody
+                // toggles are behaviour. Two notes folded into the row they
+                // were describing, and the two rows wired to settings nothing
+                // reads went away with them.
+                SectionHeader("Solver & Automation"),
                 WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Load AutoTerm Preset")) {
                     Config.applyRsmAutoPreset()
                     rebuildTab(Tab.TERMINALS)
                 }),
-                SectionHeader("Solver & Automation"),
                 ToggleRow("Auto Terminal", "Automatically clicks the correct terminal buttons",
                     { Config.autoTerminalEnabled }, { Config.autoTerminalEnabled = it }),
                 ToggleRow("  ↳ Run Anywhere (P3 Sim)", "Also runs outside a real dungeon — the terminal title is all the identification needed, so the p3 simulator and practice worlds work",
                     { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
-                NoteRow("Every type is on by default — switch one off below to leave it alone."),
+                ToggleRow("Melody Skip", "Skips subsequent Melody rows on correct timing",
+                    { Config.autoTerminalMelodySkip }, { Config.autoTerminalMelodySkip = it }),
+                ToggleRow("  ↳ Don't Skip First Row", "Waits for first row before skipping",
+                    { Config.autoTerminalDontSkipFirst }, { Config.autoTerminalDontSkipFirst = it }),
+                ToggleRow("Announce Melody in Chat", "Sends party chat message when opening Melody",
+                    { Config.autoTerminalAnnounceMelody }, { Config.autoTerminalAnnounceMelody = it }),
                 SectionHeader("Click Timing & Delays"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
@@ -479,17 +491,14 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalClickDelayMs, "Click Delay: ", " ms") {
                     Config.autoTerminalClickDelayMs = it
                 }),
-                ToggleRow("No Break", "Clicks continuously without pause",
-                    { Config.autoTerminalNoBreak }, { Config.autoTerminalNoBreak = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 100, 1000, Config.autoTerminalBreakThresholdMs, "Break Threshold: ", " ms") {
-                    Config.autoTerminalBreakThresholdMs = it
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
+                    Config.autoTerminalMelodyFirstClickDelayMs = it
                 }),
                 SectionHeader("Pointer"),
-                ToggleRow("Glide Pointer", "Draws a pointer that travels to each pane, then clicks it there (clicks are still packets)",
+                ToggleRow("Glide Pointer", "Draws a pointer that travels to each pane, then clicks it there (clicks are still packets). Appears as soon as a terminal opens, not on the first solve.",
                     { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
                 ToggleRow("  ↳ Hide Real Cursor", "Steps the real cursor aside while the drawn pointer is on screen",
                     { Config.autoTerminalCursorHideReal }, { Config.autoTerminalCursorHideReal = it }),
-                NoteRow("Appears as soon as a terminal opens, not on the first solve."),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 25, 400, Config.autoTerminalCursorSpeed, "Pointer Speed: ", "%") {
                     Config.autoTerminalCursorSpeed = it
                 }),
@@ -500,20 +509,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorJitter, "Pointer Tremor: ", "%") {
                     Config.autoTerminalCursorJitter = it
                 }),
-                NoteRow("Travel stretches to land on Click Delay, so timing lines up itself."),
+                NoteRow("Travel is fitted inside the Click Delay — the pointer never adds time to the terminal."),
                 ToggleRow("  ↳ Glide On Melody", "Also glide on Melody — off by default, its 40 ms cadence does not survive the travel time",
                     { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
-                SectionHeader("Melody Settings"),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
-                    Config.autoTerminalMelodyFirstClickDelayMs = it
-                }),
-                ToggleRow("Melody Skip", "Skips subsequent Melody rows on correct timing",
-                    { Config.autoTerminalMelodySkip }, { Config.autoTerminalMelodySkip = it }),
-                ToggleRow("  ↳ Don't Skip First Row", "Waits for first row before skipping",
-                    { Config.autoTerminalDontSkipFirst }, { Config.autoTerminalDontSkipFirst = it }),
-                ToggleRow("Announce Melody in Chat", "Sends party chat message when opening Melody",
-                    { Config.autoTerminalAnnounceMelody }, { Config.autoTerminalAnnounceMelody = it }),
-                SectionHeader("Terminal Types"),
+                SectionHeader("Terminal Types — all on by default"),
                 ToggleRow("Automate Colours", "Solves 'Select all the X items'",
                     { Config.autoTermColors }, { Config.autoTermColors = it }),
                 ToggleRow("Automate Melody", "Solves 'Click the button on time!'",

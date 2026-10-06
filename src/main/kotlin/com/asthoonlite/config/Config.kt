@@ -525,6 +525,10 @@ object Config {
         get() = data.autoTerminalClickDelayMs
         set(v) { data.autoTerminalClickDelayMs = v.coerceIn(0, 1000); save() }
 
+    // Unwired: `AutoTerminal` reads neither of these and the Terminal tab
+    // rows that used to expose them are gone. They stay because the file is
+    // on disk — dropping the field would drop the user's value with it, and
+    // there is nothing to gain from that. Re-wire before re-exposing.
     var autoTerminalBreakThresholdMs: Int
         get() = data.autoTerminalBreakThresholdMs
         set(v) { data.autoTerminalBreakThresholdMs = v.coerceIn(0, 2000); save() }
@@ -541,6 +545,7 @@ object Config {
         get() = data.autoTerminalMelodySkip
         set(v) { data.autoTerminalMelodySkip = v; save() }
 
+    /** See [autoTerminalBreakThresholdMs] — unwired, kept for the on-disk value. */
     var autoTerminalNoBreak: Boolean
         get() = data.autoTerminalNoBreak
         set(v) { data.autoTerminalNoBreak = v; save() }

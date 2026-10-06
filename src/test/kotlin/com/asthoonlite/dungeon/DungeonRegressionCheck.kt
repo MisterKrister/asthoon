@@ -18,6 +18,7 @@ import com.asthoonlite.render.MapCanvas
 import com.asthoonlite.render.RecordMapCanvas
 import com.asthoonlite.render.mapBaseSpans
 import com.asthoonlite.render.replay
+import com.asthoonlite.render.roundedRectRowInset
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.saveddata.maps.MapDecorationTypes
@@ -201,6 +202,55 @@ fun main() {
         for (slot in listOf(12, 13, 14)) rubix[slot] = ItemStack(Items.YELLOW_STAINED_GLASS_PANE)
         check(TerminalSolver.optimalRubixTarget(rubix) == 1)
         check(TerminalSolver.clickCandidates("Change all to same color!", rubix) == listOf(21, 22, 23, 30, 31, 32))
+    }
+
+    // ── Melody: which row is pressable, and which rows are already done ─────
+    run {
+        val filler = Items.WHITE_STAINED_GLASS_PANE
+        val blank = { ArrayList<ItemStack>(54).apply { repeat(54) { add(ItemStack(filler)) } } }
+
+        // Row 0 carries the magenta marker (column 3). Rows 1..3 hold a
+        // button at column 7 and panes at columns 1..5. Row 4 is the second
+        // indicator row. Buttons sit at 16, 25, 34.
+        fun melody(magentaCol: Int, lime: Int, button: Int = 16): ArrayList<ItemStack> {
+            val b = blank()
+            b[magentaCol] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
+            b[lime] = ItemStack(Items.LIME_STAINED_GLASS_PANE)
+            b[16] = ItemStack(Items.LIME_TERRACOTTA)
+            b[25] = ItemStack(Items.LIME_TERRACOTTA)
+            b[34] = ItemStack(Items.LIME_TERRACOTTA)
+            b[button] = ItemStack(Items.LIME_TERRACOTTA)
+            return b
+        }
+
+        // The regression that made melody dead: every button is lime
+        // terracotta while its row is live, so a completion test that
+        // included that colour skipped all three rows and returned nothing.
+        check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 12)) == 16) {
+            "a row with its button ready and its pane aligned must be pressable"
+        }
+
+        // Pane in column 1 against a marker in column 3: nothing lines up.
+        check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 10)) == null) {
+            "a row must not be clicked while its pane is off the marker"
+        }
+
+        // Same alignment, one row down: the click goes to that row's button.
+        check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 21)) == 25) {
+            "row 2's button is slot 25"
+        }
+
+        // A struck-out button is still finished, even with the pane aligned.
+        val done = melody(magentaCol = 3, lime = 12, button = 16)
+        done[16] = ItemStack(Items.EMERALD_BLOCK)
+        check(TerminalSolver.melodyCandidate(done) == null) { "a completed row must stay completed" }
+
+        // The sixth row is filler outside the content window: a magenta pane
+        // parked there must never become the marker.
+        val stray = melody(magentaCol = 3, lime = 12)
+        stray[3] = ItemStack(filler)
+        stray[47] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
+        check(TerminalSolver.melodyCandidate(stray) == null) { "filler outside rows 0..4 must be ignored" }
     }
 
     for (floor in FloorType.entries.filter { it != FloorType.None }) {
@@ -634,30 +684,41 @@ fun main() {
         check(clipped.all { it.x0 >= 104 }) { "clipped span shifted off its map pixel" }
     }
 
-    // ── Pointer flight time: how the travel meets the terminal's clock ──────
+    // ── Pointer flight time: the animation must never pace the terminal ─────
     run {
-        // No pending delay: the natural travel time, unchanged.
-        check(TerminalCursor.flightDurationMs(200L, -1L) == 200L) { "no delay must not alter the flight" }
-        check(TerminalCursor.flightDurationMs(200L, 0L) == 200L) { "zero delay must not alter the flight" }
+        // Deadline already gone: the pointer stops being a hand and hops to
+        // the pane, because the click is the thing waiting on it.
+        check(TerminalCursor.flightDurationMs(200L, -1L) == 70L) { "an expired deadline must not fall back to a leisurely trip" }
+        check(TerminalCursor.flightDurationMs(200L, 0L) == 70L) { "a zero window must not fall back to a leisurely trip" }
 
-        // A delay longer than the trip stretches the whole motion out, so the
-        // pointer lands on the terminal's clock instead of waiting at the pane.
-        check(TerminalCursor.flightDurationMs(200L, 350L) == 350L) { "flight must stretch to fill the delay" }
-        check(TerminalCursor.flightDurationMs(150L, 400L) == 400L) { "flight must fill the whole window" }
+        // The window is shorter than the trip: compress to it. This is the
+        // whole change — a flight allowed to exceed the window is a flight
+        // that sets the cadence.
+        check(TerminalCursor.flightDurationMs(300L, 120L) == 120L) { "flight must compress into the window" }
+        check(TerminalCursor.flightDurationMs(420L, 100L) == 100L) { "a long trip must still fit a short window" }
 
-        // Never stretched so far it stops reading as a hand.
-        check(TerminalCursor.flightDurationMs(200L, 999_999L) == 1000L) { "stretch must be capped" }
-
-        // A short delay never speeds the pointer up: the speed setting wins,
-        // and the click falls on arrival instead.
-        check(TerminalCursor.flightDurationMs(420L, 50L) == 420L) { "short delay must not outrun the setting" }
-        check(TerminalCursor.flightDurationMs(300L, 100L) == 300L) { "short delay must not shorten the flight" }
+        // The window is longer than the trip: take the natural time and park
+        // on the pane for the rest, rather than stretching a quick hop into a
+        // slow drift across the terminal.
+        check(TerminalCursor.flightDurationMs(150L, 400L) == 150L) { "a spare window must not slow the trip down" }
+        check(TerminalCursor.flightDurationMs(200L, 999_999L) == 200L) { "there is no stretching any more" }
 
         // Out-of-range natural times are pulled back inside the flight bounds.
-        check(TerminalCursor.flightDurationMs(5L, 0L) == 70L) { "flight must respect its floor" }
-        check(TerminalCursor.flightDurationMs(99_999L, 0L) == 420L) { "flight must respect its ceiling" }
+        check(TerminalCursor.flightDurationMs(5L, 500L) == 70L) { "flight must respect its floor" }
+        check(TerminalCursor.flightDurationMs(99_999L, 500L) == 420L) { "flight must respect its ceiling" }
 
-        // And it never shrinks as the window grows.
+        // The floor wins over an even tighter window rather than teleporting.
+        check(TerminalCursor.flightDurationMs(300L, 50L) == 70L) { "flight must never be instantaneous" }
+
+        // The property the terminal cadence depends on: for any window the
+        // terminal offers, the trip ends inside it. Only the floor is allowed
+        // to break this, and only below the floor.
+        for (available in listOf(70L, 90L, 120L, 180L, 250L, 500L, 900L)) {
+            val duration = TerminalCursor.flightDurationMs(300L, available)
+            check(duration <= available) { "flight overshot the deadline: $duration ms in a $available ms window" }
+        }
+
+        // And it still never shrinks as the window grows.
         var previousDuration = 0L
         for (available in listOf(0L, 50L, 120L, 250L, 500L, 900L)) {
             val duration = TerminalCursor.flightDurationMs(180L, available)
@@ -710,7 +771,147 @@ fun main() {
         check(runs.first { it.row == 0 }.let { it.x0 == 0 && it.x1 == 0 }) { "pointer tip must be a single pixel" }
     }
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing.")
+    // ── Cursor trail ─────────────────────────────────────────────────────────
+    // The sprite alone still reads as a sticker parked on a pane; the blobs
+    // behind it are what make it read as a mouse. That means the fade has to
+    // die on schedule (a trail that never clears is a smear left across the
+    // terminal) and it has to die *fast* (a slow linear ramp turns into a
+    // comet rather than a tail).
+    run {
+        val full = TerminalCursor.trailAlpha(0L)
+        check(full > 0) { "a fresh trail blob must be visible" }
+        check(TerminalCursor.trailAlpha(-100L) == full) { "an age below zero must read as fresh, not as broken" }
+        check(TerminalCursor.trailAlpha(TerminalCursor.TRAIL_MS / 4) > 0) {
+            "a quarter-life blob must still be visible"
+        }
+        check(TerminalCursor.trailAlpha(TerminalCursor.TRAIL_MS / 2) > 0) {
+            "a half-life blob must still be visible"
+        }
+        check(TerminalCursor.trailAlpha(TerminalCursor.TRAIL_MS) == 0) {
+            "a trail blob must be gone the moment its window closes"
+        }
+        check(TerminalCursor.trailAlpha(TerminalCursor.TRAIL_MS + 600_000L) == 0) {
+            "a blob older than its window must never come back"
+        }
+
+        var previous = full + 1
+        for (age in 0L..TerminalCursor.TRAIL_MS) {
+            val a = TerminalCursor.trailAlpha(age)
+            check(a <= previous) { "trail opacity went backwards at ${age}ms" }
+            previous = a
+        }
+
+        // Squared, not linear: at half a life it has to be well under half
+        // strength, otherwise the tail stretches out into a smear.
+        check(TerminalCursor.trailAlpha(TerminalCursor.TRAIL_MS / 2) < full / 2) {
+            "trail fade is running too long — the tail will read as a comet"
+        }
+        // …and it has to be spent *before* the window closes, not fading out
+        // right on the last frame. That is what keeps the tail short.
+        check(TerminalCursor.trailAlpha(TerminalCursor.TRAIL_MS - 5) == 0) {
+            "the squared fade must be spent early enough that the oldest blob is invisible"
+        }
+    }
+
+    // ── Rounded tiles ────────────────────────────────────────────────────────
+    // The terminal overlay is rounded rectangles drawn one row at a time, so
+    // the arc is entirely in this one function. If it stops being symmetric
+    // every tile on screen goes lopsided at once, which is exactly the kind of
+    // drift a build stays green through.
+    run {
+        check(roundedRectRowInset(0, 16, 0) == 0 && roundedRectRowInset(7, 16, 0) == 0) {
+            "radius zero must be a plain rectangle"
+        }
+        check(roundedRectRowInset(0, 16, 4) == 4) { "the top row must be cut back by the full radius" }
+        check(roundedRectRowInset(15, 16, 4) == 4) { "the bottom row must match the top" }
+        check(roundedRectRowInset(7, 16, 4) == 0 && roundedRectRowInset(8, 16, 4) == 0) {
+            "rows in the flat middle must not be cut at all"
+        }
+
+        for (row in 0 until 16) {
+            check(roundedRectRowInset(row, 16, 4) == roundedRectRowInset(15 - row, 16, 4)) {
+                "tile arc is not symmetric at row $row"
+            }
+        }
+
+        var previous = Int.MAX_VALUE
+        for (row in 0 until 8) {
+            val inset = roundedRectRowInset(row, 16, 4)
+            check(inset <= previous) { "tile arc grows going down at row $row" }
+            previous = inset
+        }
+
+        // A radius larger than the tile must clamp to a capsule, not blow the
+        // corners out or hand sqrt a negative number. Clamping to half the
+        // height leaves no flat middle at all — the whole tile becomes arc —
+        // but that arc has to be a curve, not one big step.
+        check(roundedRectRowInset(0, 8, 40) == 4) { "an oversized radius must clamp to half the height" }
+        check(roundedRectRowInset(3, 8, 40) == 1) { "a clamped radius must still curve rather than step" }
+        for (row in 0 until 8) {
+            check(roundedRectRowInset(row, 8, 40) == roundedRectRowInset(7 - row, 8, 40)) {
+                "a clamped radius must stay symmetric at row $row"
+            }
+        }
+
+        check(roundedRectRowInset(0, 0, 4) == 0) { "an empty rectangle must have no rows to cut" }
+        check(roundedRectRowInset(-1, 16, 4) == 0) { "a row above the rectangle must not be cut" }
+        check(roundedRectRowInset(16, 16, 4) == 0) { "a row past the rectangle must not be cut" }
+        check(roundedRectRowInset(0, 16, -3) == 0) { "a negative radius must read as no radius" }
+    }
+
+    // ── Real-cursor handback ─────────────────────────────────────────────────
+    // The drawn pointer owns the cursor for a terminal's whole life; when it
+    // leaves, the real one has to come back on the same pixel or a viewer
+    // sees the pointer jump across the pane.
+    run {
+        check(TerminalCursor.shouldHideRealCursor(true, true, true)) { "an on-screen pointer must take the cursor" }
+        check(!TerminalCursor.shouldHideRealCursor(false, true, true)) {
+            "nothing drawn must never hide the cursor — that is a window with no cursor at all"
+        }
+        check(!TerminalCursor.shouldHideRealCursor(true, false, true)) { "hide-real off must leave the real cursor alone" }
+        check(!TerminalCursor.shouldHideRealCursor(true, true, false)) {
+            "glide off must not hide the cursor, because nothing is drawn in its place"
+        }
+
+        // A parked pointer must still get out of the way once it has
+        // lingered. `positioned` stays set after the final click, so this is
+        // the branch that stops an arrow sitting over the inventory for the
+        // rest of the screen's life with the real cursor hidden behind it.
+        check(TerminalCursor.lingerOnScreen(TerminalCursor.LINGER_MS - 1, 0L)) {
+            "a pointer must linger long enough to show where the last click went"
+        }
+        check(!TerminalCursor.lingerOnScreen(TerminalCursor.LINGER_MS, 0L)) {
+            "a parked pointer must clear its linger window, not sit there forever"
+        }
+        check(!TerminalCursor.lingerOnScreen(TerminalCursor.LINGER_MS + 600_000L, 0L)) {
+            "a pointer parked for ten minutes must not still be drawn"
+        }
+
+        // gui -> window must be the exact inverse of MouseHandler.getScaledXPos,
+        // which runs `raw * guiScaledWidth / screenWidth`. Round-tripping has to
+        // land on the same pixel, or the cursor warps somewhere else on the way
+        // back in.
+        val scaleCases = listOf(
+            Triple(0f, 1920, 1920),
+            Triple(100f, 1920, 960),
+            Triple(64f, 2560, 1280),
+            Triple(37.5f, 1366, 683),
+            Triple(512f, 3840, 1920)
+        )
+        for ((scaled, screen, guiScaled) in scaleCases) {
+            val raw = TerminalCursor.rawFromScaled(scaled, screen, guiScaled)
+            val back = raw * guiScaled / screen
+            check(kotlin.math.abs(back - scaled) < 1e-4) {
+                "handback must land on the drawn tip: $scaled -> $raw -> $back"
+            }
+        }
+
+        // A degenerate scale must degrade rather than divide by zero part-way
+        // through a handback.
+        check(TerminalCursor.rawFromScaled(100f, 1920, 0) == 0.0) { "a zero gui scale must not divide by zero" }
+    }
+
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer motion and flight timing, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
 }
 
 /**
