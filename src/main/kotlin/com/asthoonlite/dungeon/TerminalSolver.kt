@@ -256,6 +256,11 @@ object TerminalSolver {
      * The colour that costs the fewest clicks to reach, summed over all nine
      * panes. Pure: same pane state, same answer, which is what lets the marker
      * show the target before the clicker has committed to one.
+     *
+     * A left click walks the ring forward, a right click walks it back one, so
+     * the cost of reaching a colour is the *shorter* way round — never the
+     * forward distance alone, which is what used to pick a target that needed
+     * four clicks a pane when two would do.
      */
     fun optimalRubixTarget(all: List<ItemStack>): Int? {
         val panes = rubixPanes(all)
@@ -263,26 +268,54 @@ object TerminalSolver {
         val costs = IntArray(5)
         for (target in 0..4) {
             for (p in panes) {
-                // Forward only: a left click cycles a pane +1, so the cost of
-                // reaching a colour from where a pane stands is the forward
-                // distance, never the short way back.
-                costs[target] += (target - p.second + 5) % 5
+                costs[target] += rubixDistance(p.second, target)
             }
         }
         return costs.indices.minByOrNull { costs[it] }
     }
 
     /**
+     * Clicks to walk one pane from colour [from] to colour [to] on the
+     * five-colour ring, taking whichever direction is shorter.
+     */
+    fun rubixDistance(from: Int, to: Int): Int {
+        val forward = (to - from + 5) % 5
+        val backward = (from - to + 5) % 5
+        return minOf(forward, backward)
+    }
+
+    /**
+     * The button that gets a pane from [from] to [to] in [rubixDistance]
+     * steps: 0 is a left click (colour +1), 1 is a right click (colour -1).
+     * Ties go forward, because a left click is the one every other terminal
+     * takes and the packet path for it is already warm.
+     */
+    fun rubixButton(from: Int, to: Int): Int =
+        if ((to - from + 5) % 5 <= (from - to + 5) % 5) 0 else 1
+
+    /**
+     * Where a pane stands after [button] on the ring. The clicker applies
+     * this the moment a packet goes out rather than when it comes back, which
+     * is the whole reason Rubix can be spammed instead of polled.
+     */
+    fun rubixAdvance(index: Int, button: Int): Int =
+        if (button == 0) (index + 1) % 5 else (index + 4) % 5
+
+    /**
      * Melody's next button: the row whose lime pane is aligned with the
      * magenta marker and is not already complete. Returns the slot to click,
      * or null when nothing is lined up right now.
      *
-     * The marker lives in the first five rows — that is the terminal's
-     * content window; the sixth is filler and is never read. The row's button
-     * being lime terracotta is the *pressable* state, not a finished one, so
-     * it is not part of the completion test: every button sits in that colour
-     * while its row is live, and treating it as done skipped every row and
-     * left melody clicking nothing at all.
+     * Four content rows today — buttons at 16, 25, 34 and 43, with the marker
+     * above them in row 0 and row 5 left as filler. Hypixel is expected to cut
+     * this back to three; when it does, the loop bound is the only thing that
+     * changes, and a row that is not really content fails the lime-pane test
+     * below and skips itself either way.
+     *
+     * The row's button being lime terracotta is the *pressable* state, not a
+     * finished one, so it is not part of the completion test: every button
+     * sits in that colour while its row is live, and treating it as done
+     * skipped every row and left melody clicking nothing at all.
      */
     fun melodyCandidate(all: List<ItemStack>): Int? {
         val last = minOf(all.lastIndex, CONTENT_LAST)
@@ -292,7 +325,7 @@ object TerminalSolver {
         val targetCol = (magentaSlot % 9) - 1
         if (targetCol !in 0..4) return null
 
-        for (r in 0..2) {
+        for (r in 0..3) {
             val buttonSlot = (r + 1) * 9 + 7
             val buttonStack = all.getOrNull(buttonSlot) ?: continue
             val rowPaneSlots = ((r + 1) * 9 + 1)..((r + 1) * 9 + 5)
@@ -323,7 +356,7 @@ object TerminalSolver {
     /** Last slot of the terminal's content window: rows 0..4 of a 6-row container. */
     private const val CONTENT_LAST = 44
 
-    private val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
+    internal val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
 
     // ── Presentation ─────────────────────────────────────────────────────────
 
@@ -366,11 +399,19 @@ object TerminalSolver {
     private fun melodyColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
         // Same content window the candidate reads — rows 0..4 only, so the
         // fillers in the last row cannot be mistaken for the marker.
-        val magenta = (0..minOf(all.lastIndex, CONTENT_LAST))
+        val last = minOf(all.lastIndex, CONTENT_LAST)
+        if (last < 0) return null
+        val magenta = (0..last)
             .firstOrNull { all[it].`is`(Items.MAGENTA_STAINED_GLASS_PANE) } ?: return null
-        val lime = all.indexOfLast { it.`is`(Items.LIME_STAINED_GLASS_PANE) }
-        val clay = all.indexOfLast { it.`is`(Items.LIME_TERRACOTTA) }
-        if (lime < 0) return null
+
+        // The moving pane lives in the pane strip at columns 1..5. Reading
+        // `indexOfLast` over the whole container would pick up a *button*
+        // that has finished as lime stained glass — buttons are lime too —
+        // and light up the wrong row.
+        val lime = (0..last).lastOrNull { slot2 ->
+            all[slot2].`is`(Items.LIME_STAINED_GLASS_PANE) && slot2 % 9 in 1..5
+        } ?: return null
+        val clay = (0..last).lastOrNull { all[it].`is`(Items.LIME_TERRACOTTA) }
 
         val row = lime / 9
         val magentaCol = magenta % 9

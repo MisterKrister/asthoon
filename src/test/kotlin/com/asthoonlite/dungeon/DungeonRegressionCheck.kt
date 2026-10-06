@@ -196,12 +196,38 @@ fun main() {
         check(TerminalSolver.clickCandidates("Change all to same color!", rubix).isEmpty()) {
             "All nine panes already at the target: nothing left to click"
         }
-        // Three panes already yellow flips the target to yellow (6 forward
-        // clicks) rather than orange (12), and the candidates are the six
-        // panes still orange.
+        // Three panes already yellow: walking the other six forward to
+        // yellow is six clicks, walking the three yellow back to orange is
+        // three — a right click each. The cheaper colour wins, so the target
+        // stays orange and the candidates are the three yellow panes.
         for (slot in listOf(12, 13, 14)) rubix[slot] = ItemStack(Items.YELLOW_STAINED_GLASS_PANE)
-        check(TerminalSolver.optimalRubixTarget(rubix) == 1)
-        check(TerminalSolver.clickCandidates("Change all to same color!", rubix) == listOf(21, 22, 23, 30, 31, 32))
+        check(TerminalSolver.optimalRubixTarget(rubix) == 0)
+        check(TerminalSolver.clickCandidates("Change all to same color!", rubix) == listOf(12, 13, 14)) {
+            "cheapest target is orange, so only the three yellow panes are left"
+        }
+
+        // Left click walks the ring forward, right click takes it back one,
+        // and the clicker picks whichever way is shorter.
+        check(TerminalSolver.rubixButton(0, 1) == 0) { "one forward must be a left click" }
+        check(TerminalSolver.rubixButton(1, 0) == 1) { "back one must be the right click" }
+        check(TerminalSolver.rubixButton(0, 4) == 1) { "the short way round must go back" }
+        check(TerminalSolver.rubixButton(0, 2) == 0) { "two forward beats three back" }
+        check(TerminalSolver.rubixDistance(0, 4) == 1) { "distance must take the short way round" }
+        check(TerminalSolver.rubixAdvance(4, 0) == 0) { "a left click wraps the ring forward" }
+        check(TerminalSolver.rubixAdvance(0, 1) == 4) { "a right click wraps the ring back" }
+
+        // Spamming one pane until it is right: each click advances the
+        // prediction, and the run ends on the target in exactly as many
+        // steps as the distance promised.
+        var predicted = 3
+        var steps = 0
+        while (predicted != 1 && steps < 8) {
+            predicted = TerminalSolver.rubixAdvance(predicted, TerminalSolver.rubixButton(predicted, 1))
+            steps++
+        }
+        check(predicted == 1 && steps == TerminalSolver.rubixDistance(3, 1)) {
+            "spamming a pane must land on the target in exactly rubixDistance clicks"
+        }
     }
 
     // ── Melody: which row is pressable, and which rows are already done ─────
@@ -209,9 +235,9 @@ fun main() {
         val filler = Items.WHITE_STAINED_GLASS_PANE
         val blank = { ArrayList<ItemStack>(54).apply { repeat(54) { add(ItemStack(filler)) } } }
 
-        // Row 0 carries the magenta marker (column 3). Rows 1..3 hold a
-        // button at column 7 and panes at columns 1..5. Row 4 is the second
-        // indicator row. Buttons sit at 16, 25, 34.
+        // Row 0 carries the magenta marker (column 3). Rows 1..4 hold a
+        // button at column 7 and panes at columns 1..5. Row 5 is filler
+        // outside the content window. Buttons sit at 16, 25, 34, 43.
         fun melody(magentaCol: Int, lime: Int, button: Int = 16): ArrayList<ItemStack> {
             val b = blank()
             b[magentaCol] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
@@ -219,6 +245,7 @@ fun main() {
             b[16] = ItemStack(Items.LIME_TERRACOTTA)
             b[25] = ItemStack(Items.LIME_TERRACOTTA)
             b[34] = ItemStack(Items.LIME_TERRACOTTA)
+            b[43] = ItemStack(Items.LIME_TERRACOTTA)
             b[button] = ItemStack(Items.LIME_TERRACOTTA)
             return b
         }
@@ -238,6 +265,15 @@ fun main() {
         // Same alignment, one row down: the click goes to that row's button.
         check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 21)) == 25) {
             "row 2's button is slot 25"
+        }
+
+        // The fourth content row: button slot 43, pane strip 37..41. This is
+        // the row Hypixel is expected to cut when melody goes back to three —
+        // until it does, a solver that stops at row 3 silently drops every
+        // click that lands there, which is why the clicker sat idle on a
+        // terminal that was still solvable.
+        check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 39)) == 43) {
+            "row 4's button is slot 43"
         }
 
         // A struck-out button is still finished, even with the pane aligned.

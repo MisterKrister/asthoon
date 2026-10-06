@@ -30,7 +30,19 @@ object AutoTerminal {
     private val melodySkipQueue = ArrayDeque<Int>()
     private val clickedSlotsWithTime = HashMap<Int, Long>()
     private var lastRubixTarget: Int? = null
-    private val rubixLastClickedColor = HashMap<Int, Int>()
+
+    /**
+     * Where each Rubix pane stands *once the clicks already sent have landed*.
+     *
+     * The server's colour is the truth but it arrives a round trip late, and
+     * waiting on it is what made this terminal crawl: one click, wait, read,
+     * click. This holds the answer in the meantime so the clicker can hit the
+     * same pane again immediately. It only re-reads the server while a pane
+     * has nothing in flight, so a burst is never undone by a stale packet —
+     * and if a click genuinely did not register, the pane goes quiet for the
+     * timeout, picks the real colour back up, and comes back for the rest.
+     */
+    private val rubixPredicted = HashMap<Int, Int>()
     private var lastMelodyRow = -1
     private var lastMelodyRowClickAt = 0L
 
@@ -250,7 +262,15 @@ object AutoTerminal {
             gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
         }
         clearCarried(screen, player)
-        recordClick(System.currentTimeMillis(), click.slot, clickDelayMs)
+        val now = System.currentTimeMillis()
+        recordClick(now, click.slot, clickDelayMs)
+        // Predict on send, not on reply. The pane has been asked to move the
+        // moment the packet leaves, and Rubix's next decision is made from
+        // that number rather than from whatever colour is still on screen.
+        if (kind == Kind.RUBIX) {
+            val here = rubixPredicted[click.slot]
+            if (here != null) rubixPredicted[click.slot] = TerminalSolver.rubixAdvance(here, click.button)
+        }
     }
 
     private var lastSlot = -1
@@ -365,22 +385,38 @@ object AutoTerminal {
         if (lastRubixTarget == null) {
             lastRubixTarget = TerminalSolver.optimalRubixTarget(items.take(kind.slotCount)) ?: return null
         }
+        val target = lastRubixTarget ?: return null
 
-        val mismatches = TerminalSolver.clickCandidates(title, items, blocked, lastRubixTarget)
-        if (mismatches.isEmpty()) return null
-
-        // Round-robin: only take a pane whose colour has actually changed
-        // since the last click on it, or whose packet has timed out.
-        val ready = mismatches.filter { slot ->
-            val color = TerminalHelper.rubixColorIndex(items[slot])
-            val last = rubixLastClickedColor[slot]
-            last == null || last != color || (now - (clickedSlotsWithTime[slot] ?: 0L)) >= CLICK_TIMEOUT_MS
+        // Reconcile every pane the server has caught up on. A pane with a
+        // click in flight keeps our number — its colour on screen is the one
+        // from before the burst.
+        for (slot in TerminalSolver.RUBIX_SLOTS) {
+            val actual = TerminalHelper.rubixColorIndex(items.getOrNull(slot) ?: continue)
+            if (actual < 0) continue
+            val inFlight = now - (clickedSlotsWithTime[slot] ?: 0L) < CLICK_TIMEOUT_MS
+            if (!inFlight || rubixPredicted[slot] == null) rubixPredicted[slot] = actual
         }
 
-        val slot = choose(ready, kind) ?: return null
-        rubixLastClickedColor[slot] = TerminalHelper.rubixColorIndex(items[slot])
-        // Left click cycles forward; that is the only button Rubix takes.
-        return Click(slot, 0)
+        // Spam: stay on the pane already being worked and hit it again until
+        // it lands on the target. Bouncing to another pane between clicks is
+        // what cost a full round trip per click — and it is why this terminal
+        // used to be the slowest one in the room. Deliberately ignores
+        // [blocked]: not waiting for the server is the entire point.
+        if (lastSlot >= 0 && lastSlot in TerminalSolver.RUBIX_SLOTS) {
+            val here = rubixPredicted[lastSlot]
+            if (here != null && here != target) {
+                return Click(lastSlot, TerminalSolver.rubixButton(here, target))
+            }
+        }
+
+        val pending = TerminalSolver.RUBIX_SLOTS.filter { slot ->
+            val predicted = rubixPredicted[slot] ?: return@filter false
+            slot !in blocked && predicted != target
+        }
+        if (pending.isEmpty()) return null
+        val slot = choose(pending, kind) ?: return null
+        val here = rubixPredicted[slot] ?: return null
+        return Click(slot, TerminalSolver.rubixButton(here, target))
     }
 
     private fun melodyClick(items: List<ItemStack>, now: Long): Click? {
@@ -396,15 +432,16 @@ object AutoTerminal {
 
         // Melody Skip feature: park the pointer on the rows still to come so
         // they are already in place when their window opens. The buttons live
-        // at column 7 of rows 1..3 — slot 16, 25, 34 — and activeRow counts
-        // them from zero, so the last one is 2, not 3: queuing one past it
-        // used to send the pointer at slot 43, which is the indicator row and
-        // has nothing to click.
+        // at column 7 of rows 1..4 — slot 16, 25, 34, 43 — and activeRow counts
+        // them from zero, so the last one is 3, not 4: queuing one past it
+        // would send the pointer at slot 52, which is filler and has nothing
+        // to click. When Hypixel cuts melody back to three rows this bound
+        // drops to 2 along with the solver's loop.
         if (Config.autoTerminalMelodySkip) {
             val skipAllowed = !(activeRow == 0 && Config.autoTerminalDontSkipFirst)
-            if (skipAllowed && activeRow < 2) {
+            if (skipAllowed && activeRow < 3) {
                 melodySkipQueue.clear()
-                for (row in (activeRow + 1)..2) {
+                for (row in (activeRow + 1)..3) {
                     melodySkipQueue.add((row + 1) * TerminalClickOrder.COLS + 7)
                 }
             }
@@ -477,7 +514,7 @@ object AutoTerminal {
         melodySkipQueue.clear()
         clickedSlotsWithTime.clear()
         lastRubixTarget = null
-        rubixLastClickedColor.clear()
+        rubixPredicted.clear()
         lastMelodyRow = -1
         lastMelodyRowClickAt = 0L
     }
