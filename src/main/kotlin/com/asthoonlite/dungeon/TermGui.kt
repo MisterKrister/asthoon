@@ -20,6 +20,8 @@ object TermGui {
     internal const val TILE_SIZE = 24
     private const val BACKGROUND = 0xF0090B10.toInt()
     private const val NEUTRAL = 0xFF292F3B.toInt()
+    /** Same dim MixinContainerScreen paints over a chest, for screens it cannot reach. */
+    private const val DIM_BACKGROUND = 0x88000000.toInt()
 
     data class Tile(val slot: Int, val x: Int, val y: Int)
 
@@ -68,9 +70,27 @@ object TermGui {
         return Grid((width - w * scale) / 2f, (height - h * scale) / 2f, scale, w, h, tiles)
     }
 
+    /**
+     * Whether the drawn grid covers this screen.
+     *
+     * The only thing the grid needs from a menu is the terminal's own rows —
+     * everything it draws comes from `slots.take(kind.slotCount)` — so that is
+     * the test. The `+ 36` this replaces asked for the player's inventory
+     * below the rows as well, which is how a screen with the terminal and
+     * nothing else (a simulator's window, a practice world's shorter chest)
+     * went undrawn while the clicker, which never asked for the inventory,
+     * kept working on the very same screen. The title stays the real gate: it
+     * is what says "this is a terminal" at all, and it is matched on the
+     * stripped text, so a wrapper like "P3 · Click in order!" still counts.
+     *
+     * [covers] is split out because the count test is the part worth pinning,
+     * and pinning it does not want a screen.
+     */
+    internal fun covers(kind: Kind, slotCount: Int): Boolean = slotCount >= kind.slotCount
+
     fun active(screen: AbstractContainerScreen<*>): Boolean =
-        Config.termGuiEnabled && !QuietMode.suppressing() && screen is ContainerScreen &&
-            TerminalSolver.kindOf(screen.title.string)?.let { screen.menu.slots.size >= it.slotCount + 36 } == true
+        Config.termGuiEnabled && !QuietMode.suppressing() &&
+            TerminalSolver.kindOf(screen.title.string)?.let { covers(it, screen.menu.slots.size) } == true
 
     fun gridFor(screen: AbstractContainerScreen<*>): Grid? {
         if (!active(screen)) return null
@@ -87,6 +107,13 @@ object TermGui {
 
     fun render(screen: AbstractContainerScreen<*>, graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val grid = gridFor(screen) ?: return
+        // A chest dims itself through MixinContainerScreen, which mixes into
+        // ContainerScreen and nowhere else. A screen that is not one of those
+        // — a simulator's own window — would leave its background sitting
+        // there, untrimmed, underneath a grid drawn on top of it. So this dims
+        // it here instead, and only when the hook could not have run, because
+        // dimming twice would take the grid down with the background.
+        if (screen !is ContainerScreen) graphics.fill(0, 0, screen.width, screen.height, DIM_BACKGROUND)
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
         val all = items(screen, kind)
         val title = TerminalSolver.cleanTitle(screen.title.string)
@@ -134,10 +161,16 @@ object TermGui {
         if (button !in 0..2 || !canClick(kind, screen.title.string, all, slot)) return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
-        val gameMode = mc.gameMode ?: return
-        gameMode.handleContainerInput(screen.menu.containerId, slot,
+        // Same door the clicker uses: the player's window sends the packet, a
+        // screen holding its own menu gets the click through slotClicked —
+        // which is where a hand's click lands on such a screen too, and
+        // therefore the only way a manual click can reach it at all.
+        val sent = TerminalInput.send(
+            screen, slot,
             if (kind == Kind.RUBIX) button.coerceAtMost(1) else 2,
-            if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE, player)
+            if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE
+        )
+        if (!sent) return
         screen.menu.carried = ItemStack.EMPTY
         player.containerMenu.carried = ItemStack.EMPTY
     }

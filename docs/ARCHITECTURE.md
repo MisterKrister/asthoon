@@ -174,17 +174,35 @@ load, not a warning. Always confirm the descriptor with `javap` first.
 - `dungeon/TermGui.kt` — optional Odin-style centered terminal grids. Enable
   **Custom Terminal GUI** on the Terminal tab; size and gap are adjustable.
   Its pure layout supplies tile rendering, mouse hit tests, keyboard clicks
-  and `TerminalCursor.targetFor`. `MixinContainerScreen` replaces the chest
+  and `TerminalCursor.targetFor`. A screen is covered when its menu holds the
+  terminal's *own* rows (`TermGui.covers`); the player's inventory below them
+  is never required, which is what lets a window holding only the terminal —
+  a p3-simulator screen, a shorter practice chest — draw at all. Clicks leave
+  through `dungeon/TerminalInput.kt`: the player's window sends packets, a
+  screen holding a menu of its own is driven through `slotClicked`, the door
+  a hand's click uses there. `MixinContainerScreen` replaces the chest
   background, while `MixinHandledScreen` replaces contents and input without
   replacing the live menu. Odin's BSD notice ships in `META-INF/licenses`.
 - `dungeon/CursorMotion.kt` — pure retargetable pointer flight. Acceleration
   uses CSS cubic-bezier x inversion (Newton iteration and bisection), default
-  `(0.2, 0, 0, 1)`. Four percentage sliders tune the controls. AutoTerminal
-  owns click timing and revalidates candidates each tick; movement never
-  gates input. Enable **Glide On Melody** to premove to the next detected
-  button immediately after clicking. Detection, skip queues and layout share
-  the same three/four-row model, with a 250 ms retry window for unacknowledged
-  melody clicks.
+  `(0.2, 0, 0, 1)`. Percentage sliders tune speed, arc, tremor and the curve's
+  four control points; **Humanize** scales how much all of them *vary* —
+  timing spread, arc and easing jitter, the pause before moving, and the
+  overshoot that carries past a pane before settling back. A flight has three
+  stretches (dwell, travel, settle), all computed from its inputs, so the same
+  inputs always draw the same line. AutoTerminal owns click timing
+  and revalidates candidates each tick. The pointer never sets that timing: a
+  trip is *fitted* into the time until the next click — hesitation first,
+  travel with what is left, floored so motion stays visible — so the Click
+  Delay is the cadence of every terminal and Pointer Speed only changes how
+  the trip looks. The per-slot guard follows the same rule: every terminal
+  gets the 350 ms round-trip ceiling, the number terminal gets the Click
+  Delay instead — on a chain of numbered panes that ceiling was not a safety
+  margin, it was the whole cadence. Enable **Glide On Melody** to premove to
+  the next detected button immediately after clicking. Detection, skip queues
+  and layout share the same three/four-row model, with a 250 ms retry window
+  for unacknowledged melody clicks; melody's aim and its click read the same
+  candidate, so the hand drops to the next row once and stays there.
 
 ## 7. The regression harness
 
@@ -202,6 +220,12 @@ balance, Java2D fill convention).
 `TerminalRegressionCheck.kt`, called by that harness, also checks CSS easing
 reference values and degenerate curves, retarget continuity, clicks during
 flight, premove/debounce, three/four-row melody and skip queues, grid
-centers/hit testing across scales, and old-config defaults.
+centers/hit testing across scales, and old-config defaults — plus the pieces
+that made the terminal settings stop answering: the click clock taking Click
+Delay as its mean with one Delay Spread either side of it, the per-slot guard
+each terminal runs on, the humanize bounds (timing, hesitation, overshoot,
+settle), a flight that hesitates and settles back onto its pane, the split
+that keeps a whole trip inside one beat, and which menus the drawn grid
+covers.
 
 **Rule: if you change pure logic, add a check for it in the same commit.**

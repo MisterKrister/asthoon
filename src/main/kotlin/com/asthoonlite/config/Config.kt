@@ -241,6 +241,16 @@ object Config {
         var autoTerminalEaseY1: Int = 0,
         var autoTerminalEaseX2: Int = 0,
         var autoTerminalEaseY2: Int = 100,
+
+        // ── How imperfect a hand is ────────────────────────────────────────
+        // Appended at the end of Data, same as the pointer block above, so
+        // existing config files keep loading. The individual sliders above
+        // set how *much* of a trait exists; this sets how much of it varies
+        // and is allowed to be wrong — timing spread, arc variation, tremor,
+        // easing jitter, the pre-move hesitation, and the overshoot that
+        // carries past the pane before settling. 0 is a machine: every hop
+        // over the same distance is the same hop.
+        var autoTerminalHumanize: Int = 50,
     )
 
     var data = Data()
@@ -564,7 +574,17 @@ object Config {
 
     var autoTerminalClickDelayMs: Int
         get() = data.autoTerminalClickDelayMs
-        set(v) { data.autoTerminalClickDelayMs = v.coerceIn(0, 1000); save() }
+        set(v) {
+            // The window travels with the mean rather than being left behind
+            // by it: Drag Click Delay and the spread you chose stays the spread
+            // you have, instead of silently becoming lopsided.
+            val keep = autoTerminalDelaySpreadMs
+            data.autoTerminalClickDelayMs = v.coerceIn(0, 1000)
+            val (low, high) = spreadWindow(data.autoTerminalClickDelayMs, keep)
+            data.autoTerminalMinRandomDelayMs = low
+            data.autoTerminalMaxRandomDelayMs = high
+            save()
+        }
 
     // Unwired: `AutoTerminal` reads neither of these and the Terminal tab
     // rows that used to expose them are gone. They stay because the file is
@@ -581,6 +601,25 @@ object Config {
     var autoTerminalMaxRandomDelayMs: Int
         get() = data.autoTerminalMaxRandomDelayMs
         set(v) { data.autoTerminalMaxRandomDelayMs = v.coerceIn(0, 1000); save() }
+
+    /**
+     * The jitter window as one number: how far either side of the Click Delay
+     * the beat may stray.
+     *
+     * It is read back as the half-width of the stored Min/Max pair and written
+     * as that pair centred on the Click Delay, so the two sliders that used to
+     * have to agree with a third become one control that cannot disagree with
+     * anything. The pair stays on disk under its old names because that is
+     * where users' settings already live.
+     */
+    var autoTerminalDelaySpreadMs: Int
+        get() = ((data.autoTerminalMaxRandomDelayMs - data.autoTerminalMinRandomDelayMs) / 2).coerceIn(0, 500)
+        set(v) {
+            val (low, high) = spreadWindow(data.autoTerminalClickDelayMs, v)
+            data.autoTerminalMinRandomDelayMs = low
+            data.autoTerminalMaxRandomDelayMs = high
+            save()
+        }
 
     var autoTerminalMelodySkip: Boolean
         get() = data.autoTerminalMelodySkip
@@ -986,6 +1025,13 @@ object Config {
         get() = data.autoTerminalAnywhere
         set(v) { data.autoTerminalAnywhere = v; save() }
 
+    /** How imperfect the pointer's hand is, 0-100. Scales the *variation* of
+     *  every trait above rather than their size: at 0 the arc, the tremor and
+     *  the timing are still configured, they are just identical every time. */
+    var autoTerminalHumanize: Int
+        get() = data.autoTerminalHumanize.coerceIn(0, 100)
+        set(v) { data.autoTerminalHumanize = v.coerceIn(0, 100); save() }
+
     // The grid's own fields kept their original `termGui*` names: Config.Data
     // is Gson-serialised to disk, so renaming one silently resets the setting
     // for anyone who already has it. The curve below was new in the same
@@ -1035,4 +1081,20 @@ object Config {
             AsthoonLite.LOGGER.warn("[AsthoonLite] Failed to save config", it)
         }
     }
+}
+
+/**
+ * The Min/Max pair one Delay Spread value writes: [spread] wide either side of
+ * [mean], clamped to what the fields can hold.
+ *
+ * Top-level rather than a member of [Config] on purpose: initialising that
+ * object asks FabricLoader for a config directory, which the offline
+ * regression harness does not have. This is the whole policy behind the one
+ * Delay Spread slider, so the harness has to be able to reach it — and it
+ * never touches the settings on disk itself.
+ */
+internal fun spreadWindow(mean: Int, spread: Int): Pair<Int, Int> {
+    val s = spread.coerceIn(0, 500)
+    val centre = mean.coerceAtLeast(0)
+    return (centre - s).coerceAtLeast(0) to (centre + s).coerceAtMost(1000)
 }

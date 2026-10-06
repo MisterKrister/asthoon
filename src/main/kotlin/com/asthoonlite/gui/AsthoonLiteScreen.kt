@@ -452,13 +452,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.dungeonMapDontRenderFairyCheckmark }, { Config.dungeonMapDontRenderFairyCheckmark = it }),
             )
             Tab.TERMINALS -> listOf(
-                // Six headers became four. The preset button had a section of
-                // its own and the melody rows had another, and both already
-                // had a section they belonged under — the button is
-                // automation, the melody delays are delays, the melody
-                // toggles are behaviour. Two notes folded into the row they
-                // were describing, and the two rows wired to settings nothing
-                // reads went away with them.
+                // Grouped by what the row is *for*: what runs, when it clicks,
+                // how it moves, what it looks like. Two controls that had to
+                // agree with a third became one — Delay Spread is the whole
+                // Min/Max window centred on Click Delay — the duplicated First
+                // Click Delay row is gone, and Melody moved out of the timing
+                // list into a section of its own, which is where its rows were
+                // reading from all along.
                 SectionHeader("Solver & Automation"),
                 WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Load AutoTerm Preset")) {
                     Config.applyRsmAutoPreset()
@@ -470,28 +470,27 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
+                SectionHeader("Click Timing"),
+                ToggleRow("Random Delay", "Humanized random delays between clicks",
+                    { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 1000, Config.autoTerminalClickDelayMs, "Click Delay: ", " ms") {
+                    Config.autoTerminalClickDelayMs = it
+                }),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 500, Config.autoTerminalDelaySpreadMs, "Delay Spread: ±", " ms") {
+                    Config.autoTerminalDelaySpreadMs = it
+                }),
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 1000, Config.autoTerminalFirstClickDelayMs, "First Click Delay: ", " ms") {
+                    Config.autoTerminalFirstClickDelayMs = it
+                }),
+                NoteRow("Click Delay is the centre of every beat and Delay Spread is how far either side of it one beat may stray. One number instead of a Min and a Max that had to be kept in step with it, and the beat cannot end up outside a range that ignores what you set."),
+                SectionHeader("Melody"),
                 ToggleRow("Melody Skip", "Skips subsequent Melody rows on correct timing",
                     { Config.autoTerminalMelodySkip }, { Config.autoTerminalMelodySkip = it }),
                 ToggleRow("  ↳ Don't Skip First Row", "Waits for first row before skipping",
                     { Config.autoTerminalDontSkipFirst }, { Config.autoTerminalDontSkipFirst = it }),
                 ToggleRow("Announce Melody in Chat", "Sends party chat message when opening Melody",
                     { Config.autoTerminalAnnounceMelody }, { Config.autoTerminalAnnounceMelody = it }),
-                SectionHeader("Click Timing & Delays"),
-                ToggleRow("Random Delay", "Humanized random delays between clicks",
-                    { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 500, Config.autoTerminalMinRandomDelayMs, "Min Random Delay: ", " ms") {
-                    Config.autoTerminalMinRandomDelayMs = it
-                }),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 500, Config.autoTerminalMaxRandomDelayMs, "Max Random Delay: ", " ms") {
-                    Config.autoTerminalMaxRandomDelayMs = it
-                }),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 600, Config.autoTerminalFirstClickDelayMs, "First Click Delay: ", " ms") {
-                    Config.autoTerminalFirstClickDelayMs = it
-                }),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalClickDelayMs, "Click Delay: ", " ms") {
-                    Config.autoTerminalClickDelayMs = it
-                }),
-                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 1000, Config.autoTerminalMelodyFirstClickDelayMs, "Melody First Click Delay: ", " ms") {
                     Config.autoTerminalMelodyFirstClickDelayMs = it
                 }),
                 SectionHeader("Pointer"),
@@ -499,17 +498,23 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
                 ToggleRow("  ↳ Hide Real Cursor", "Steps the real cursor aside while the drawn pointer is on screen",
                     { Config.autoTerminalCursorHideReal }, { Config.autoTerminalCursorHideReal = it }),
+                ToggleRow("  ↳ Glide On Melody", "Glides to the next row immediately after a click, without waiting for the row update",
+                    { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 25, 400, Config.autoTerminalCursorSpeed, "Pointer Speed: ", "%") {
                     Config.autoTerminalCursorSpeed = it
                 }),
-                NoteRow("100% = natural hand speed. Higher is snappier."),
+                NoteRow("100% = natural hand speed. Higher is snappier. The trip is fitted into the beat, so Pointer Speed changes how it looks, never how fast the terminal runs — that is Click Delay."),
+                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalHumanize, "Humanize: ", "%") {
+                    Config.autoTerminalHumanize = it
+                }),
+                NoteRow("Humanize scales how much everything below varies: timing, arc, tremor, curve, the pause before moving, and carrying past a pane before settling. 0 is a machine — identical hops every time."),
+                SectionHeader("Pointer Fine Tuning"),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorArc, "Pointer Arc: ", "%") {
                     Config.autoTerminalCursorArc = it
                 }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalCursorJitter, "Pointer Tremor: ", "%") {
                     Config.autoTerminalCursorJitter = it
                 }),
-                NoteRow("Clicks continue while the pointer moves. Acceleration uses a tunable cubic Bezier curve."),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseX1, "Acceleration X1: ", "%") {
                     Config.autoTerminalEaseX1 = it
                 }),
@@ -522,8 +527,6 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.autoTerminalEaseY2, "Landing Y2: ", "%") {
                     Config.autoTerminalEaseY2 = it
                 }),
-                ToggleRow("  ↳ Glide On Melody", "Glides to the next row immediately after a click, without waiting for the row update",
-                    { Config.autoTerminalCursorMelody }, { Config.autoTerminalCursorMelody = it }),
                 SectionHeader("Custom Terminal GUI"),
                 ToggleRow("Custom Terminal GUI", "Draws the terminal as its own grid centred on screen — sized, gapped and rounded here rather than inherited from the chest panel. Clicks are routed through the grid.",
                     { Config.termGuiEnabled }, { Config.termGuiEnabled = it }),

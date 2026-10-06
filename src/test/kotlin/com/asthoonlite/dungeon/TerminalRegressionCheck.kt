@@ -1,6 +1,7 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.config.Config
+import com.asthoonlite.config.spreadWindow
 import com.asthoonlite.dungeon.TerminalSolver.Kind
 import com.google.gson.Gson
 import net.minecraft.world.item.ItemStack
@@ -137,6 +138,157 @@ internal fun terminalMotionAndGuiChecks() {
     val small = TermGui.layout(Kind.MELODY, 160, 120, 200, 12, listOf(1, 2, 3, 4))
     check(small.originX >= 0 && small.originY >= 0 && small.center(43) != null)
     check(TermGui.layout(Kind.MELODY, 640, 360, 100, 4).center(43) == null)
+
+    // ── The drawn grid must cover whatever screen it is on ─────────────────
+    run {
+        // The terminal's own rows are the whole requirement: everything the
+        // grid draws comes from `slots.take(slotCount)`, and it never needed
+        // the player's inventory below them. Asking for that as well is what
+        // left a screen holding the terminal and nothing else blank — its own
+        // windows, in the p3 simulator — while the clicker, which never asked
+        // for it, kept working on the very same screen.
+        check(TermGui.covers(Kind.PANES, 45)) { "the terminal's own rows are enough" }
+        check(TermGui.covers(Kind.PANES, 45 + 36)) { "a real chest still counts" }
+        check(!TermGui.covers(Kind.PANES, 44)) { "a screen one row short is not this terminal" }
+        check(TermGui.covers(Kind.SELECT, 54) && !TermGui.covers(Kind.SELECT, 53))
+        check(TermGui.covers(Kind.MELODY, 54) && !TermGui.covers(Kind.MELODY, 53))
+        check(TermGui.covers(Kind.ORDER, 36) && !TermGui.covers(Kind.ORDER, 35))
+        check(TermGui.covers(Kind.STARTS, 45) && !TermGui.covers(Kind.STARTS, 44))
+        check(TermGui.covers(Kind.RUBIX, 45) && !TermGui.covers(Kind.RUBIX, 44))
+    }
+
+    // ── Click pacing: the settings have to be the settings ────────────────
+    run {
+        // Click Delay is the mean of the next beat, not a hint printed beside
+        // a range that swallows it whole.
+        check(AutoTerminal.delayFor(135L, 15L, 15L, 0.0) == 135L) { "the mean must be the Click Delay" }
+        check(AutoTerminal.delayFor(135L, 15L, 15L, 3.0) == 150L) { "three sigma is the slow bound" }
+        check(AutoTerminal.delayFor(135L, 15L, 15L, -3.0) == 120L) { "three sigma is also the fast bound" }
+        check(AutoTerminal.delayFor(135L, 15L, 15L, 999.0) == 150L) { "an outlier clamps instead of escaping" }
+        // An asymmetric window is still centred on the setting — the shape the
+        // old range-based policy could not produce at all.
+        check(AutoTerminal.delayFor(135L, 15L, 65L, 0.0) == 135L) { "an off-centre window still centres on the mean" }
+        check(AutoTerminal.delayFor(135L, 15L, 65L, 6.0) == 200L) { "the slow side reaches its own bound" }
+        check(AutoTerminal.delayFor(180L, 0L, 0L, 42.0) == 180L) { "zero spread must be deterministic" }
+
+        // The window is read as distances from the mean. A window that did not
+        // contain the mean used to be a range that ignored it entirely.
+        check(AutoTerminal.delaySpread(135, 120, 150) == (15L to 15L)) { "a window around the mean is its own spread" }
+        check(AutoTerminal.delaySpread(180, 160, 200) == (20L to 20L)) { "the default window spread" }
+        check(AutoTerminal.delaySpread(250, 120, 150) == (130L to 20L)) {
+            "a Click Delay above the window still moves every click"
+        }
+        check(AutoTerminal.delaySpread(100, 120, 150) == (20L to 50L)) {
+            "a Click Delay below the window still moves every click"
+        }
+        // The one Delay Spread slider writes a pair centred on the Click
+        // Delay, and zero means zero rather than a default spread nobody set.
+        check(AutoTerminal.delaySpread(135, 135, 135) == (0L to 0L)) {
+            "a spread of zero must be deterministic"
+        }
+        // The shipped window is ±20 ms around the shipped Click Delay. Read
+        // off a fresh Data rather than off Config: initialising Config asks
+        // FabricLoader for a config directory this harness does not have.
+        val shipped = Config.Data()
+        check((shipped.autoTerminalMaxRandomDelayMs - shipped.autoTerminalMinRandomDelayMs) / 2 == 20) {
+            "the default window is ±20 ms"
+        }
+        // One control writes the pair the two sliders used to own, centred on
+        // the Click Delay — through the pure helper, so this never saves over
+        // a real settings file.
+        check(spreadWindow(135, 15) == (120 to 150)) { "the spread centres the window on the Click Delay" }
+        check(spreadWindow(180, 0) == (180 to 180)) { "zero spread is a point on the mean" }
+        check(spreadWindow(10, 500) == (0 to 510)) { "the window cannot go negative" }
+        check(spreadWindow(-5, 15) == (0 to 15)) { "nor can the mean" }
+
+        // The per-slot guard. Numbers is the one terminal whose round trip is
+        // its cadence, so its guard follows the Click Delay instead of the
+        // flat safety window the others can afford.
+        check(AutoTerminal.clickGuardMs(Kind.SELECT, 135L) == 350L) { "the panes keep the round-trip ceiling" }
+        check(AutoTerminal.clickGuardMs(Kind.STARTS, 135L) == 350L)
+        check(AutoTerminal.clickGuardMs(Kind.RUBIX, 135L) == 350L)
+        check(AutoTerminal.clickGuardMs(Kind.ORDER, 135L) == 135L) {
+            "the number terminal must not be capped slower than its own beat"
+        }
+        check(AutoTerminal.clickGuardMs(Kind.ORDER, 40L) == 40L) {
+            "and a fast beat stays fast"
+        }
+    }
+
+    // ── Humanize: one slider over every trait ──────────────────────────────
+    run {
+        // Timing. At zero the jitter input is gone, so two identical hops are
+        // identical — the mechanical end of the slider in one line.
+        check(TerminalCursor.timingJitter(1f, 0f) == 0f) { "humanize 0 must not spread timing" }
+        check(TerminalCursor.timingJitter(-1f, 0f) == 0f) { "humanize 0 must not spread timing either way" }
+        check(TerminalCursor.timingJitter(1f, 1f) == 1f) { "humanize 100 must not attenuate timing" }
+        check(TerminalCursor.timingJitter(-1f, 0.5f) == -0.5f) { "half human is half the spread" }
+        check(
+            TerminalCursor.travelDurationMs(120f, 100, TerminalCursor.timingJitter(1f, 0f)) ==
+                TerminalCursor.travelDurationMs(120f, 100, TerminalCursor.timingJitter(-1f, 0f))
+        ) { "at humanize 0 a trip is a pure function of distance and speed" }
+
+        // The pause before moving, and the correction after carrying past.
+        // Both are zero for a machine and bounded for a hand.
+        check(TerminalCursor.dwellMs(0f) == 0L) { "a machine does not hesitate" }
+        check(TerminalCursor.dwellMs(-1f) == 0L) { "an out-of-range setting must not hesitate" }
+        val fullDwell = TerminalCursor.dwellMs(1f)
+        check(fullDwell in 1L..55L) { "full humanize hesitates, but briefly: $fullDwell" }
+        check(TerminalCursor.dwellMs(0.5f) < fullDwell) { "half human is a shorter pause" }
+
+        check(TerminalCursor.settleMs(200L, 0f) == 0L) { "a machine lands and stops" }
+        check(TerminalCursor.settleMs(0L, 1f) == 0L) { "nothing to travel is nothing to correct" }
+        check(TerminalCursor.settleMs(200L, 1f) in 30L..120L) { "correction time out of range" }
+
+        check(TerminalCursor.overshootPx(20f, 1f) == 0f) { "a neighbouring pane has nothing to carry past" }
+        check(TerminalCursor.overshootPx(400f, 0f) == 0f) { "a machine lands on the pixel" }
+        val flick = TerminalCursor.overshootPx(400f, 1f)
+        check(flick > 0f && flick <= 8f) { "overshoot out of range: $flick" }
+        check(TerminalCursor.overshootPx(400f, 0.5f) <= flick) { "less human, less overshoot" }
+        check(TerminalCursor.overshootPx(1000f, 1f) <= 8f) { "never a pane's worth of overshoot" }
+    }
+
+    // ── The trip itself: hesitate, carry past, correct back ────────────────
+    run {
+        val hand = CursorMotion()
+        hand.reset(CursorMotion.Point(0f, 0f))
+        hand.glideTo(
+            CursorMotion.Point(300f, 0f), 1_000L, 200L, 0f, CursorMotion.Ease(), 0f, 0f, 0f,
+            overshootPx = 8f, settleMs = 60L, dwellMs = 50L
+        )
+        // The pause is part of the flight: nothing moves, and the trip is
+        // still one trip — the clock and the pointer are independent, so a
+        // click leaves on time regardless of where the hand is.
+        check(hand.moving(1_000L)) { "a hesitation is still a trip" }
+        check(hand.position(1_049L) == CursorMotion.Point(0f, 0f)) { "the pointer must wait out its pause" }
+        check(hand.position(1_250L).x > 300f) { "an overshoot must carry past the pane" }
+        check(hand.position(1_310L) == CursorMotion.Point(300f, 0f)) { "and settle back onto it" }
+        check(!hand.moving(1_310L)) { "the settle ends the trip" }
+    }
+
+    // ── One beat, one trip: the pointer never sets the pace ───────────────
+    run {
+        // With time to spare the trip keeps its hesitation and flies at the
+        // speed Pointer Speed asked for.
+        check(TerminalCursor.fitTrip(300L, 400L, 50L) == (50L to 300L)) { "a roomy beat keeps the pause" }
+        // Squeezed, it spends what is left on travel rather than on waiting.
+        check(TerminalCursor.fitTrip(300L, 150L, 50L) == (50L to 100L)) { "the pause shrinks before the flight does" }
+        check(TerminalCursor.fitTrip(300L, 100L, 50L) == (0L to 100L)) {
+            "and is dropped entirely when a real flight would not fit beside it"
+        }
+        // The floor is the only way past the window, and only under a beat
+        // faster than motion can honestly be drawn.
+        check(TerminalCursor.fitTrip(120L, 60L, 0L) == (0L to 70L)) { "a trip still has to be visible" }
+        check(TerminalCursor.fitTrip(300L, -40L, 50L) == (0L to 70L)) { "an overdue click still gets a flight" }
+        // Whatever the split, travel never exceeds what distance asked for.
+        for (window in listOf(-10L, 0L, 40L, 80L, 130L, 250L, 900L)) {
+            val (dwell, travel) = TerminalCursor.fitTrip(300L, window, 50L)
+            check(travel in 70L..300L) { "travel out of range at window $window: $travel" }
+            check(dwell in 0L..50L) { "dwell out of range at window $window: $dwell" }
+            check(dwell + travel <= window || travel == 70L) { "the beat must hold the trip at window $window" }
+        }
+    }
+
     val oldConfig = Gson().fromJson("{\"autoTerminalClickDelayMs\":95,\"autoTerminalCursorArc\":60}", Config.Data::class.java)
     check(oldConfig.autoTerminalClickDelayMs == 95 && oldConfig.autoTerminalCursorArc == 60)
     check(!oldConfig.termGuiEnabled && oldConfig.termGuiSize == 2.0f)

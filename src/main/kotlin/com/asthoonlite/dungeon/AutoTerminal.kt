@@ -11,8 +11,6 @@ import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.sqrt
 import kotlin.math.PI
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.random.Random
 
 /**
@@ -36,16 +34,65 @@ object AutoTerminal {
     private var lastMelodyRow = -1
     private var lastMelodyRowClickAt = 0L
 
+    /**
+     * How long a slot stays off limits after a click.
+     *
+     * The window is really a guess at the server round trip: long enough that
+     * a pane whose state we have already changed is not clicked again before
+     * the reply lands, because on the panes, colours and starts-with terminals
+     * a second click *undoes* the first. It is a ceiling, not a delay —
+     * [clickGuardMs] is what decides how much of it a terminal actually gets.
+     */
     private const val CLICK_TIMEOUT_MS = 350L
     private const val RUBIX_REPEAT_GUARD_MS = 70L
+
+    /**
+     * How long the same Melody row waits before it is clicked again.
+     *
+     * Melody is the one terminal whose pace is the puzzle: the beat is the row
+     * moving into place, so this doubles as the retry window for a click the
+     * server never acknowledged and as the pointer's travel budget on the way
+     * to the next row.
+     */
+    internal const val MELODY_ROW_RETRY_MS = 250L
+
+    /**
+     * How far the opening beat of a terminal may stray from its setting.
+     *
+     * One event per terminal, so it gets a fixed spread rather than a window
+     * built from the slider that governs the repeating cadence — nobody chose
+     * that window, they chose the number.
+     */
+    private const val FIRST_CLICK_SPREAD_MS = 30L
+
+    /** Side of the mean the jitter reaches when the Min/Max window says
+     *  nothing useful about it. Matches the spread `gaussianRandom` used to
+     *  synthesise when a bound was missing. */
+    private const val DEFAULT_SPREAD_MS = 20L
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
     }
 
-    private fun isRecentlyClicked(slot: Int, now: Long): Boolean {
+    /**
+     * The per-slot guard a terminal runs on, in milliseconds.
+     *
+     * Everywhere gets the round-trip ceiling except the number terminal, and
+     * the exception is the whole reason this is per kind. Numbers is a chain:
+     * the next candidate is *the button just clicked*, still showing the old
+     * count until the reply lands, so a fixed 350 ms safety window is not a
+     * safety margin there — it is the terminal's entire cadence, and it is
+     * why this one ran two and a half times slower than every terminal beside
+     * it. Clicking a spent number does nothing server-side, so its guard only
+     * has to stop packet spam, which the click delay already does. Equal to
+     * the beat, it can never outlast it.
+     */
+    internal fun clickGuardMs(kind: Kind, clickDelayMs: Long): Long =
+        if (kind == Kind.ORDER) clickDelayMs else CLICK_TIMEOUT_MS
+
+    private fun isRecentlyClicked(slot: Int, now: Long, timeoutMs: Long): Boolean {
         val last = clickedSlotsWithTime[slot] ?: return false
-        return now - last < CLICK_TIMEOUT_MS
+        return now - last < timeoutMs
     }
 
     private fun clearCarried(screen: AbstractContainerScreen<*>, player: net.minecraft.world.entity.player.Player) {
@@ -97,15 +144,18 @@ object AutoTerminal {
 
         if (kind == Kind.MELODY) {
             if (!Config.autoTerminalMelodySkip) melodySkipQueue.clear()
-            // Keep the next row under the pointer while the old row awaits acknowledgement.
-            melodyAimSlot(items, now)?.let { aim(screen, kind, it, now + 40L) }
+            // The aim and the click read the same candidate, so they cannot
+            // disagree: the pointer sits where the next click lands, and the
+            // one move it makes is down to the row below — once, after a
+            // click, staying there until this terminal says otherwise.
+            melodyAimSlot(items, now)?.let { aim(screen, kind, it, now + MELODY_ROW_RETRY_MS) }
             if (!canClick(now)) return
             val click = melodyClick(items, now)
             if (click != null) {
                 aim(screen, kind, click.slot, now)
                 if (fireClick(screen, player, screen.menu.containerId, kind, click, 40L)) {
                     recordMelodyClick(items, click.slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, now + 40L) }
+                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, now + MELODY_ROW_RETRY_MS) }
                 }
                 return
             }
@@ -114,10 +164,10 @@ object AutoTerminal {
             while (melodySkipQueue.isNotEmpty()) {
                 val slot = melodySkipQueue.removeFirst()
                 if (slot !in remaining || slot / 9 <= lastMelodyRow) continue
-                aim(screen, kind, slot, now)
+                aim(screen, kind, slot, now + MELODY_ROW_RETRY_MS)
                 if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), 40L)) {
                     recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, now + 40L) }
+                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, now + MELODY_ROW_RETRY_MS) }
                 }
                 break
             }
@@ -152,15 +202,17 @@ object AutoTerminal {
         clickDelayMs: Long
     ): Boolean {
         val mc = Minecraft.getInstance()
-        if (mc.screen !== screen || mc.player !== player || player.containerMenu !== screen.menu || screen.menu.containerId != windowId) return false
-        val gameMode = mc.gameMode ?: return false
+        if (mc.screen !== screen || mc.player !== player || screen.menu.containerId != windowId) return false
         // Rubix accepts left-click (0) with PICKUP.
         // Other terminals use middle-click (CLONE) to prevent client inventory desyncs.
-        if (kind == Kind.RUBIX) {
-            gameMode.handleContainerInput(windowId, click.slot, click.button, ContainerInput.PICKUP, player)
-        } else {
-            gameMode.handleContainerInput(windowId, click.slot, 2, ContainerInput.CLONE, player)
-        }
+        // TerminalInput picks the door: the player's window sends packets, a
+        // screen holding its own menu drives that menu directly.
+        val sent = TerminalInput.send(
+            screen, click.slot,
+            if (kind == Kind.RUBIX) click.button else 2,
+            if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE
+        )
+        if (!sent) return false
         clearCarried(screen, player)
         recordClick(System.currentTimeMillis(), click.slot, clickDelayMs)
         // Predict on send, not on reply. The pane has been asked to move the
@@ -257,8 +309,10 @@ object AutoTerminal {
      */
     private fun nextClick(kind: Kind, title: String, items: List<ItemStack>, now: Long): Click? {
         // Slots whose last click has not come back yet are off limits: picking
-        // one means clicking a pane the solver has already dealt with.
-        val blocked = items.indices.filterTo(mutableSetOf()) { isRecentlyClicked(it, now) }
+        // one means clicking a pane the solver has already dealt with. How
+        // long "not come back yet" lasts is per terminal — see clickGuardMs.
+        val guard = clickGuardMs(kind, currentClickDelayMs)
+        val blocked = items.indices.filterTo(mutableSetOf()) { isRecentlyClicked(it, now, guard) }
 
         if (kind == Kind.RUBIX) return rubixClick(kind, title, items, blocked, now)
 
@@ -326,14 +380,31 @@ object AutoTerminal {
     }
 
     internal fun melodyRowReady(slot: Int, now: Long): Boolean =
-        slot / 9 != lastMelodyRow || now - lastMelodyRowClickAt >= 250L
+        slot / 9 != lastMelodyRow || now - lastMelodyRowClickAt >= MELODY_ROW_RETRY_MS
 
+    /**
+     * Where the pointer sits while Melody runs — and, crucially, the same
+     * thing the click is aimed at, so the two can never disagree.
+     *
+     * Melody's pace is row position, so the aim has exactly one move: after
+     * the click it drops to the row below and stays there while the row above
+     * is acknowledged. It comes back only when the retry window closes with
+     * the server still showing the old row — at which point the click really
+     * is due on that row again and the pointer belongs on it. Reading
+     * [TerminalSolver.melodyCandidate] (what would be clicked) rather than
+     * the moving pointer's row (what the server is drawing) is what stops the
+     * hand shuttling back and forth between two rows at once.
+     */
     internal fun melodyAimSlot(items: List<ItemStack>, now: Long): Int? {
-        val active = TerminalSolver.melodyActiveButton(items)
-        if (lastMelodyRow >= 0 && now - lastMelodyRowClickAt < 250L && (active == null || active / 9 == lastMelodyRow)) {
-            return TerminalSolver.melodyNextButton(items, lastMelodyRow * 9 + 7)
+        val pending = TerminalSolver.melodyCandidate(items)
+            ?: TerminalSolver.melodyActiveButton(items)
+            ?: TerminalSolver.melodyRows(items).firstOrNull { !it.completed }?.buttonSlot
+        val sinceClick = now - lastMelodyRowClickAt
+        if (lastMelodyRow >= 0 && sinceClick in 0 until MELODY_ROW_RETRY_MS) {
+            // Down once, onto the row below — or stay put when there is none.
+            return TerminalSolver.melodyNextButton(items, lastMelodyRow * 9 + 7) ?: pending
         }
-        return active ?: TerminalSolver.melodyRows(items).firstOrNull { !it.completed }?.buttonSlot
+        return pending
     }
 
     /** Commit debounce and skip bookkeeping only after an input was actually sent. */
@@ -348,43 +419,79 @@ object AutoTerminal {
         }
     }
 
-    private fun gaussianRandom(minimum: Int, maximum: Int): Int {
-        val minValue = min(minimum, maximum)
-        val maxValue = max(minimum, maximum)
-        if (minValue == maxValue) return minValue
-
+    /**
+     * One sample from a gaussian in standard deviations, unclamped.
+     *
+     * [delayFor] owns where the sample lands; this only produces it, so the
+     * distribution's shape is pinned here and its *policy* is pinned there.
+     */
+    private fun gaussianSample(): Double {
         val u1 = 1.0 - Random.nextDouble()
         val u2 = 1.0 - Random.nextDouble()
-        val gaussian = sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)
+        return sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)
+    }
 
-        val mean = minValue + (maxValue - minValue) / 2.0
-        val stdDev = (maxValue - minValue) / 6.0
-        val result = gaussian * stdDev + mean
+    /**
+     * The next beat of the click clock.
+     *
+     * [meanMs] is the Click Delay — the number the player actually drags — and
+     * it is what the sample centres on. [fasterMs]/[slowerMs] are how far
+     * either side of it the jitter may reach; they come from the Min/Max
+     * window, which used to *be* an absolute range that swallowed the mean
+     * whole. Set Click Delay outside that range and nothing the player typed
+     * made any difference, which is the whole reason this is a mean with a
+     * spread rather than a range with a midpoint.
+     *
+     * Sigma spans six deviations across the combined spread, which is what
+     * `gaussianRandom` used: a symmetric window around the mean reproduces the
+     * old numbers exactly, so presets keep the cadence they shipped with.
+     *
+     * [sample] is passed in so the harness can pin the policy without
+     * waiting on a distribution.
+     */
+    internal fun delayFor(meanMs: Long, fasterMs: Long, slowerMs: Long, sample: Double): Long {
+        val mean = meanMs.coerceAtLeast(0L)
+        val faster = fasterMs.coerceAtLeast(0L)
+        val slower = slowerMs.coerceAtLeast(0L)
+        if (faster == 0L && slower == 0L) return mean
+        val sigma = (faster + slower) / 6.0
+        return (mean + sample * sigma)
+            .coerceIn((mean - faster).toDouble(), (mean + slower).toDouble())
+            .toLong()
+    }
 
-        return result.coerceIn(minValue.toDouble(), maxValue.toDouble()).toInt()
+    /**
+     * How far either side of the Click Delay the jitter may reach, read from
+     * the stored Min/Max window as *distances* rather than as bounds.
+     *
+     * A bound on the wrong side of the mean (Max set below the Click Delay, or
+     * Min above it) describes a window the player cannot have wanted, so it
+     * falls back to a plain default rather than inverting the spread. A bound
+     * *on* the mean is the opposite case and reads as no spread at all: the
+     * one Delay Spread slider writes exactly that when asked for zero.
+     *
+     * The window is passed in rather than read here so the whole policy is one
+     * function the harness can pin.
+     */
+    internal fun delaySpread(mean: Int, minDelay: Int, maxDelay: Int): Pair<Long, Long> {
+        val faster = if (mean > 0 && minDelay in 1..mean) (mean - minDelay).toLong() else DEFAULT_SPREAD_MS
+        val slower = if (maxDelay >= mean) (maxDelay - mean).toLong() else DEFAULT_SPREAD_MS
+        return faster to slower
     }
 
     private fun nextFirstClickDelayMs(): Long {
-        val base = Config.autoTerminalFirstClickDelayMs.coerceAtLeast(0)
-        if (!Config.autoTerminalRandomDelay) return base.toLong()
-        val min = (base - 30).coerceAtLeast(50)
-        val max = base + 30
-        return gaussianRandom(min, max).toLong()
+        val base = Config.autoTerminalFirstClickDelayMs.coerceAtLeast(0).toLong()
+        if (!Config.autoTerminalRandomDelay) return base
+        return delayFor(base, FIRST_CLICK_SPREAD_MS, FIRST_CLICK_SPREAD_MS, gaussianSample())
     }
 
     private fun nextClickDelayMs(): Long {
-        if (!Config.autoTerminalRandomDelay) {
-            return Config.autoTerminalClickDelayMs.coerceAtLeast(0).toLong()
-        }
-
-        val target = Config.autoTerminalClickDelayMs.coerceAtLeast(0)
-        val minDelay = Config.autoTerminalMinRandomDelayMs.coerceAtLeast(0)
-        val maxDelay = Config.autoTerminalMaxRandomDelayMs.coerceAtLeast(0)
-
-        val lower = if (minDelay > 0 && maxDelay >= minDelay) minDelay else (target - 20).coerceAtLeast(50)
-        val upper = if (maxDelay > 0 && maxDelay >= lower) maxDelay else (target + 20).coerceAtLeast(lower)
-
-        return gaussianRandom(lower, upper).toLong()
+        val mean = Config.autoTerminalClickDelayMs.coerceAtLeast(0).toLong()
+        if (!Config.autoTerminalRandomDelay) return mean
+        val (faster, slower) = delaySpread(
+            mean.toInt(), Config.autoTerminalMinRandomDelayMs, Config.autoTerminalMaxRandomDelayMs
+        )
+        return delayFor(mean, faster, slower, gaussianSample())
     }
 
     fun onEscape() {

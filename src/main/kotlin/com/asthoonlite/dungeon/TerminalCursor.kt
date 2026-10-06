@@ -33,6 +33,26 @@ import kotlin.random.Random
  *  - travel time scaled by distance with gaussian spread, so a far flick takes
  *    longer than a hop to the neighbouring pane.
  *
+ * **The knobs.** Two things are being balanced and they have separate controls,
+ * because one slider that moved both would be a slider that could not be
+ * reasoned about:
+ *
+ *  - *speed* — [Config.autoTerminalCursorSpeed] sets how long a trip would
+ *    like to take. The whole trip is fitted into the time until the next
+ *    click, so this makes a hop brisk or languid and never moves the cadence:
+ *    that is [Config.autoTerminalClickDelayMs], and it is the only clock. When
+ *    a trip wants longer than the beat allows it is cut down to fit — the
+ *    pointer is allowed to arrive early, never late.
+ *  - *hand* — [Config.autoTerminalHumanize] sets how imperfect each trip is:
+ *    how much the timing, the arc, the tremor and the easing differ from the
+ *    last one, whether the pointer hesitates before starting, and whether it
+ *    carries past the pane and corrects back. At 0 every hop down the same
+ *    distance is the same hop, which is exactly what a machine looks like.
+ *
+ * The individual sliders set *how much* of a trait exists; Humanize scales how
+ * much of it *varies and is allowed to be wrong*. That is why turning Humanize
+ * down does not turn the arc off — it turns the arc's randomness off.
+ *
  * The picture itself is 《CK》 Bacon boi 1.0's osu cursor — white core, yellow
  * rim, yellow glow, a trail of yellow blobs behind it while it travels — drawn
  * as a sprite over the container rather than hand-rolled from pixels, because
@@ -41,9 +61,9 @@ import kotlin.random.Random
  * the texture pipeline says no.
  *
  * Everything pure in here ([progressAt], [travelDurationMs], [flightDurationMs],
- * [bezier], [arrowRuns], [trailAlpha]) is deterministic given its inputs — the
- * regression harness pins all six, so the feel of the movement cannot drift
- * silently.
+ * [fitTrip], [overshootPx], [settleMs], [dwellMs], [timingJitter], [bezier],
+ * [arrowRuns], [trailAlpha]) is deterministic given its inputs — the regression
+ * harness pins every one, so the feel of the movement cannot drift silently.
  */
 object TerminalCursor {
 
@@ -236,7 +256,9 @@ object TerminalCursor {
      * Milliseconds for a pointer covering [distance] screen pixels.
      * `speedPercent` 100 is the natural setting; higher is snappier. `jitter`
      * is a unit gaussian-ish value in roughly [-1, 1] and is what keeps two
-     * identical flicks from ever taking identical time.
+     * identical flicks from ever taking identical time — it is scaled by the
+     * caller, so a fully human run passes the raw sample (±18 %) and a
+     * mechanical one passes zero.
      */
     internal fun travelDurationMs(distance: Float, speedPercent: Int, jitter: Float): Long {
         val base = 85f + distance.coerceAtLeast(0f) * 0.62f
@@ -245,13 +267,34 @@ object TerminalCursor {
         return raw.coerceIn(70f, 420f).toLong()
     }
 
-    /** Fit travel into the available click window where possible. The 70 ms
+    /**
+     * Fit travel into the time until the next click, where possible. The 70 ms
      * floor keeps motion visible at fast cadences; a click may fire during
-     * that flight because AutoTerminal owns the clock independently. */
+     * that flight because AutoTerminal owns the clock independently and a
+     * terminal that has to wait on an animation is a terminal running at
+     * somebody else's speed.
+     */
     internal fun flightDurationMs(naturalMs: Long, availableMs: Long): Long {
         val natural = naturalMs.coerceIn(MIN_FLIGHT_MS, MAX_FLIGHT_MS)
         if (availableMs <= 0L) return MIN_FLIGHT_MS
         return availableMs.coerceIn(MIN_FLIGHT_MS, natural)
+    }
+
+    /**
+     * Split one trip's [windowMs] into the hesitation it takes first and the
+     * travel left over — the policy [glideTo] runs, pinned on its own.
+     *
+     * The hesitation is part of the beat rather than on top of it, so it is
+     * dropped whenever a real flight could not fit beside it: a pause longer
+     * than the cadence is a stall, and stalling is the one thing that makes
+     * one terminal run slower than the one next to it. Travel then takes
+     * what is left, floored at [MIN_FLIGHT_MS] — that floor is the single
+     * place a trip may outlive its window, and only under cadences faster
+     * than motion can honestly be drawn at.
+     */
+    internal fun fitTrip(naturalMs: Long, windowMs: Long, dwellMs: Long): Pair<Long, Long> {
+        val dwell = if (dwellMs + MIN_FLIGHT_MS > windowMs) 0L else dwellMs.coerceAtLeast(0L)
+        return dwell to flightDurationMs(naturalMs, windowMs - dwell)
     }
 
     /** Quadratic bezier point at [t] through control point [c]. */
@@ -293,6 +336,62 @@ object TerminalCursor {
     private const val MIN_FLIGHT_MS = 70L
     private const val MAX_FLIGHT_MS = 420L
 
+    /** How far past a pane the pointer may carry before settling, in screen px. */
+    private const val MAX_OVERSHOOT_PX = 8f
+    /** Below this a "flick" is really a hop, and a hop lands without overshoot. */
+    private const val MIN_OVERSHOOT_DISTANCE = 60f
+    /** Longest pause between deciding to move and moving, at Humanize 100. */
+    private const val MAX_DWELL_MS = 55L
+    /** Fraction of the travel time a correction takes once the target is overshot. */
+    private const val SETTLE_FRACTION = 0.35f
+    private const val MIN_SETTLE_MS = 30L
+    private const val MAX_SETTLE_MS = 120L
+
+    /**
+     * How far past [target] a hand carries the pointer, in screen pixels.
+     *
+     * Scale is deliberate: a correction that is a visible fraction of the trip
+     * reads as a missed click, while one that is a couple of pixels reads as a
+     * hand that did not stop on a dime. Zero at Humanize 0 (machines land on
+     * the pixel), zero for short hops, and capped well inside one pane.
+     *
+     * Modeled on the overshoot-then-correct step in Xetera's ghost-cursor,
+     * which only overshoots past a distance threshold for the same reason:
+     * below it there is nothing to overshoot.
+     */
+    internal fun overshootPx(distance: Float, human: Float): Float {
+        val h = human.coerceIn(0f, 1f)
+        if (h <= 0f) return 0f
+        val d = distance.coerceAtLeast(0f)
+        if (d < MIN_OVERSHOOT_DISTANCE) return 0f
+        return (d * 0.05f * h).coerceAtMost(MAX_OVERSHOOT_PX)
+    }
+
+    /** Correction time for an overshoot of [travelMs] — long enough to see, never a glide. */
+    internal fun settleMs(travelMs: Long, human: Float): Long =
+        if (human <= 0f || travelMs <= 0L) 0L
+        else (travelMs * SETTLE_FRACTION).toLong().coerceIn(MIN_SETTLE_MS, MAX_SETTLE_MS)
+
+    /**
+     * Pause before the pointer starts moving: the moment between seeing the
+     * next pane and deciding to go for it. Zero at Humanize 0, otherwise up to
+     * [MAX_DWELL_MS].
+     */
+    internal fun dwellMs(human: Float): Long =
+        if (human <= 0f) 0L else (MAX_DWELL_MS * human.coerceIn(0f, 1f)).toLong()
+
+    /**
+     * The jitter a trip actually gets: the raw sample scaled by how human the
+     * hand is.
+     *
+     * This is the piece that makes Humanize respond on timing rather than only
+     * on shape. At 0 the input is exactly zero, so two identical hops take
+     * identical time — the mechanical end of the slider, in one line — and at
+     * 100 the sample arrives unattenuated, where [travelDurationMs] gives it
+     * ±18 % of the trip.
+     */
+    internal fun timingJitter(sample: Float, human: Float): Float = sample * human.coerceIn(0f, 1f)
+
     private val runs: List<ArrowRun> by lazy { arrowRuns() }
 
     /**
@@ -310,19 +409,81 @@ object TerminalCursor {
         if (!moving) lastGlideAt = System.currentTimeMillis()
     }
 
-    /** Retarget from the current sampled position. Clicks belong to AutoTerminal. */
+    /**
+     * Retarget from the current sampled position. Clicks belong to AutoTerminal.
+     *
+     * Everything that makes one trip differ from the last one is decided here,
+     * once, at the moment the trip is scheduled — [CursorMotion] stays a pure
+     * sampler so the same inputs always draw the same line.
+     *
+     * [clickNotBeforeMs] is when the next click leaves, and the whole trip is
+     * fitted inside the time until then: the hesitation first, because a pause
+     * longer than the beat is a stall rather than a tell, then the travel with
+     * whatever is left over, floored so motion stays visible at fast cadences.
+     * The correction back from an overshoot rides along past the end of the
+     * beat — it ends *on* the pane, so a click landing in the middle of it is
+     * a click landing where it should.
+     *
+     * Fitting rather than waiting is what keeps every terminal running at the
+     * same speed: the beat is the Click Delay and nothing the pointer does can
+     * stretch it. Pointer Speed therefore moves in one direction only — it can
+     * get the pointer there sooner, never later than the click. A trip that
+     * wants more time than the beat allows gets cut to fit, which is exactly
+     * the old behaviour and the reason the numbers terminal is not slower than
+     * the one beside it.
+     */
     fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long) {
         if (!positioned) seedFromMouse(targetX, targetY)
         val now = System.currentTimeMillis()
         val from = motion.position(now)
         val dist = hypot(targetX - from.x, targetY - from.y)
-        val natural = travelDurationMs(dist, Config.autoTerminalCursorSpeed, gaussianUnit())
-        val bow = Config.autoTerminalCursorArc.coerceIn(0, 100) / 100f * 0.4f * if (Random.nextBoolean()) 1f else -1f
-        motion.glideTo(CursorMotion.Point(targetX, targetY), now, flightDurationMs(natural, clickNotBeforeMs - now), bow,
-            CursorMotion.Ease(Config.autoTerminalEaseX1 / 100f, Config.autoTerminalEaseY1 / 100f,
-                Config.autoTerminalEaseX2 / 100f, Config.autoTerminalEaseY2 / 100f),
-            Config.autoTerminalCursorJitter.coerceIn(0, 100) / 100f, Random.nextFloat() * 6.283f, Random.nextFloat() * 6.283f)
+        val human = Config.autoTerminalHumanize.coerceIn(0, 100) / 100f
+
+        // Speed: distance plus the speed slider, spread by how human the run is.
+        val natural = travelDurationMs(dist, Config.autoTerminalCursorSpeed, timingJitter(gaussianUnit(), human))
+
+        // Arc: the slider says how far the path bows; humanize says how much
+        // that varies, so at 0 every trip over the same distance bows by the
+        // same amount — which is the tell, more than the bow itself.
+        val bowBase = Config.autoTerminalCursorArc.coerceIn(0, 100) / 100f * 0.4f
+        val bow = if (bowBase <= 0f) 0f
+        else bowBase * (1f + gaussianUnit() * 0.5f * human) * if (Random.nextBoolean()) 1f else -1f
+
+        // Landing: overshoot, then correct back. Capped inside a pane, so a
+        // hand that carried past still ends on the thing it aimed at.
+        val overshoot = overshootPx(dist, human)
+
+        val window = clickNotBeforeMs - now
+        val (dwell, travel) = fitTrip(natural, window, dwellMs(human))
+        val settle = settleMs(travel, human)
+
+        // Tremor is noise, so it goes with humanize rather than sitting on top
+        // of it: the slider is the ceiling, humanize is how much of it a real
+        // hand actually shows.
+        val tremor = Config.autoTerminalCursorJitter.coerceIn(0, 100) / 100f * human
+
+        motion.glideTo(
+            CursorMotion.Point(targetX, targetY), now, travel, bow,
+            variedEase(human), tremor, Random.nextFloat() * 6.283f, Random.nextFloat() * 6.283f,
+            overshoot, settle, dwell
+        )
         lastGlideAt = now
+    }
+
+    /**
+     * The configured curve with its control points nudged, so no two trips
+     * accelerate quite alike. Only X moves: X is what sets the *timing* of the
+     * curve and Y outside [0,1] would let the pointer overshoot on its own,
+     * which is the overshoot's job.
+     */
+    private fun variedEase(human: Float): CursorMotion.Ease {
+        val spread = 0.10f * human.coerceIn(0f, 1f)
+        return CursorMotion.Ease(
+            (Config.autoTerminalEaseX1 / 100f + gaussianUnit() * spread).coerceIn(0f, 1f),
+            Config.autoTerminalEaseY1 / 100f,
+            (Config.autoTerminalEaseX2 / 100f + gaussianUnit() * spread).coerceIn(0f, 1f),
+            Config.autoTerminalEaseY2 / 100f
+        )
     }
 
     /**
