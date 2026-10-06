@@ -19,14 +19,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo
  * nothing else.
  *
  * Confirmed against 26.1.2 with `javap`: `ContainerScreen` declares
- * `public void extractBackground(GuiGraphicsExtractor, int, int, float)` and
- * calls `super` before drawing `CONTAINER_BACKGROUND`.
+ * `public void extractBackground(GuiGraphicsExtractor, int, int, float)` —
+ * partial tick only, two ints — and calls `super` before drawing
+ * `CONTAINER_BACKGROUND`. The descriptor is spelled out in full below, so it
+ * has to match that arity exactly: a full descriptor is an exact-match
+ * selector, and one extra `I` finds nothing and `defaultRequire` turns
+ * "nothing" into a crash at launch rather than at build.
  */
 @Mixin(ContainerScreen::class)
 abstract class MixinContainerScreen {
 
     @Inject(
-        method = ["extractBackground(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIIF)V"],
+        method = ["extractBackground(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIF)V"],
         at = [At("HEAD")],
         cancellable = true
     )
