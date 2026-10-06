@@ -33,6 +33,11 @@ object AutoTerminal {
     private val rubixPredicted = HashMap<Int, Int>()
     private var lastMelodyRow = -1
     private var lastMelodyRowClickAt = 0L
+    /** Clicks this terminal has taken since it opened, and how many it wants.
+     *  Latched once on the first tick so a pane the server has already
+     *  settled cannot quietly lower the denominator halfway through. */
+    private var clicksMade = 0
+    private var clickGoal = -1
 
     /**
      * How long a slot stays off limits after a click.
@@ -161,6 +166,7 @@ object AutoTerminal {
         // land on — not at the full chest the real terminal ships underneath
         // its own rows. Same test TermGui.covers asks, for the same reason.
         if (screen.menu.slots.size < TermGui.requiredSlotsFor(kind, items)) return
+        if (clickGoal < 0) clickGoal = TerminalSolver.goalFor(title, items, lastRubixTarget)
 
         if (kind == Kind.MELODY) {
             if (!Config.autoTerminalMelodySkip) melodySkipQueue.clear()
@@ -173,7 +179,11 @@ object AutoTerminal {
             val click = melodyClick(items, now)
             if (click != null) {
                 aim(screen, kind, click.slot, now)
-                if (fireClick(screen, player, screen.menu.containerId, kind, click, 40L)) {
+                // Same clock as every other terminal. This used to be a flat
+                // 40 ms, which is 25 clicks a second — the row debounce only
+                // guards one row, so two rows ready at once fired back to
+                // back and the whole thing read as a machine gun.
+                if (fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs())) {
                     recordMelodyClick(items, click.slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
                     TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
                 }
@@ -185,7 +195,7 @@ object AutoTerminal {
                 val slot = melodySkipQueue.removeFirst()
                 if (slot !in remaining || slot / 9 <= lastMelodyRow) continue
                 aim(screen, kind, slot, now + MELODY_RETRY_TOTAL_MS)
-                if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), 40L)) {
+                if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), nextClickDelayMs())) {
                     recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
                     TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, now + MELODY_RETRY_TOTAL_MS) }
                 }
@@ -262,6 +272,7 @@ object AutoTerminal {
     internal fun recordClick(now: Long, slot: Int, delayMs: Long) {
         lastClickAt = now
         lastSlot = slot
+        clicksMade++
         clickedSlotsWithTime[slot] = now
         firstClickPending = false
         currentClickDelayMs = delayMs
@@ -280,6 +291,24 @@ object AutoTerminal {
         clickedSlotsWithTime.filterValues { now - it < CLICK_TIMEOUT_MS }.keys.toSet()
 
     internal fun lastClickedSlot(): Int? = lastSlot.takeIf { it >= 0 }
+
+    /** The pane that was last clicked and the moment it happened, for the
+     *  grid's flash. Null before the first click of a terminal. */
+    internal fun lastClickFlash(): Pair<Int, Long>? =
+        lastSlot.takeIf { it >= 0 }?.let { it to lastClickAt }
+
+    /** What the progress HUD prints: the terminal by name and how far through
+     *  it the clicker is. Null when no terminal is open or the count has not
+     *  been latched yet — a HUD that flickers into existence on the first
+     *  tick is worse than one that waits for a number to exist. */
+    internal fun progress(): Progress? {
+        val title = lastTerminalTitle ?: return null
+        val kind = TerminalSolver.kindOf(title) ?: return null
+        val goal = clickGoal.takeIf { it > 0 } ?: return null
+        return Progress(TerminalSolver.displayName(kind), clicksMade.coerceIn(0, goal), goal)
+    }
+
+    internal data class Progress(val name: String, val done: Int, val goal: Int)
 
     internal fun rubixTargetOrNull(): Int? = lastRubixTarget
 
@@ -540,6 +569,8 @@ object AutoTerminal {
         rubixPredicted.clear()
         lastMelodyRow = -1
         lastMelodyRowClickAt = 0L
+        clicksMade = 0
+        clickGoal = -1
     }
 
     private fun reset() {

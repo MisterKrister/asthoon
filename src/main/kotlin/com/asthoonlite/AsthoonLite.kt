@@ -90,6 +90,9 @@ object AsthoonLite : ClientModInitializer {
         // Prints one line per terminal-shaped screen naming the gate that
         // kept the custom grid closed, so a screen that draws nothing says why.
         com.asthoonlite.dungeon.TermGui.register()
+        // Name and progress of the terminal the clicker is on — the visual
+        // that describes the run instead of the solution.
+        com.asthoonlite.dungeon.TerminalProgressHud.register()
         F7Devices.register()
         ArrowAlignSolver.register()
         SecretHitboxes.register()

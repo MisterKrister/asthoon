@@ -189,6 +189,17 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   a hand's click uses there. `MixinContainerScreen` replaces the chest
   background, while `MixinHandledScreen` replaces contents and input without
   replacing the live menu. Odin's BSD notice ships in `META-INF/licenses`.
+  **Click Flash** (on by default) marks the pane a click was for and fades over
+  220 ms — the mark that ties the pointer to the pane rather than leaving two
+  unrelated things on screen.
+- `dungeon/TerminalProgressHud.kt` — `In Terminal (Colors)` over `[7/15]`,
+  centred a tenth of the screen down while a terminal is open. This is
+  NoammAddons' Fake InvWalk readout: the name and the count, and never the
+  solution, which is what makes an auto clicker look like something a person
+  put on their screen. The denominator latches once when the terminal opens
+  (`TerminalSolver.goalFor` — Numbers offers one candidate while wanting every
+  numbered pane, Rubix wants clicks rather than panes, Melody's rows are its
+  count) and the numerator counts the clicks the clicker sent.
 - `dungeon/CursorMotion.kt` — pure retargetable pointer flight. Acceleration
   uses CSS cubic-bezier x inversion (Newton iteration and bisection), default
   `(0.2, 0, 0, 1)`. Percentage sliders tune speed, arc, tremor and the curve's
@@ -204,8 +215,12 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   the trip looks. The per-slot guard follows the same rule: every terminal
   gets the 350 ms round-trip ceiling, the number terminal gets the Click
   Delay instead — on a chain of numbered panes that ceiling was not a safety
-  margin, it was the whole cadence. Enable **Glide On Melody** to premove to
-  the next detected button immediately after clicking. Detection, skip queues
+  margin, it was the whole cadence. **Random Delay ships on**, over a
+  150–240 ms window around a 180 ms mean — the shape NoammAddons ships — because
+  a fixed interval is a metronome. Enable **Glide On Melody** to premove to
+  the next detected button immediately after clicking; melody's clicks ride
+  this same clock, and the flat 40 ms they used to take on their own was 25
+  clicks a second. Detection, skip queues
   and layout share the same three/four-row model. An unacknowledged melody
   click waits `MELODY_ROW_RETRY_MS` (250 ms) plus `MELODY_UPDATE_GRACE_MS`
   (three ticks, 150 ms) — the row is given time to arrive before the aim or
@@ -236,7 +251,9 @@ Delay as its mean with one Delay Spread either side of it, the per-slot guard
 each terminal runs on, the humanize bounds (timing, hesitation, overshoot,
 settle), a flight that hesitates and settles back onto its pane, the split
 that keeps a whole trip inside one beat, which menus the drawn grid covers
-(counted from the tiles, hand-checked against each layout's shape), and the
-melody grace that keeps a row's ticks from being answered too early.
+(counted from the tiles, hand-checked against each layout's shape), the melody
+grace that keeps a row's ticks from being answered too early, the shipped
+random-delay window, and `goalFor` — what each of the six kinds counts as its
+total clicks.
 
 **Rule: if you change pure logic, add a check for it in the same commit.**

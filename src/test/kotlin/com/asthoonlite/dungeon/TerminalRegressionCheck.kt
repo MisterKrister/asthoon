@@ -182,6 +182,59 @@ internal fun terminalMotionAndGuiChecks() {
         check(!TermGui.covers(Kind.MELODY, 50, listOf(1, 2, 3, 4))) { "one slot short of the drawn rows is not covered" }
     }
 
+    // ── The progress readout's denominator ───────────────────────────────
+    run {
+        // Numbers is a chain: only the lowest count is ever a candidate, so
+        // the candidate list is one pane wide while the terminal wants every
+        // numbered pane on the board. Counting candidates here would show a
+        // readout pinned at 1/1 for the whole terminal.
+        val order = MutableList(36) { ItemStack(Items.WHITE_STAINED_GLASS_PANE) }
+        val reds = listOf(0, 4, 7, 13, 20, 24, 30, 33)
+        reds.forEachIndexed { i, slot -> order[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE, i + 1) }
+        check(TerminalSolver.clickCandidates("Click in order!", order).size == 1) { "numbers is a chain" }
+        check(TerminalSolver.goalFor("Click in order!", order) == reds.size) { "every numbered pane counts" }
+        check(TerminalSolver.goalFor("Chest", order) == 0) { "a non-terminal wants nothing" }
+
+        // Rubix counts clicks, not panes: a pane two rings from the target is
+        // two clicks of work, which no candidate list says.
+        val rubix = MutableList(45) { ItemStack(Items.WHITE_STAINED_GLASS_PANE) }
+        val rubixSlots = TerminalSolver.RUBIX_SLOTS
+        // Eight panes already at the cheapest colour and one sitting two rings
+        // from it: one candidate, two clicks of work.
+        rubixSlots.forEachIndexed { i, slot ->
+            rubix[slot] = ItemStack(if (i == rubixSlots.lastIndex) Items.GREEN_STAINED_GLASS_PANE else Items.ORANGE_STAINED_GLASS_PANE)
+        }
+        val rubixTarget = TerminalSolver.optimalRubixTarget(rubix)!!
+        val clicksNeeded = rubixSlots.sumOf {
+            TerminalSolver.rubixDistance(TerminalHelper.rubixColorIndex(rubix[it]), rubixTarget)
+        }
+        check(clicksNeeded > 0) { "the rubix fixture must actually want clicks" }
+        check(clicksNeeded == 2) { "one pane two rings from the target is two clicks" }
+        check(TerminalSolver.goalFor("Change all to same color!", rubix, rubixTarget) == clicksNeeded)
+        check(TerminalSolver.clickCandidates("Change all to same color!", rubix, rubixTarget = rubixTarget).size == 1) {
+            "the candidate list counts panes, the goal counts clicks"
+        }
+
+        // The two kinds whose candidate list is already the answer.
+        val panes = MutableList(45) { ItemStack(Items.WHITE_STAINED_GLASS_PANE) }
+        listOf(10, 11, 19).forEach { panes[it] = ItemStack(Items.RED_STAINED_GLASS_PANE) }
+        check(TerminalSolver.goalFor("Correct all the panes!", panes) == 3)
+
+        val select = MutableList(54) { ItemStack(Items.BLACK_STAINED_GLASS_PANE) }
+        listOf(1, 20, 44).forEach { select[it] = ItemStack(Items.RED_STAINED_GLASS_PANE) }
+        select[5] = ItemStack(Items.WHITE_STAINED_GLASS_PANE) // wrong colour, never a target
+        check(TerminalSolver.goalFor("Select all the red items!", select) == 3)
+
+        check(TerminalSolver.goalFor("Click the button on time!", melody(4, 1)) == 4) {
+            "melody's goal is its rows"
+        }
+
+        check(TerminalSolver.displayName(Kind.SELECT) == "Colors")
+        check(TerminalSolver.displayName(Kind.ORDER) == "Numbers")
+        check(TerminalSolver.displayName(Kind.PANES) == "Red Green")
+        check(TerminalSolver.displayName(Kind.MELODY) == "Melody")
+    }
+
     // ── Click pacing: the settings have to be the settings ────────────────
     run {
         // Click Delay is the mean of the next beat, not a hint printed beside
@@ -211,12 +264,20 @@ internal fun terminalMotionAndGuiChecks() {
         check(AutoTerminal.delaySpread(135, 135, 135) == (0L to 0L)) {
             "a spread of zero must be deterministic"
         }
-        // The shipped window is ±20 ms around the shipped Click Delay. Read
-        // off a fresh Data rather than off Config: initialising Config asks
-        // FabricLoader for a config directory this harness does not have.
+        // The shipped window sits around the shipped Click Delay, weighted
+        // slower than faster. Read off a fresh Data rather than off Config:
+        // initialising Config asks FabricLoader for a config directory this
+        // harness does not have.
         val shipped = Config.Data()
-        check((shipped.autoTerminalMaxRandomDelayMs - shipped.autoTerminalMinRandomDelayMs) / 2 == 20) {
-            "the default window is ±20 ms"
+        check(shipped.autoTerminalRandomDelay) {
+            "random delay ships on — a fixed interval is a metronome, not a hand"
+        }
+        check(AutoTerminal.delaySpread(
+            shipped.autoTerminalClickDelayMs,
+            shipped.autoTerminalMinRandomDelayMs,
+            shipped.autoTerminalMaxRandomDelayMs
+        ) == (30L to 60L)) {
+            "the shipped window is 150..240 around a Click Delay of 180"
         }
         // One control writes the pair the two sliders used to own, centred on
         // the Click Delay — through the pure helper, so this never saves over

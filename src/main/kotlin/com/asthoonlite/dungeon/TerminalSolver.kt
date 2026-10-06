@@ -212,6 +212,45 @@ object TerminalSolver {
         }
     }
 
+    /** The name the progress readout prints for this kind. */
+    fun displayName(kind: Kind): String = when (kind) {
+        Kind.SELECT -> "Colors"
+        Kind.MELODY -> "Melody"
+        Kind.ORDER -> "Numbers"
+        Kind.PANES -> "Red Green"
+        Kind.RUBIX -> "Rubix"
+        Kind.STARTS -> "Starts With"
+    }
+
+    /**
+     * How many clicks this terminal wants, read once when the screen opens.
+     *
+     * The denominator of the progress readout, and the reason it is not simply
+     * "candidates right now": two of the six kinds do not have a candidate
+     * list that means what the question asks.
+     *
+     * Numbers is a chain — only the lowest count is ever a candidate, so its
+     * list is one pane wide while the terminal wants every numbered pane on
+     * the board. Rubix wants a *colour*, not a pane, and a pane sitting two
+     * rings from the target is two clicks of work the candidate list counts as
+     * one. Melody has no list at all; its rows are the count. The other three
+     * are exactly their candidate list, which at open time is everything still
+     * to click.
+     */
+    fun goalFor(screenTitle: String, items: List<ItemStack>, rubixTarget: Int? = null): Int {
+        val type = kindOf(cleanTitle(screenTitle)) ?: return 0
+        val all = items.take(type.slotCount)
+        return when (type) {
+            Kind.ORDER -> all.count { it.`is`(Items.RED_STAINED_GLASS_PANE) }
+            Kind.RUBIX -> {
+                val target = rubixTarget ?: optimalRubixTarget(all) ?: return 0
+                rubixPanes(all).sumOf { rubixDistance(it.second, target) }
+            }
+            Kind.MELODY -> melodyRows(all).size
+            else -> clickCandidates(screenTitle, items, rubixTarget = rubixTarget).size
+        }
+    }
+
     /**
      * The single slot a marker should ring: the nearest candidate to
      * [lastSlot], so the picture and the pointer agree about where the next

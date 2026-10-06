@@ -470,6 +470,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
+                ToggleRow("Terminal Progress", "Shows the terminal's name and how far through it the clicker is, centred near the top while a terminal is open",
+                    { Config.autoTerminalHudProgress }, { Config.autoTerminalHudProgress = it }),
                 SectionHeader("Click Timing"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
@@ -543,6 +545,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     Config.termGuiRoundness = it
                 }),
                 NoteRow("Melody carries its own size — five rows of seven does not fit at the term size."),
+                ToggleRow("Click Flash", "Marks the pane a click was for, fading out over the same instant the click lands",
+                    { Config.termGuiClickFlash }, { Config.termGuiClickFlash = it }),
                 SectionHeader("Terminal Types — all on by default"),
                 ToggleRow("Automate Colours", "Solves 'Select all the X items'",
                     { Config.autoTermColors }, { Config.autoTermColors = it }),

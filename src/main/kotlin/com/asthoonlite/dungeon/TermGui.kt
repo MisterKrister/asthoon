@@ -22,6 +22,8 @@ object TermGui {
     internal const val TILE_SIZE = 24
     private const val BACKGROUND = 0xF0090B10.toInt()
     private const val NEUTRAL = 0xFF292F3B.toInt()
+    /** How long a click leaves its mark on the pane it was for. */
+    private const val CLICK_FLASH_MS = 220L
 
     data class Tile(val slot: Int, val x: Int, val y: Int)
 
@@ -177,6 +179,24 @@ object TermGui {
                 tile.y + (TILE_SIZE - font.lineHeight) / 2, 0xFFFFFFFF.toInt())
         }
         graphics.pose().popMatrix()
+
+        // The click leaves a mark. Without it a pointer that lands on a pane
+        // and a pane that changes colour are two unrelated things on screen —
+        // the flash is what ties the hand to the pane it was for, and it fades
+        // over the same stretch of time the click itself takes to land.
+        val flash = AutoTerminal.lastClickFlash()
+        if (Config.termGuiClickFlash && flash != null) {
+            val age = System.currentTimeMillis() - flash.second
+            if (age in 0 until CLICK_FLASH_MS) {
+                val tile = grid.tiles.firstOrNull { it.slot == flash.first }
+                if (tile != null) {
+                    val fade = (1f - age / CLICK_FLASH_MS.toFloat())
+                    val alpha = ((fade * fade) * 0xFF).toInt().coerceIn(0, 0xFF)
+                    fillRoundedRect(graphics, tile.x - 3, tile.y - 3, tile.x + TILE_SIZE + 3, tile.y + TILE_SIZE + 3,
+                        (alpha shl 24) or 0x00FFFFFF, 6)
+                }
+            }
+        }
     }
 
     /** Gaps and padding consume input, but never become hidden vanilla slot clicks. */

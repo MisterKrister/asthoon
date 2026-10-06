@@ -109,13 +109,17 @@ object Config {
         var dragonHudY               : Int     = 170,
         var terminalSolverEnabled    : Boolean = false,
         var autoTerminalEnabled     : Boolean = false,
-        var autoTerminalRandomDelay : Boolean = false,
+        // Random Delay defaults on with a window that is wider downward than
+        // upward around the mean: NoammAddons ships the same shape (a gaussian
+        // between a min and a max, random on out of the box), and a fixed
+        // interval is what a metronome looks like, not a hand.
+        var autoTerminalRandomDelay : Boolean = true,
         var autoTerminalFirstClickDelayMs : Int = 430,
         var autoTerminalMelodyFirstClickDelayMs : Int = 0,
         var autoTerminalClickDelayMs : Int = 180,
         var autoTerminalBreakThresholdMs : Int = 500,
-        var autoTerminalMinRandomDelayMs : Int = 160,
-        var autoTerminalMaxRandomDelayMs : Int = 200,
+        var autoTerminalMinRandomDelayMs : Int = 150,
+        var autoTerminalMaxRandomDelayMs : Int = 240,
         var autoTerminalMelodySkip  : Boolean = false,
         var autoTerminalNoBreak     : Boolean = false,
         var autoTerminalDontSkipFirst : Boolean = false,
@@ -251,6 +255,19 @@ object Config {
         // carries past the pane before settling. 0 is a machine: every hop
         // over the same distance is the same hop.
         var autoTerminalHumanize: Int = 50,
+
+        // ── What the clicker looks like on screen ──────────────────────────
+        // Appended at the end of Data, same as the blocks above, so existing
+        // config files keep loading.
+        //
+        // [autoTerminalHudProgress] draws the terminal's name and how far
+        // through it the clicker is — the readout NoammAddons shows beside its
+        // auto clicker instead of the solution. [termGuiClickFlash] marks the
+        // pane that was just clicked on the custom grid, so a click leaves a
+        // mark instead of a cursor that lands somewhere and says nothing about
+        // which pane it was for.
+        var autoTerminalHudProgress: Boolean = true,
+        var termGuiClickFlash      : Boolean = true,
     )
 
     var data = Data()
@@ -555,6 +572,14 @@ object Config {
     var termGuiRoundness: Int
         get() = data.termGuiRoundness
         set(v) { data.termGuiRoundness = v; save() }
+
+    var autoTerminalHudProgress: Boolean
+        get() = data.autoTerminalHudProgress
+        set(v) { data.autoTerminalHudProgress = v; save() }
+
+    var termGuiClickFlash: Boolean
+        get() = data.termGuiClickFlash
+        set(v) { data.termGuiClickFlash = v; save() }
 
     var autoTerminalEnabled: Boolean
         get() = data.autoTerminalEnabled
