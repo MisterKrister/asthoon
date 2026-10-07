@@ -476,6 +476,17 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 // list into a section of its own, which is where its rows were
                 // reading from all along.
                 SectionHeader("Solver & Automation"),
+                WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Start Terminal Simulator")) {
+                    com.asthoonlite.dungeon.simulator.TerminalSimulator.start()
+                }),
+                NoteRow("Join a world to practice. Records every terminal; next random board 1 second after completion. Esc stops."),
+                ToggleRow("Use Auto Terminal in Simulator", "Uses your enabled Auto Terminal settings instead of manual practice",
+                    { Config.terminalSimulatorAutoEnabled }, { Config.terminalSimulatorAutoEnabled = it }),
+                WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.terminalSimulatorPingMs, "Simulator Ping: ", " ms") {
+                    Config.terminalSimulatorPingMs = it
+                }),
+                ToggleRow("Record Terminal Inputs", "Records precise inputs and slot state from real terminals to logs/asthoonlite/terminals; simulator recording is always on",
+                    { Config.terminalInputLoggingEnabled }, { Config.terminalInputLoggingEnabled = it }),
                 WidgetRow(ModernButton(fullX, 0, fullW, 24, Component.literal("Load AutoTerm Preset")) {
                     Config.applyRsmAutoPreset()
                     rebuildTab(Tab.TERMINALS)

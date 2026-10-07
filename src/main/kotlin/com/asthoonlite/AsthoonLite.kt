@@ -84,6 +84,8 @@ object AsthoonLite : ClientModInitializer {
         DragonPhase.register()
         MaskDisplay.register()
         com.asthoonlite.dungeon.TerminalSensing.register()
+        com.asthoonlite.dungeon.TerminalCapture.register()
+        com.asthoonlite.dungeon.simulator.TerminalSimulator.register()
         AutoTerminal.register()
         // Draws the pointer that "carries" the auto-terminal clicks. Clicks
         // themselves are packets; this is the picture of the hand.

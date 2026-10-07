@@ -126,7 +126,7 @@ object AutoTerminal {
         if (!screen.menu.carried.isEmpty) {
             screen.menu.carried = ItemStack.EMPTY
         }
-        if (!player.containerMenu.carried.isEmpty) {
+        if (!com.asthoonlite.dungeon.simulator.TerminalSimulator.isSimulation(screen) && !player.containerMenu.carried.isEmpty) {
             player.containerMenu.carried = ItemStack.EMPTY
         }
     }
@@ -135,7 +135,11 @@ object AutoTerminal {
      *  frame — see the note where it is called. The END_CLIENT_TICK listener
      *  below stays as the floor for frames that do not extract. */
     internal fun tick() {
-        if (!Config.autoTerminalEnabled || (!DungeonContext.inDungeon && !Config.autoTerminalAnywhere)) {
+        val practiceScreen = Minecraft.getInstance().screen
+        val simulation = com.asthoonlite.dungeon.simulator.TerminalSimulator.isSimulation(practiceScreen)
+        if (!Config.autoTerminalEnabled ||
+            (simulation && !com.asthoonlite.dungeon.simulator.TerminalSimulator.allowsAutomation(practiceScreen)) ||
+            (!simulation && !DungeonContext.inDungeon && !Config.autoTerminalAnywhere)) {
             reset()
             return
         }
@@ -170,7 +174,7 @@ object AutoTerminal {
         if (beginTerminal(title, openedTime)) {
             currentClickDelayMs = if (kind == Kind.MELODY) Config.autoTerminalMelodyFirstClickDelayMs.toLong()
                 else nextFirstClickDelayMs()
-            if (kind == Kind.MELODY && Config.autoTerminalAnnounceMelody) {
+            if (kind == Kind.MELODY && Config.autoTerminalAnnounceMelody && !simulation) {
                 val message = Config.autoTerminalMelodyMessage.trim()
                 if (message.isNotEmpty()) player.connection.sendCommand("pc $message")
             }
@@ -311,11 +315,11 @@ object AutoTerminal {
         // Other terminals use middle-click (2, CLONE) to prevent picking items into cursor.
         val btn = if (kind == Kind.RUBIX) click.button else 2
         val input = if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE
-        val sent = TerminalInput.send(screen, click.slot, btn, input)
+        val sent = TerminalInput.send(screen, click.slot, btn, input, "automatic")
         if (!sent) return false
         clearCarried(screen, player)
         recordClick(System.currentTimeMillis(), click.slot, clickDelayMs)
-        if (kind == Kind.RUBIX) {
+        if (kind == Kind.RUBIX && !com.asthoonlite.dungeon.simulator.TerminalSimulator.isSimulation(screen)) {
             val here = rubixPredicted[click.slot]
                 ?: TerminalHelper.rubixColorIndex(screen.menu.slots.getOrNull(click.slot)?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
                 ?: 0
@@ -747,7 +751,7 @@ object AutoTerminal {
         clickGoal = -1
     }
 
-    private fun reset() {
+    internal fun reset() {
         TerminalCursor.reset()
         TerminalSensing.reset()
         resetSolver()

@@ -162,6 +162,7 @@ object TermGui {
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
         val all = items(screen, kind)
         val title = TerminalSolver.cleanTitle(screen.title.string)
+        val simulation = com.asthoonlite.dungeon.simulator.TerminalSimulator.isSimulation(screen)
         if (kind == Kind.RUBIX) {
             if (cachedRubixTarget == null || screen.menu.containerId != lastRubixContainerId) {
                 lastRubixContainerId = screen.menu.containerId
@@ -223,6 +224,18 @@ object TermGui {
             }
             fillRoundedRect(graphics, sx0, sy0, sx1, sy1, color ?: NEUTRAL, tileRadius)
 
+            // Practice must show the items a person is choosing, even with solver hints off.
+            if (simulation && (kind == Kind.SELECT || kind == Kind.STARTS || !Config.terminalSolverEnabled) && !stack.isEmpty) {
+                graphics.pose().pushMatrix()
+                graphics.pose().translate(sx0.toFloat(), sy0.toFloat())
+                graphics.pose().scale(scale, scale)
+                graphics.item(stack, 1, 1)
+                graphics.pose().popMatrix()
+                if (tile.slot == hovered) {
+                    graphics.setTooltipForNextFrame(font, stack.hoverName, mouseX, mouseY)
+                }
+            }
+
             val label = TerminalSolver.labelFor(tile.slot, stack, kind)
                 ?: if (kind == Kind.RUBIX && Config.terminalSolverEnabled) {
                     val current = AutoTerminal.rubixPredicted(tile.slot)
@@ -269,11 +282,12 @@ object TermGui {
     }
 
     /** Gaps and padding consume input, but never become hidden vanilla slot clicks. */
-    fun click(screen: AbstractContainerScreen<*>, x: Double, y: Double, button: Int) {
+    fun click(screen: AbstractContainerScreen<*>, x: Double, y: Double, button: Int, source: String = "manual") {
         val slot = gridFor(screen)?.hitTest(x, y) ?: return
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
         val all = items(screen, kind)
-        if (button !in 0..2 || !canClick(kind, screen.title.string, all, slot)) return
+        val simulation = com.asthoonlite.dungeon.simulator.TerminalSimulator.isSimulation(screen)
+        if (button !in 0..2 || (!simulation && !canClick(kind, screen.title.string, all, slot))) return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
         // Same door the clicker uses: the player's window sends the packet, a
@@ -282,13 +296,14 @@ object TermGui {
         // therefore the only way a manual click can reach it at all.
         val sent = TerminalInput.send(
             screen, slot,
-            if (kind == Kind.RUBIX) button.coerceAtMost(1) else 2,
-            if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE
+            if (simulation) button else if (kind == Kind.RUBIX) button.coerceAtMost(1) else 2,
+            if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE,
+            source
         )
         if (!sent) return
         screen.menu.carried = ItemStack.EMPTY
-        player.containerMenu.carried = ItemStack.EMPTY
-        if (kind == Kind.RUBIX) {
+        if (!simulation) player.containerMenu.carried = ItemStack.EMPTY
+        if (kind == Kind.RUBIX && !simulation) {
             val slotObj = screen.menu.slots.getOrNull(slot)
             val currentIdx = AutoTerminal.rubixPredicted(slot)
                 ?: TerminalHelper.rubixColorIndex(slotObj?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
@@ -320,7 +335,7 @@ object TermGui {
             screen.onClose()
         } else if (mc.options.keyDrop.matches(event) || mc.options.keyHotbarSlots.any { it.matches(event) }) {
             click(screen, mc.mouseHandler.getScaledXPos(mc.window), mc.mouseHandler.getScaledYPos(mc.window),
-                if (event.hasControlDown()) 1 else 0)
+                if (event.hasControlDown()) 1 else 0, "keyboard")
         }
     }
 

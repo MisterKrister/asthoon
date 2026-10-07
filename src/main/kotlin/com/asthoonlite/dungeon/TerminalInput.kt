@@ -1,6 +1,7 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.mixin.AbstractContainerScreenAccessor
+import com.asthoonlite.dungeon.simulator.TerminalSimulatorScreen
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
 import net.minecraft.world.inventory.ContainerInput
@@ -33,22 +34,30 @@ object TerminalInput {
         screen: AbstractContainerScreen<*>,
         slotIndex: Int,
         button: Int,
-        input: ContainerInput
+        input: ContainerInput,
+        source: String = "manual"
     ): Boolean {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return false
         if (mc.screen !== screen) return false
         com.asthoonlite.utils.InputCapture.onTerminalClick(screen, slotIndex, button, "TERMINAL_INPUT")
+        if (screen is TerminalSimulatorScreen) {
+            val accepted = screen.submit(slotIndex, button, source)
+            TerminalCapture.routedClick(screen, slotIndex, button, input, source, accepted, "simulator")
+            return accepted
+        }
         if (player.containerMenu === screen.menu) {
             val gameMode = mc.gameMode ?: return false
             gameMode.handleContainerInput(screen.menu.containerId, slotIndex, button, input, player)
+            TerminalCapture.routedClick(screen, slotIndex, button, input, source, true, "player_menu")
             return true
         }
         val slot = screen.menu.slots.getOrNull(slotIndex) ?: return false
         val accessor = screen as? AbstractContainerScreenAccessor ?: return false
         // `slotClicked` re-derives the id from the slot when one is passed;
         // what it wants is the slot's own container index.
-        accessor.invokeSlotClicked(slot, slot.index, button, input)
+        TerminalCapture.withRouteContext { accessor.invokeSlotClicked(slot, slot.index, button, input) }
+        TerminalCapture.routedClick(screen, slotIndex, button, input, source, true, "local_menu")
         return true
     }
 }

@@ -6,6 +6,9 @@
   "mixins": [],
   "client": [
     "MixinHandledScreen",
+    "MixinTerminalCaptureMouseHandler",
+    "MixinTerminalCaptureKeyboardHandler",
+    "MixinTerminalCaptureMenu",
     "MixinContainerScreen",
     "MixinScreen",
     "MixinGameRenderer",

@@ -34,6 +34,13 @@ object AslCommand {
                 dispatcher.register(
                     ClientCommands.literal(alias)
                         .then(
+                            ClientCommands.literal("termsim")
+                                .executes { _ ->
+                                    com.asthoonlite.dungeon.simulator.TerminalSimulator.requestStart()
+                                    1
+                                }
+                        )
+                        .then(
                             ClientCommands.literal("capture")
                                 .executes { _ ->
                                     InputCapture.toggle()
