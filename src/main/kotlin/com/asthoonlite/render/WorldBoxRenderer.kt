@@ -211,11 +211,25 @@ object WorldBoxRenderer {
     }
 
     private fun renderBoxes(context: LevelRenderContext, throughWalls: Boolean) {
+        var hasContent = false
+        for (i in filledQueue.indices) {
+            if (filledQueue[i].throughWalls == throughWalls) {
+                hasContent = true
+                break
+            }
+        }
+        if (!hasContent) {
+            for (i in quadQueue.indices) {
+                if (quadQueue[i].throughWalls == throughWalls) {
+                    hasContent = true
+                    break
+                }
+            }
+        }
+        if (!hasContent) return
+
         val matrices = context.poseStack()
         val camera = context.levelState().cameraRenderState.pos
-        val boxes = filledQueue.asSequence().filter { it.throughWalls == throughWalls }.toList()
-        val quads = quadQueue.asSequence().filter { it.throughWalls == throughWalls }.toList()
-        if (boxes.isEmpty() && quads.isEmpty()) return
 
         matrices.pushPose()
         matrices.translate(-camera.x, -camera.y, -camera.z)
@@ -224,11 +238,18 @@ object WorldBoxRenderer {
             buffer = BufferBuilder(ALLOCATOR, VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR)
         }
         val pose = matrices.last().pose()
-        for (box in boxes) {
-            addFilledBox(pose, buffer!!, box)
+        val buf = buffer!!
+        for (i in filledQueue.indices) {
+            val box = filledQueue[i]
+            if (box.throughWalls == throughWalls) {
+                addFilledBox(pose, buf, box)
+            }
         }
-        for (quad in quads) {
-            addQuad(pose, buffer!!, quad)
+        for (i in quadQueue.indices) {
+            val quad = quadQueue[i]
+            if (quad.throughWalls == throughWalls) {
+                addQuad(pose, buf, quad)
+            }
         }
 
         matrices.popPose()

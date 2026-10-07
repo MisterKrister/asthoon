@@ -38,6 +38,7 @@ object TerminalInput {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return false
         if (mc.screen !== screen) return false
+        com.asthoonlite.utils.InputCapture.onTerminalClick(screen, slotIndex, button, "TERMINAL_INPUT")
         if (player.containerMenu === screen.menu) {
             val gameMode = mc.gameMode ?: return false
             gameMode.handleContainerInput(screen.menu.containerId, slotIndex, button, input, player)

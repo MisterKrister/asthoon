@@ -242,7 +242,7 @@ object Config {
         var termGuiSize      : Float   = 2.0f,
         var termGuiMelodySize: Float   = 1.5f,
         var termGuiGap       : Int     = 2,
-        var termGuiRoundness : Int     = 5,
+        var termGuiRoundness : Int     = 2,
 
         // CSS timing curve for the pointer, percent mapping to 0..1. Melody and
         // the pane terminals share it; the shape is the whole of the accel.
@@ -279,6 +279,12 @@ object Config {
         // row can print the same words: 0 None (slot order), 1 Random,
         // 2 Human (nearest to where the pointer already is), 3 Skizo (furthest).
         var autoTerminalClickOrder : Int = 2,
+
+        // 0 = Osu cursor, 1 = Normal (User arrow) cursor
+        var autoTerminalCursorStyle: Int = 0,
+
+        // 0 = Normal, 1 = Human, 2 = Legit
+        var autoTerminalMode       : Int = 1,
     )
 
     var data = Data()
@@ -558,13 +564,21 @@ object Config {
 
     var terminalSolverEnabled: Boolean
         get() = data.terminalSolverEnabled
-        set(v) { data.terminalSolverEnabled = v; save() }
+        set(v) {
+            data.terminalSolverEnabled = v
+            data.termGuiEnabled = v
+            save()
+        }
 
     // ── Custom terminal GUI ─────────────────────────────────────────────────
 
     var termGuiEnabled: Boolean
-        get() = data.termGuiEnabled
-        set(v) { data.termGuiEnabled = v; save() }
+        get() = data.terminalSolverEnabled
+        set(v) {
+            data.termGuiEnabled = v
+            data.terminalSolverEnabled = v
+            save()
+        }
 
     /** Tile scale. Melody carries its own — five rows of seven does not fit at the term size. */
     var termGuiSize: Float
@@ -1068,6 +1082,11 @@ object Config {
         get() = data.autoTerminalCursorHideReal
         set(v) { data.autoTerminalCursorHideReal = v; save() }
 
+    /** 0 = Osu cursor, 1 = Normal (User arrow) cursor */
+    var autoTerminalCursorStyle: Int
+        get() = data.autoTerminalCursorStyle
+        set(v) { data.autoTerminalCursorStyle = v.coerceIn(0, 1); save() }
+
     /** Run the terminal clicker outside a real dungeon run — the p3 simulator
      *  and practice worlds never set `DungeonContext.inDungeon`, and a terminal
      *  title is all the identification any of them need. */
@@ -1103,6 +1122,10 @@ object Config {
     var starMobOutlineOnly: Boolean
         get() = data.starMobOutlineOnly
         set(v) { data.starMobOutlineOnly = v; save() }
+
+    var autoTerminalMode: Int
+        get() = data.autoTerminalMode
+        set(v) { data.autoTerminalMode = v; save() }
 
     fun load() {
         if (!configDir.exists()) configDir.mkdirs()
@@ -1147,4 +1170,25 @@ internal fun spreadWindow(mean: Int, spread: Int): Pair<Int, Int> {
     val s = spread.coerceIn(0, 500)
     val centre = mean.coerceAtLeast(0)
     return (centre - s).coerceAtLeast(0) to (centre + s).coerceAtMost(1000)
+}
+
+object TerminalMode {
+    const val NORMAL = 0
+    const val HUMAN = 1
+    const val LEGIT = 2
+    const val MODE_COUNT = 3
+
+    fun modeName(mode: Int): String = when (mode) {
+        NORMAL -> "Normal"
+        HUMAN -> "Human"
+        LEGIT -> "Legit"
+        else -> "Normal"
+    }
+
+    fun description(mode: Int): String = when (mode) {
+        NORMAL -> "Simulated hand based on Noamm/RSM human models. Follows your Click Delay, Spread, and Pointer tuning."
+        HUMAN -> "Tuned from your personal recordings. Adapts to Custom GUI on/off and scales with your slider settings."
+        LEGIT -> "Strictly mimics your recorded human timings and flight curves with fixed authentic parameters. Sliders are locked."
+        else -> ""
+    }
 }

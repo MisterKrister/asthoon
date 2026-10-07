@@ -2,7 +2,7 @@ package com.asthoonlite.gui
 
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
-import com.asthoonlite.dungeon.TerminalClickOrder
+import com.asthoonlite.config.TerminalMode
 import com.asthoonlite.pet.PetHudEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
 import net.minecraft.client.Minecraft
@@ -110,6 +110,17 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         override val height: Int = widget.height
     }
 
+    private data class SearchableEntry(
+        val category: String,
+        val cleanLabel: String,
+        val subtitle: String,
+        val searchKey: String,
+        val get: () -> Boolean,
+        val set: (Boolean) -> Unit
+    )
+
+    private var cachedSearchEntries: List<SearchableEntry>? = null
+
     private var currentItems: List<ContentItem> = emptyList()
 
     private lateinit var tabButtons: List<ModernButton>
@@ -139,6 +150,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private fun contentBottom(): Int = py() + panelH() - FOOTER_H
 
     override fun init() {
+        cachedSearchEntries = null
         val px = px()
         val py = py()
 
@@ -289,13 +301,20 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return (totalHeight - viewport).coerceAtLeast(0)
     }
 
-    private fun getAllSearchableItems(px: Int): List<Pair<String, ToggleRow>> {
-        val list = mutableListOf<Pair<String, ToggleRow>>()
+    private fun getSearchableEntries(px: Int): List<SearchableEntry> {
+        cachedSearchEntries?.let { return it }
+        val list = mutableListOf<SearchableEntry>()
 
         fun collect(category: String, items: List<ContentItem>) {
             for (item in items) {
                 if (item is ToggleRow) {
-                    list.add(Pair(category, item))
+                    val raw = item.label
+                    val clean = if (raw.startsWith("    ↳ ")) raw.substring(6)
+                        else if (raw.startsWith("  ↳ ")) raw.substring(4)
+                        else if (raw.startsWith("↳ ")) raw.substring(2)
+                        else raw
+                    val key = (clean + " " + item.subtitle).lowercase()
+                    list.add(SearchableEntry(category, clean, item.subtitle, key, item.get, item.set))
                 }
             }
         }
@@ -306,8 +325,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             if (tab == Tab.DUNGEON) {
                 for (section in DungeonSection.entries) {
                     activeDungeonSection = section
-                    val items = buildItemsForTab(Tab.DUNGEON, px)
-                    collect("Dungeon - ${section.label}", items)
+                    collect("Dungeon - ${section.label}", buildItemsForTab(Tab.DUNGEON, px))
                 }
             } else {
                 collect(tab.label, buildItemsForTab(tab, px))
@@ -315,6 +333,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
         activeTab = prevTab
         activeDungeonSection = prevSec
+        cachedSearchEntries = list
         return list
     }
 
@@ -330,23 +349,19 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         listeningForQuietModeKey = false
 
         val px = px()
-        val all = getAllSearchableItems(px)
+        val all = getSearchableEntries(px)
         val q = query.lowercase().trim()
-        val matched = all.filter { (_, row) ->
-            val cleanLabel = row.label.replace(Regex("^\\s*↳\\s*"), "")
-            cleanLabel.lowercase().contains(q) || row.subtitle.lowercase().contains(q)
-        }
+        val matched = all.filter { it.searchKey.contains(q) }
 
         val items = mutableListOf<ContentItem>()
         if (matched.isEmpty()) {
             items.add(SectionHeader("No results for \"$query\""))
         } else {
-            val grouped = matched.groupBy { it.first }
+            val grouped = matched.groupBy { it.category }
             for ((category, list) in grouped) {
                 items.add(SectionHeader(category))
-                for ((_, row) in list) {
-                    val cleanLabel = row.label.replace(Regex("^\\s*↳\\s*"), "")
-                    items.add(ToggleRow(cleanLabel, row.subtitle, row.get, row.set))
+                for (entry in list) {
+                    items.add(ToggleRow(entry.cleanLabel, entry.subtitle, entry.get, entry.set))
                 }
             }
         }
@@ -469,13 +484,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.autoTerminalEnabled }, { Config.autoTerminalEnabled = it }),
                 ToggleRow("  ↳ Run Anywhere (P3 Sim)", "Also runs outside a real dungeon — the terminal title is all the identification needed, so the p3 simulator and practice worlds work",
                     { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
-                ToggleRow("Terminal Solver", "Highlights correct terminal clicks",
+                WidgetRow(terminalModeButton(fullX, fullW)),
+                NoteRow(TerminalMode.description(Config.autoTerminalMode)),
+                ToggleRow("Terminal Solver", "Displays custom terminal GUI and highlights correct clicks",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
                 ToggleRow("Terminal Progress", "Shows the terminal's name and how far through it the clicker is, centred near the top while a terminal is open",
                     { Config.autoTerminalHudProgress }, { Config.autoTerminalHudProgress = it }),
-                WidgetRow(clickOrderButton(fullX, fullW)),
-                NoteRow("Which ready pane the clicker takes next. Human works outwards from where the pointer already is, Random takes any of them, None goes by slot number, and Skizo sends it to the far side of the pane every time."),
-                SectionHeader("Click Timing"),
+                SectionHeader(if (Config.autoTerminalMode == TerminalMode.LEGIT) "Click Timing (Locked in Legit Mode)" else "Click Timing"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
                 WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 1000, Config.autoTerminalClickDelayMs, "Click Delay: ", " ms") {
@@ -501,6 +516,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Pointer"),
                 ToggleRow("Glide Pointer", "Draws a pointer that travels between panes while clicks follow the terminal timing",
                     { Config.autoTerminalCursorGlide }, { Config.autoTerminalCursorGlide = it }),
+                WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("Cursor Style: " + if (Config.autoTerminalCursorStyle == 1) "Default (User Cursor)" else "Osu")) {
+                    Config.autoTerminalCursorStyle = if (Config.autoTerminalCursorStyle == 0) 1 else 0
+                    init()
+                }),
                 ToggleRow("  ↳ Hide Real Cursor", "Steps the real cursor aside while the drawn pointer is on screen",
                     { Config.autoTerminalCursorHideReal }, { Config.autoTerminalCursorHideReal = it }),
                 ToggleRow("  ↳ Glide On Melody", "Glides to the next row immediately after a click, without waiting for the row update",
@@ -533,8 +552,6 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     Config.autoTerminalEaseY2 = it
                 }),
                 SectionHeader("Custom Terminal GUI"),
-                ToggleRow("Custom Terminal GUI", "Draws the terminal as its own grid centred on screen — sized, gapped and rounded here rather than inherited from the chest panel. Clicks are routed through the grid.",
-                    { Config.termGuiEnabled }, { Config.termGuiEnabled = it }),
                 WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 3.0f, Config.termGuiSize, "Term Size: ", "x") {
                     Config.termGuiSize = it
                 }),
@@ -577,9 +594,6 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 ToggleRow("  ↳ Mushroom Hitbox", "Full block Mushroom hitbox",
                     { Config.mushroomHitboxEnabled }, { Config.mushroomHitboxEnabled = it }),
                 SectionHeader("Hitbox Sizes"),
-                WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretHitboxSize, "Expansion (all): ", "%") {
-                    Config.secretHitboxSize = it
-                }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretLeverHitboxSize, "Lever Size: ", "%") {
                     Config.secretLeverHitboxSize = it
                 }),
@@ -592,7 +606,6 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 0, 100, Config.secretMushroomHitboxSize, "Mushroom Size: ", "%") {
                     Config.secretMushroomHitboxSize = it
                 }),
-                NoteRow("Each size multiplies Expansion (all). 100% = follow it."),
                 NoteRow("Buttons keep their real depth — only length and width grow."),
                 SectionHeader("Hitbox Visuals & Outline"),
                 ToggleRow("Show 3D Hitbox Boxes", "Renders custom 3D boxes in-game",
@@ -705,12 +718,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     SectionHeader("Devices & Terminals"),
                     ToggleRow("Auto I4 / Sharpshooter", "Automatically solves the F7 fourth device",
                         { Config.autoI4Enabled }, { Config.autoI4Enabled = it }),
-                    ToggleRow("Auto Simon Says", "Automatically clicks the Simon Says sequence",
+                    ToggleRow("Auto Simon Says", "Automatically solves Simon Says, looking at each button with human camera movement and timing",
                         { Config.autoSimonSaysEnabled }, { Config.autoSimonSaysEnabled = it }),
-                    ToggleRow("  ↳ Auto Start SS", "Automatically starts Simon Says",
-                        { Config.autoSimonSaysStart }, { Config.autoSimonSaysStart = it }),
-                    ToggleRow("  ↳ Block Wrong Device Clicks", "Blocks wrong Simon Says and extra Arrow Align clicks",
-                        { Config.blockWrongDeviceClicks }, { Config.blockWrongDeviceClicks = it }),
                     ToggleRow("Mask Display", "Bonzo, Spirit, and Phoenix mask cooldown HUD",
                         { Config.maskDisplayEnabled }, { Config.maskDisplayEnabled = it }),
                 )
@@ -804,10 +813,6 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 2, 12, Config.inventoryAutoClickerCps, "Inventory CPS: ", " CPS") {
                     Config.inventoryAutoClickerCps = it
                 }),
-
-                SectionHeader("Simon Says"),
-                ToggleRow("I1 / Instant SS", "Instant start-button click for Simon Says",
-                    { Config.instantSimonSaysEnabled }, { Config.instantSimonSaysEnabled = it }),
             )
         }
     }
@@ -819,18 +824,18 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
      * a row that showed the old mode after a click would be a setting that
      * lies about itself.
      */
-    private fun clickOrderButton(x: Int, w: Int): ModernButton {
+    private fun terminalModeButton(x: Int, w: Int): ModernButton {
         var button: ModernButton? = null
-        button = ModernButton(x, 0, w, 24, Component.literal(clickOrderLabel())) {
-            Config.autoTerminalClickOrder =
-                (Config.autoTerminalClickOrder + 1) % TerminalClickOrder.MODE_COUNT
-            button?.setMessage(Component.literal(clickOrderLabel()))
+        button = ModernButton(x, 0, w, 24, Component.literal(terminalModeLabel())) {
+            Config.autoTerminalMode = (Config.autoTerminalMode + 1) % TerminalMode.MODE_COUNT
+            button?.setMessage(Component.literal(terminalModeLabel()))
+            rebuildTab(Tab.TERMINALS)
         }
         return button
     }
 
-    private fun clickOrderLabel(): String =
-        "Click Order: ${TerminalClickOrder.modeName(Config.autoTerminalClickOrder)}"
+    private fun terminalModeLabel(): String =
+        "Terminal Mode: ${TerminalMode.modeName(Config.autoTerminalMode)}"
 
     private fun autoClickerKeyLabel(): String {
         if (listeningForAutoClickerKey) return "Press a key (ESC = NONE)"

@@ -1,6 +1,7 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.config.Config
+import com.asthoonlite.config.TerminalMode
 import com.asthoonlite.config.spreadWindow
 import com.asthoonlite.dungeon.TerminalSolver.Kind
 import com.google.gson.Gson
@@ -427,4 +428,31 @@ internal fun terminalMotionAndGuiChecks() {
         "the pointer ships on for melody and Click Order ships on Human"
     }
     check(oldConfig.autoTerminalEaseX1 == 20 && oldConfig.autoTerminalEaseY2 == 100)
+
+    // ── Cursor pointer sprite geometry ───────────────────────────────────
+    val pointerRuns = TerminalCursor.arrowRuns()
+    check(pointerRuns.size == 16) { "pointer sprite must have 16 rows, got ${pointerRuns.size}" }
+    check(pointerRuns[0].x0 == 0 && pointerRuns[0].x1 == 0) { "tip of pointer must be at (0,0)" }
+    check(pointerRuns[15].x0 == 7 && pointerRuns[15].x1 == 10) { "tail of pointer must end at col 7..10" }
+
+    // ── Terminal Modes (Normal, Human, Legit) ────────────────────────────
+    check(TerminalMode.MODE_COUNT == 3)
+    check(TerminalMode.modeName(TerminalMode.NORMAL) == "Normal")
+    check(TerminalMode.modeName(TerminalMode.HUMAN) == "Human")
+    check(TerminalMode.modeName(TerminalMode.LEGIT) == "Legit")
+    val modeData = Gson().fromJson("{\"autoTerminalMode\":2}", Config.Data::class.java)
+    check(modeData.autoTerminalMode == 2)
+
+    // ── F7Devices Simon Says Math ────────────────────────────────────────
+    check(abs(F7Devices.shortestAngleDist(0f, 90f) - 90f) < 0.001f)
+    check(abs(F7Devices.shortestAngleDist(350f, 10f) - 20f) < 0.001f)
+    check(abs(F7Devices.shortestAngleDist(10f, 350f) - (-20f)) < 0.001f)
+    check(abs(F7Devices.shortestAngleDist(-90f, -132f) - (-42f)) < 0.001f)
+
+    check(abs(F7Devices.easeInOutCubic(0f) - 0f) < 0.001f)
+    check(abs(F7Devices.easeInOutCubic(1f) - 1f) < 0.001f)
+    check(abs(F7Devices.easeInOutCubic(0.5f) - 0.5f) < 0.001f)
+    check(F7Devices.easeInOutCubic(0.2f) < 0.2f) { "ease-in must start slow" }
+    check(F7Devices.easeInOutCubic(0.8f) > 0.8f) { "ease-out must end slow" }
 }
+

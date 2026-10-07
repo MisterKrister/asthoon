@@ -1,10 +1,10 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.config.Config
-import com.asthoonlite.render.WorldBoxRenderer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.ChatFormatting
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
@@ -14,13 +14,15 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.world.phys.Vec3
 import kotlin.math.*
+import kotlin.random.Random
 
 /**
- * F7 devices based on the supplied Noamm/Devonian implementations:
- * - Auto I4 / Sharpshooter uses the nine fixed emerald positions and the
- *   same dev-room target vector as Noamm's I4Helper.
- * - Auto Simon Says reconstructs the five-button sequence from the
- *   sea-lantern updates in the four-by-four device.
+ * Floor 7 devices:
+ * - Auto I4 / Sharpshooter: Fixed emerald positions with dev-room targeting.
+ * - Auto Simon Says: Authentic human-mode solver that reconstructs the 5-round
+ *   pattern from sea-lantern updates, turning the player's camera smoothly to look
+ *   at each button with authentic cubic-eased angular velocities, settling onto the
+ *   button face, and clicking with natural human timing.
  */
 object F7Devices {
     private val devBlocks = listOf(
@@ -32,6 +34,7 @@ object F7Devices {
     private val ssObsidians = (120..123).flatMap { y -> (92..95).map { z -> BlockPos(111, y, z) } }
     private val ssButtons = (120..123).flatMap { y -> (92..95).map { z -> BlockPos(110, y, z) } }
     private val ssStart = BlockPos(110, 121, 91)
+    private val ssDeviceCenter = Vec3(110.5, 121.5, 93.5)
 
     private var stormStarted = false
     private val emeraldSeen = HashSet<BlockPos>()
@@ -39,14 +42,34 @@ object F7Devices {
     private var lastI4Click = 0L
 
     private var lastSSClick = 0L
-    private var lastSSStartClick = 0L
     private var lastSSState = BooleanArray(ssObsidians.size)
     private var ssLastClientTick = -1L
     private var skipOver = false
-    private var i1Started = false
-    private var i1StartTick = -1L
+    private var ssStartClicked = false
+    private var startClicksDone = 0
+    private var nextStartClickAt = 0L
     private val ssSequence = ArrayList<BlockPos>()
     private val ssButtonCheck = BlockPos(110, 120, 93)
+
+    // ── Human Aim Controller State ──────────────────────────────────────────
+    enum class AimState {
+        IDLE,
+        TURNING,
+        SETTLED,
+        POST_CLICK_PAUSE
+    }
+
+    private var aimState = AimState.IDLE
+    private var aimTargetVec: Vec3? = null
+    private var aimTargetBlock: BlockPos? = null
+    private var aimStartYaw = 0f
+    private var aimStartPitch = 0f
+    private var aimDestYaw = 0f
+    private var aimDestPitch = 0f
+    private var aimStartTime = 0L
+    private var aimDurationMs = 0L
+    private var aimSettledUntil = 0L
+    private var postClickPauseUntil = 0L
 
     fun register() {
         ClientReceiveMessageEvents.ALLOW_GAME.register { text, overlay ->
@@ -56,6 +79,7 @@ object F7Devices {
         ClientPlayConnectionEvents.JOIN.register { _, _, _ -> reset() }
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> reset() }
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
+        LevelRenderEvents.END_EXTRACTION.register { _ -> onRenderFrame() }
     }
 
     private fun onChat(msg: String) {
@@ -64,9 +88,15 @@ object F7Devices {
             emeraldSeen.clear()
             activeEmerald = null
         }
-        if (msg == "[BOSS] Goldor: Who dares trespass into my domain?") {
+        if (msg.contains("Goldor: Who dares trespass into my domain?") || msg.contains("completed a device!")) {
             resetSimonState()
         }
+    }
+
+    private fun onRenderFrame() {
+        if (!DungeonContext.inDungeon || !Config.autoSimonSaysEnabled) return
+        val player = Minecraft.getInstance().player ?: return
+        updateCameraAim(player, System.currentTimeMillis())
     }
 
     private fun tick() {
@@ -79,8 +109,7 @@ object F7Devices {
         val player = mc.player ?: return
 
         if (Config.autoI4Enabled && stormStarted) tickI4(mc, level, player)
-        if (Config.blockWrongDeviceClicks || Config.autoSimonSaysEnabled || Config.instantSimonSaysEnabled) updateSimonSequence(level, player)
-        if (Config.instantSimonSaysEnabled) tickI1(mc, level, player)
+        if (Config.blockWrongDeviceClicks || Config.autoSimonSaysEnabled) updateSimonSequence(level, player)
         if (Config.autoSimonSaysEnabled) tickSimon(mc, level, player)
     }
 
@@ -106,51 +135,127 @@ object F7Devices {
             else -> 66.5
         }
         val target = Vec3(targetX, 131.0 - 2.0 * row, 50.0)
-        lookAt(player, target)
+        lookAtDirect(player, target)
         val hit = BlockHitResult(target, Direction.SOUTH, pos, false)
         mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
         lastI4Click = System.currentTimeMillis()
     }
 
-    /**
-     * I1 is deliberately independent of Auto Simon Says / Auto Start SS.
-     * It first moves the camera to the Simon Says start button and clicks it,
-     * then hands the device buttons to the same target-selection path used by
-     * Secret Aura.  This makes I1 work by itself instead of only appearing to
-     * work when the other SS toggles are also enabled.
-     */
-    /**
-     * I1 is literally Secret Aura's interaction primitive. It presses the
-     * Simon start button once, latches that start, then uses the same
-     * useItemOn interaction on the expected button as the lantern sequence
-     * arrives. It never rotates the camera and never presses the start button
-     * again while the round is active.
-     */
-    private fun tickI1(mc: Minecraft, level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
-        if (player.distanceToSqr(Vec3(110.5, 121.5, 93.5)) > 49.0) return
+    internal fun shortestAngleDist(from: Float, to: Float): Float {
+        var diff = (to - from) % 360f
+        if (diff > 180f) diff -= 360f
+        if (diff < -180f) diff += 360f
+        return diff
+    }
 
-        if (!i1Started) {
-            if (ssSequence.isNotEmpty()) {
-                i1Started = true
-            } else {
-                val interacted = SecretAura.tickSimonLike(ssStart, ssButtons, false)
-                if (interacted) {
-                    i1Started = true
-                    i1StartTick = DungeonServerTick.current
+    internal fun easeInOutCubic(t: Float): Float {
+        val clamped = t.coerceIn(0f, 1f)
+        return if (clamped < 0.5f) 4f * clamped * clamped * clamped
+        else 1f - (-2f * clamped + 2f).let { it * it * it } / 2f
+    }
+
+    private fun updateCameraAim(player: net.minecraft.client.player.LocalPlayer, now: Long) {
+        if (player.distanceToSqr(ssDeviceCenter) > 36.0) {
+            aimState = AimState.IDLE
+            return
+        }
+        when (aimState) {
+            AimState.TURNING -> {
+                val elapsed = now - aimStartTime
+                val t = (elapsed.toFloat() / aimDurationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+                val eased = easeInOutCubic(t)
+                val dy = shortestAngleDist(aimStartYaw, aimDestYaw)
+                val dp = aimDestPitch - aimStartPitch
+                player.yRot = aimStartYaw + dy * eased
+                player.xRot = aimStartPitch + dp * eased
+
+                if (t >= 1f) {
+                    player.yRot = aimDestYaw
+                    player.xRot = aimDestPitch
+                    aimState = AimState.SETTLED
+                    // Human aim settlement time: ~75-120ms before clicking
+                    aimSettledUntil = now + Random.nextLong(75L, 120L)
+                    if (aimTargetBlock == ssStart) {
+                        nextStartClickAt = aimSettledUntil
+                    }
                 }
-                return
+            }
+            AimState.SETTLED -> {
+                player.yRot = aimDestYaw
+                player.xRot = aimDestPitch
+            }
+            AimState.POST_CLICK_PAUSE -> {
+                if (now >= postClickPauseUntil) {
+                    aimState = AimState.IDLE
+                }
+            }
+            AimState.IDLE -> {}
+        }
+    }
+
+    private fun startAim(player: net.minecraft.client.player.LocalPlayer, pos: BlockPos) {
+        // Target west face of button at x=110.875 with organic micro-offset
+        val seed = (pos.x * 31 + pos.y * 17 + pos.z * 13)
+        val offY = (((seed % 7) - 3) * 0.02)
+        val offZ = ((((seed / 7) % 7) - 3) * 0.02)
+        val target = Vec3(110.875, pos.y + 0.52 + offY, pos.z + 0.52 + offZ)
+
+        val eye = player.eyePosition
+        val d = target.subtract(eye)
+        val horizontal = sqrt(d.x * d.x + d.z * d.z)
+        val destYaw = Math.toDegrees(atan2(-d.x, d.z)).toFloat()
+        val destPitch = Math.toDegrees(atan2(-d.y, horizontal)).toFloat()
+
+        val curYaw = player.yRot
+        val curPitch = player.xRot
+        val dy = shortestAngleDist(curYaw, destYaw)
+        val dp = destPitch - curPitch
+        val angleDist = hypot(dy, dp)
+
+        // Turn duration based on user capture: ~160ms for tiny shifts up to ~420ms for large sweeps
+        val duration = (160L + (angleDist * 4.2f).toLong()).coerceIn(160L, 420L)
+
+        aimTargetVec = target
+        aimTargetBlock = pos
+        aimStartYaw = curYaw
+        aimStartPitch = curPitch
+        aimDestYaw = destYaw
+        aimDestPitch = destPitch
+        aimStartTime = System.currentTimeMillis()
+        aimDurationMs = duration
+        aimState = AimState.TURNING
+    }
+
+    /** Real-time packet-driven block updates for instant, zero-delay SS sequence tracking. */
+    fun onBlockUpdate(pos: BlockPos, state: net.minecraft.world.level.block.state.BlockState) {
+        if (!DungeonContext.inDungeon || !Config.autoSimonSaysEnabled) return
+        val player = Minecraft.getInstance().player ?: return
+        if (player.distanceToSqr(ssDeviceCenter) > 36.0) return
+
+        val block = state.block
+        if (pos in ssObsidians && block == Blocks.SEA_LANTERN) {
+            val button = pos.west()
+            if (!skipOver && ssSequence.size == 2) {
+                ssSequence.removeAt(0)
+            }
+            if (ssSequence.size < 5 && !ssSequence.contains(button)) {
+                ssSequence.add(button)
+            }
+        } else if (pos == ssButtonCheck) {
+            if (block == Blocks.STONE_BUTTON) {
+                skipOver = true
             }
         }
-
-        val expected = ssSequence.firstOrNull() ?: return
-        SecretAura.tickSimonLike(ssStart, listOf(expected), true)
     }
 
     private fun updateSimonSequence(level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
-        if (player.distanceToSqr(Vec3(110.5, 121.5, 93.5)) > 49.0) return
+        if (player.distanceToSqr(ssDeviceCenter) > 36.0) return
 
         if (level.getBlockState(ssButtonCheck).block == Blocks.AIR) {
-            if (ssSequence.isEmpty()) lastSSState = BooleanArray(ssObsidians.size)
+            if (ssSequence.isEmpty()) {
+                lastSSState = BooleanArray(ssObsidians.size)
+                ssStartClicked = false
+            }
             return
         }
         if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON && ssSequence.isEmpty()) {
@@ -178,24 +283,80 @@ object F7Devices {
     }
 
     private fun tickSimon(mc: Minecraft, level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
-        if (player.distanceToSqr(Vec3(110.5, 121.5, 93.5)) > 49.0) return
-
-        if (Config.autoSimonSaysStart && level.getBlockState(ssStart).block == Blocks.STONE_BUTTON &&
-            System.currentTimeMillis() - lastSSStartClick > 250L) {
-            SecretAura.instantInteract(ssStart)
-            lastSSStartClick = System.currentTimeMillis()
+        if (player.distanceToSqr(ssDeviceCenter) > 36.0) {
+            aimState = AimState.IDLE
             return
         }
 
-        val expected = ssSequence.firstOrNull() ?: return
-        if (level.getBlockState(expected).block != Blocks.STONE_BUTTON) return
-        if (ssLastClientTick == DungeonServerTick.current) return
-        if (System.currentTimeMillis() - lastSSClick < 100L) return
+        val now = System.currentTimeMillis()
+        updateCameraAim(player, now)
 
-        SecretAura.instantInteract(expected)
-        ssSequence.removeFirst()
-        lastSSClick = System.currentTimeMillis()
-        ssLastClientTick = DungeonServerTick.current
+        // 1. If currently settled on start button and performing 3 start clicks at ~7 CPS:
+        if (aimTargetBlock == ssStart && aimState == AimState.SETTLED) {
+            if (now >= nextStartClickAt && level.getBlockState(ssStart).block == Blocks.STONE_BUTTON) {
+                val targetVec = aimTargetVec ?: Vec3(110.875, ssStart.y + 0.52, ssStart.z + 0.52)
+                val hit = BlockHitResult(targetVec, Direction.WEST, ssStart, false)
+                mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+                lastSSClick = now
+                startClicksDone++
+                if (startClicksDone >= 3) {
+                    ssStartClicked = true
+                    startClicksDone = 0
+                    aimState = AimState.POST_CLICK_PAUSE
+                    postClickPauseUntil = now + Random.nextLong(110L, 150L)
+                } else {
+                    // ~7 CPS: ~140ms cadence between start clicks
+                    nextStartClickAt = now + Random.nextLong(135L, 145L)
+                }
+            }
+            return
+        }
+
+        // 2. If settled on a sequence button:
+        if (aimState == AimState.SETTLED && now >= aimSettledUntil) {
+            val targetBlock = aimTargetBlock
+            val targetVec = aimTargetVec
+            if (targetBlock != null && targetVec != null && level.getBlockState(targetBlock).block == Blocks.STONE_BUTTON) {
+                val hit = BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
+                mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+                lastSSClick = now
+                ssLastClientTick = DungeonServerTick.current
+
+                if (ssSequence.isNotEmpty() && ssSequence.first() == targetBlock) {
+                    ssSequence.removeFirst()
+                }
+            }
+            aimState = AimState.POST_CLICK_PAUSE
+            postClickPauseUntil = now + Random.nextLong(80L, 120L)
+            return
+        }
+
+        if (aimState != AimState.IDLE) return
+
+        // 3. Check if device needs to be started
+        if (!ssStartClicked && ssSequence.isEmpty()) {
+            if (level.getBlockState(ssStart).block == Blocks.STONE_BUTTON && now - lastSSClick > 300L) {
+                startClicksDone = 0
+                nextStartClickAt = 0L
+                startAim(player, ssStart)
+                return
+            }
+        }
+
+        // 4. Check if sequence buttons are ready on the wall (priority order)
+        if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON) {
+            val expected = ssSequence.firstOrNull() ?: return
+            if (level.getBlockState(expected).block == Blocks.STONE_BUTTON) {
+                // If button is already pressed / powered, drop and advance
+                if (level.getBlockState(expected).getValue(net.minecraft.world.level.block.ButtonBlock.POWERED)) {
+                    ssSequence.removeFirst()
+                    return
+                }
+                if (now - lastSSClick > 70L) {
+                    startAim(player, expected)
+                }
+            }
+        }
     }
 
     /** Called after an allowed manual interaction. Uses NoammAddons' queue model. */
@@ -230,7 +391,7 @@ object F7Devices {
         return pos != expected
     }
 
-    private fun lookAt(player: net.minecraft.client.player.LocalPlayer, target: Vec3) {
+    private fun lookAtDirect(player: net.minecraft.client.player.LocalPlayer, target: Vec3) {
         val eye = player.eyePosition
         val d = target.subtract(eye)
         val horizontal = sqrt(d.x * d.x + d.z * d.z)
@@ -247,20 +408,24 @@ object F7Devices {
 
     private fun resetSimonState() {
         ssSequence.clear()
-        i1Started = false
-        i1StartTick = -1L
         lastSSState = BooleanArray(ssObsidians.size)
         skipOver = false
+        ssStartClicked = false
+        startClicksDone = 0
+        nextStartClickAt = 0L
         ssLastClientTick = -1L
+        aimState = AimState.IDLE
+        aimTargetVec = null
+        aimTargetBlock = null
     }
 
     fun reset() {
         resetDeviceStateOnly()
         lastI4Click = 0L
         lastSSClick = 0L
-        lastSSStartClick = 0L
+        resetSimonState()
     }
 }
 
 private fun Config.inAnyDeviceFeatureEnabled(): Boolean =
-    autoI4Enabled || autoSimonSaysEnabled || instantSimonSaysEnabled
+    autoI4Enabled || autoSimonSaysEnabled

@@ -43,6 +43,16 @@ object DungeonScanner {
         }.getOrNull() ?: emptyList()
     }
 
+    val roomsByCore: Map<Int, RoomData> by lazy {
+        buildMap {
+            for (room in roomsData) {
+                for (core in room.cores) {
+                    put(core, room)
+                }
+            }
+        }
+    }
+
     var lastIdx: Int? = null
     var currentRoom: DungeonRoom? = null
     var rooms = MutableList<DungeonRoom?>(36) { null }
@@ -100,7 +110,7 @@ object DungeonScanner {
 
     fun hashCeil(x: Int, z: Int): Int {
         val level = Minecraft.getInstance().level ?: return 0
-        var str = ""
+        val sb = StringBuilder(128)
         val mutable = BlockPos.MutableBlockPos(x, 0, z)
         for (idx in 140 downTo 12) {
             mutable.set(x, idx, z)
@@ -109,12 +119,12 @@ object DungeonScanner {
             val block = blockState.block
             val blockId = getLegacyId(blockState) ?: continue
             if (block == Blocks.IRON_BARS || block == Blocks.CHEST) {
-                str += "0"
+                sb.append('0')
                 continue
             }
-            str += blockId
+            sb.append(blockId)
         }
-        return str.hashCode()
+        return sb.toString().hashCode()
     }
 
     fun register() {

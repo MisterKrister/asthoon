@@ -7,12 +7,15 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.world.level.BlockGetter
 import net.minecraft.world.level.block.AbstractSkullBlock
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.ButtonBlock
+import net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock
 import net.minecraft.world.level.block.LeverBlock
 import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.block.state.properties.AttachFace
 import net.minecraft.world.phys.shapes.Shapes
 import net.minecraft.world.phys.shapes.VoxelShape
 
@@ -80,8 +83,7 @@ object SecretHitboxes {
      * either, and five separate fields cannot be watched with one integer.
      */
     private fun sizeSignature(): Long {
-        var s = Config.secretHitboxSize.toLong() and 0x7FL
-        s = (s shl 7) or (Config.secretLeverHitboxSize.toLong() and 0x7FL)
+        var s = Config.secretLeverHitboxSize.toLong() and 0x7FL
         s = (s shl 7) or (Config.secretButtonHitboxSize.toLong() and 0x7FL)
         s = (s shl 7) or (Config.secretSkullHitboxSize.toLong() and 0x7FL)
         s = (s shl 7) or (Config.secretMushroomHitboxSize.toLong() and 0x7FL)
@@ -117,8 +119,12 @@ object SecretHitboxes {
         val key = shapeKey(state, sizePercent)
         shapeCache[key]?.let { return it }
 
-        val vanilla = vanillaBounds(state, level, pos) ?: return null
-        val bounds = lerpBounds(vanilla, targetBounds(kind, vanilla), sizePercent)
+        val bounds = if (kind == Kind.LEVER) {
+            getLeverRelativeBounds(state, sizePercent)
+        } else {
+            val vanilla = vanillaBounds(state, level, pos) ?: return null
+            lerpBounds(vanilla, targetBounds(kind, vanilla), sizePercent)
+        }
         val made = Shapes.box(bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5])
 
         // Defensive ceiling: the key space is small by construction, but never
@@ -278,6 +284,42 @@ object SecretHitboxes {
     }
 
     /**
+     * Relative bounding box for a lever scaled to [sizePercent] (1..100%).
+     * Scales outward from the attached face (floor, ceiling, or wall) centered on the face,
+     * matching Noamm's getLeverShape math.
+     */
+    @JvmStatic
+    fun getLeverRelativeBounds(state: BlockState, sizePercent: Int): DoubleArray {
+        val size = (sizePercent.coerceIn(1, 100) / 100.0).coerceIn(0.1, 1.0)
+        val half = size / 2.0
+        if (!state.hasProperty(FaceAttachedHorizontalDirectionalBlock.FACE) ||
+            !state.hasProperty(FaceAttachedHorizontalDirectionalBlock.FACING)) {
+            val pad = (1.0 - size) / 2.0
+            return doubleArrayOf(pad, pad, pad, 1.0 - pad, 1.0 - pad, 1.0 - pad)
+        }
+        val face = state.getValue(FaceAttachedHorizontalDirectionalBlock.FACE)
+        val dir = state.getValue(FaceAttachedHorizontalDirectionalBlock.FACING)
+
+        return when (face) {
+            AttachFace.FLOOR -> doubleArrayOf(
+                0.5 - half, 0.0, 0.5 - half,
+                0.5 + half, size, 0.5 + half
+            )
+            AttachFace.CEILING -> doubleArrayOf(
+                0.5 - half, 1.0 - size, 0.5 - half,
+                0.5 + half, 1.0, 0.5 + half
+            )
+            else -> when (dir) {
+                Direction.EAST -> doubleArrayOf(0.0, 0.5 - half, 0.5 - half, size, 0.5 + half, 0.5 + half)
+                Direction.WEST -> doubleArrayOf(1.0 - size, 0.5 - half, 0.5 - half, 1.0, 0.5 + half, 0.5 + half)
+                Direction.SOUTH -> doubleArrayOf(0.5 - half, 0.5 - half, 0.0, 0.5 + half, 0.5 + half, size)
+                Direction.NORTH -> doubleArrayOf(0.5 - half, 0.5 - half, 1.0 - size, 0.5 + half, 0.5 + half, 1.0)
+                else -> doubleArrayOf(0.5 - half, 0.0, 0.5 - half, 0.5 + half, size, 0.5 + half)
+            }
+        }
+    }
+
+    /**
      * The slider actually applied to [kind]: the master expansion multiplied
      * by this block family's own setting.
      *
@@ -295,7 +337,7 @@ object SecretHitboxes {
             Kind.SKULL -> Config.secretSkullHitboxSize
             Kind.MUSHROOM -> Config.secretMushroomHitboxSize
         }
-        return sizePercent(Config.secretHitboxSize, perKind)
+        return perKind.coerceIn(0, 100)
     }
 
     /** The combination itself, kept pure so it can be pinned by a test. */
@@ -335,6 +377,11 @@ object SecretHitboxes {
      * Display and click target are derived from one call so they cannot drift.
      */
     private fun displayBounds(state: BlockState, pos: BlockPos, level: BlockGetter): DoubleArray? {
+        val kind = kindOf(state)
+        if (kind == Kind.LEVER && (isKindEnabled(Kind.LEVER, pos) || Config.moddedHitboxDisplayEnabled)) {
+            val pct = sizePercentFor(Kind.LEVER)
+            if (pct > 0) return getLeverRelativeBounds(state, pct)
+        }
         val shape = interactionShape(state, pos, level) ?: vanillaShape(state, level, pos)
         if (shape.isEmpty()) return null
         val b = shape.bounds()
@@ -356,7 +403,7 @@ object SecretHitboxes {
     }
 
     private fun tick() {
-        if (!DungeonContext.inDungeon) {
+        if (!DungeonContext.inDungeon || (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled)) {
             if (tracked.isNotEmpty() || pressedUntil.isNotEmpty() || previousPowered.isNotEmpty()) {
                 pressedUntil.clear()
                 previousPowered.clear()
@@ -381,6 +428,7 @@ object SecretHitboxes {
         val found = ArrayList<SecretBlock>(32)
         val live = HashSet<BlockPos>()
         val now = System.currentTimeMillis()
+        val mpos = BlockPos.MutableBlockPos()
 
         var x = player.x.toInt() - radius
         val xEnd = player.x.toInt() + radius
@@ -391,18 +439,22 @@ object SecretHitboxes {
                 var z = player.z.toInt() - radius
                 val zEnd = player.z.toInt() + radius
                 while (z <= zEnd) {
-                    val pos = BlockPos(x, y, z)
-                    val state = level.getBlockState(pos)
+                    mpos.set(x, y, z)
+                    val state = level.getBlockState(mpos)
                     val kind = kindOf(state)
-                    if (kind != null && isKindEnabled(kind, pos)) {
-                        found.add(SecretBlock(pos, kind, state))
-                        live.add(pos)
-                    }
-                    if (kind == Kind.LEVER || kind == Kind.BUTTON) {
-                        val powered = powered(state)
-                        val old = previousPowered.put(pos, powered)
-                        if (Config.pressedHitboxEnabled && old == false && powered) {
-                            pressedUntil[pos] = now + Config.pressedHitboxDuration
+                    if (kind != null) {
+                        val pos = mpos.immutable()
+                        val shouldTrack = isKindEnabled(kind, pos) || (Config.moddedHitboxDisplayEnabled && (kind != Kind.LEVER || pos !in blackListedLevers))
+                        if (shouldTrack) {
+                            found.add(SecretBlock(pos, kind, state))
+                            live.add(pos)
+                        }
+                        if (kind == Kind.LEVER || kind == Kind.BUTTON) {
+                            val powered = powered(state)
+                            val old = previousPowered.put(pos, powered)
+                            if (Config.pressedHitboxEnabled && old == false && powered) {
+                                pressedUntil[pos] = now + Config.pressedHitboxDuration
+                            }
                         }
                     }
                     z++
@@ -425,7 +477,8 @@ object SecretHitboxes {
     }
 
     private fun render() {
-        if (!Config.secretHitboxesEnabled || !DungeonContext.inDungeon) return
+        if (!DungeonContext.inDungeon) return
+        if (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled) return
         val mc = Minecraft.getInstance()
         val level = mc.level ?: return
 

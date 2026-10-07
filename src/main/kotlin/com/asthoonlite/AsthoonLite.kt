@@ -83,6 +83,7 @@ object AsthoonLite : ClientModInitializer {
         BloodRoomSolver.register()
         DragonPhase.register()
         MaskDisplay.register()
+        com.asthoonlite.dungeon.TerminalSensing.register()
         AutoTerminal.register()
         // Draws the pointer that "carries" the auto-terminal clicks. Clicks
         // themselves are packets; this is the picture of the hand.
@@ -120,6 +121,8 @@ object AsthoonLite : ClientModInitializer {
         AutoClicker.register()
         WeaponAutoClicker.register()
         InventoryAutoClicker.register()
+
+        com.asthoonlite.utils.InputCapture.register()
 
         ClientTickEvents.END_CLIENT_TICK.register {
             DungeonServerTick.tick()

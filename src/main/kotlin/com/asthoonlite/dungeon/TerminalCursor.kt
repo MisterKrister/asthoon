@@ -2,6 +2,7 @@ package com.asthoonlite.dungeon
 
 import com.asthoonlite.AsthoonLite
 import com.asthoonlite.config.Config
+import com.asthoonlite.config.TerminalMode
 import com.asthoonlite.mixin.AbstractContainerScreenAccessor
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
@@ -70,6 +71,8 @@ object TerminalCursor {
     /** Resting tip position in screen space. */
     private var x = 0f
     private var y = 0f
+    fun currentX(): Float = x
+    fun currentY(): Float = y
     private var positioned = false
 
     /** True once [x]/[y] have actually been drawn — i.e. once there is a tip
@@ -185,7 +188,7 @@ object TerminalCursor {
         // hide behind anyway, and reaching those reads needs a Fabric loader to
         // open a config directory with, which the regression harness does not
         // have behind it when it calls reset().
-        val wanted = pointerVisible && shouldHideRealCursor(
+        val wanted = pointerVisible && (Config.autoTerminalCursorStyle == 0) && shouldHideRealCursor(
             pointerVisible,
             Config.autoTerminalCursorHideReal,
             Config.autoTerminalCursorGlide
@@ -303,34 +306,78 @@ object TerminalCursor {
         return u * u * p0 + 2f * u * t * c + t * t * p1
     }
 
-    /**
-     * The pointer sprite as horizontal runs per row — a triangle head with the
-     * tail continuing down-right along the same diagonal. Returned once and
-     * cached; the outline is this shape dilated by one pixel.
-     */
-    internal fun arrowRuns(): List<ArrowRun> {
-        val runs = ArrayList<ArrowRun>(24)
-        for (row in 0 until ARROW_ROWS) {
-            val left: Int
-            val right: Int
-            if (row <= HEAD_LAST_ROW) {
-                left = 0
-                right = row
-            } else {
-                left = row - ARROW_ROWS + 7
-                right = left + 2
-            }
-            if (right < left) continue
-            runs.add(ArrowRun(row, left, right))
-        }
-        return runs.filter { it.x0 in 0 until ARROW_COLS && it.x1 >= it.x0 }
-    }
-
     data class ArrowRun(val row: Int, val x0: Int, val x1: Int)
 
-    private const val ARROW_ROWS = 16
-    private const val ARROW_COLS = 16
-    private const val HEAD_LAST_ROW = 9
+    private val CURSOR_PATTERN = arrayOf(
+        "B           ", // 0
+        "BB          ", // 1
+        "BWB         ", // 2
+        "BWWB        ", // 3
+        "BWWWB       ", // 4
+        "BWWWWB      ", // 5
+        "BWWWWWB     ", // 6
+        "BWWWWWWB    ", // 7
+        "BWWWWWWWB   ", // 8
+        "BWWWWWWWWB  ", // 9
+        "BWWWWBBBBB  ", // 10
+        "BWWBWWB     ", // 11
+        "BWB  BWWB   ", // 12
+        "BB    BWWB  ", // 13
+        "       BWWB ", // 14
+        "       BBBB "  // 15
+    )
+
+    private fun buildSpans(char: Char): List<ArrowRun> = buildList {
+        for ((row, line) in CURSOR_PATTERN.withIndex()) {
+            var start = -1
+            for (col in line.indices) {
+                if (line[col] == char) {
+                    if (start == -1) start = col
+                } else if (start != -1) {
+                    add(ArrowRun(row, start, col - 1))
+                    start = -1
+                }
+            }
+            if (start != -1) {
+                add(ArrowRun(row, start, line.length - 1))
+            }
+        }
+    }
+
+    private fun buildShadowSpans(): List<ArrowRun> = buildList {
+        for ((row, line) in CURSOR_PATTERN.withIndex()) {
+            var start = -1
+            for (col in line.indices) {
+                if (line[col] != ' ') {
+                    if (start == -1) start = col
+                } else if (start != -1) {
+                    add(ArrowRun(row, start, col - 1))
+                    start = -1
+                }
+            }
+            if (start != -1) {
+                add(ArrowRun(row, start, line.length - 1))
+            }
+        }
+    }
+
+    private val cursorOutlineSpans: List<ArrowRun> by lazy { buildSpans('B') }
+    private val cursorFillSpans: List<ArrowRun> by lazy { buildSpans('W') }
+    private val cursorShadowSpans: List<ArrowRun> by lazy { buildShadowSpans() }
+
+    /**
+     * The pointer sprite as horizontal runs per row — exact pixel-perfect
+     * representation of the standard Windows pointer in 16x16 grid.
+     */
+    internal fun arrowRuns(): List<ArrowRun> = buildList {
+        for ((row, line) in CURSOR_PATTERN.withIndex()) {
+            val first = line.indexOfFirst { it != ' ' }
+            val last = line.indexOfLast { it != ' ' }
+            if (first != -1 && last != -1) {
+                add(ArrowRun(row, first, last))
+            }
+        }
+    }
 
     /** Flight-time bounds, shared with the harness. */
     private const val MIN_FLIGHT_MS = 70L
@@ -432,20 +479,38 @@ object TerminalCursor {
      * the old behaviour and the reason the numbers terminal is not slower than
      * the one beside it.
      */
-    fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long) {
+    fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long, isFirstClick: Boolean = false) {
         if (!positioned) seedFromMouse(targetX, targetY)
         val now = System.currentTimeMillis()
         val from = motion.position(now)
         val dist = hypot(targetX - from.x, targetY - from.y)
-        val human = Config.autoTerminalHumanize.coerceIn(0, 100) / 100f
 
-        // Speed: distance plus the speed slider, spread by how human the run is.
-        val natural = travelDurationMs(dist, Config.autoTerminalCursorSpeed, timingJitter(gaussianUnit(), human))
+        val mode = Config.autoTerminalMode
+        val human = if (mode == TerminalMode.LEGIT) 0.55f else (Config.autoTerminalHumanize.coerceIn(0, 100) / 100f)
+        val speed = if (mode == TerminalMode.LEGIT) 100 else Config.autoTerminalCursorSpeed
+        val arcSetting = if (mode == TerminalMode.LEGIT) 15 else Config.autoTerminalCursorArc
+        val jitterSetting = if (mode == TerminalMode.LEGIT) 12 else Config.autoTerminalCursorJitter
+
+        val window = clickNotBeforeMs - now
+
+        val natural = if (isFirstClick && window > MIN_FLIGHT_MS) {
+            // During the first-click delay, stretch movement across the delay so the hand is moving
+            // naturally into the pane rather than arriving in the first 80ms and sitting frozen.
+            val d = dwellMs(human)
+            val available = (window - d).coerceAtLeast(MIN_FLIGHT_MS)
+            val speedFactor = 100f / speed.coerceIn(50, 300)
+            // Account for settle time (~35% of travel) so travel + settle completes right before click
+            val travelTarget = (available / (1f + SETTLE_FRACTION * human)) * 0.94f * speedFactor
+            travelTarget.toLong().coerceIn(MIN_FLIGHT_MS, MAX_FLIGHT_MS)
+        } else {
+            // Speed: distance plus the speed slider, spread by how human the run is.
+            travelDurationMs(dist, speed, timingJitter(gaussianUnit(), human))
+        }
 
         // Arc: the slider says how far the path bows; humanize says how much
         // that varies, so at 0 every trip over the same distance bows by the
         // same amount — which is the tell, more than the bow itself.
-        val bowBase = Config.autoTerminalCursorArc.coerceIn(0, 100) / 100f * 0.4f
+        val bowBase = arcSetting.coerceIn(0, 100) / 100f * 0.4f
         val bow = if (bowBase <= 0f) 0f
         else bowBase * (1f + gaussianUnit() * 0.5f * human) * if (Random.nextBoolean()) 1f else -1f
 
@@ -453,18 +518,28 @@ object TerminalCursor {
         // hand that carried past still ends on the thing it aimed at.
         val overshoot = overshootPx(dist, human)
 
-        val window = clickNotBeforeMs - now
         val (dwell, travel) = fitTrip(natural, window, dwellMs(human))
         val settle = settleMs(travel, human)
 
         // Tremor is noise, so it goes with humanize rather than sitting on top
         // of it: the slider is the ceiling, humanize is how much of it a real
         // hand actually shows.
-        val tremor = Config.autoTerminalCursorJitter.coerceIn(0, 100) / 100f * human
+        val tremor = jitterSetting.coerceIn(0, 100) / 100f * human
+
+        val ease = if (mode == TerminalMode.LEGIT) {
+            // User captured authentic cubic bezier easing
+            val spread = 0.04f
+            CursorMotion.Ease(
+                (0.25f + gaussianUnit() * spread).coerceIn(0f, 1f),
+                0.05f,
+                (0.15f + gaussianUnit() * spread).coerceIn(0f, 1f),
+                0.95f
+            )
+        } else variedEase(human)
 
         motion.glideTo(
             CursorMotion.Point(targetX, targetY), now, travel, bow,
-            variedEase(human), tremor, Random.nextFloat() * 6.283f, Random.nextFloat() * 6.283f,
+            ease, tremor, Random.nextFloat() * 6.283f, Random.nextFloat() * 6.283f,
             overshoot, settle, dwell
         )
         lastGlideAt = now
@@ -570,6 +645,22 @@ object TerminalCursor {
             drawn = false
             return
         }
+
+        if (Config.autoTerminalCursorStyle == 1) {
+            syncOsCursor(false)
+            drawn = false
+            val mc = Minecraft.getInstance()
+            val win = mc.window
+            val handle = win.handle()
+            val rawX = rawFromScaled(pos.first, win.screenWidth, win.guiScaledWidth)
+            val rawY = rawFromScaled(pos.second, win.screenHeight, win.guiScaledHeight)
+            GLFW.glfwSetCursorPos(handle, rawX, rawY)
+            x = pos.first
+            y = pos.second
+            tipKnown = true
+            return
+        }
+
         syncOsCursor(true)
         drawn = true
         if (moving) pushTrail(pos.first, pos.second, now)
@@ -717,7 +808,7 @@ object TerminalCursor {
         alpha: Float,
         now: Long
     ) {
-        if (!spriteBroken) {
+        if (Config.autoTerminalCursorStyle == 0 && !spriteBroken) {
             try {
                 drawTrail(graphics, now)
                 blitCentered(
@@ -738,31 +829,28 @@ object TerminalCursor {
         drawArrowPointer(graphics, tipX, tipY, alpha)
     }
 
-    /** The pre-sprite pointer: a hand-built arrow, kept as the fallback. */
+    /** The standard default arrow pointer: pixel-exact Windows cursor with crisp outline, fill and drop shadow. */
     private fun drawArrowPointer(graphics: GuiGraphicsExtractor, tipX: Float, tipY: Float, alpha: Float) {
         val fillA = (255f * alpha).toInt().coerceIn(0, 255)
-        val outlineA = (230f * alpha).toInt().coerceIn(0, 255)
+        val outlineA = (240f * alpha).toInt().coerceIn(0, 255)
+        val shadowA = (80f * alpha).toInt().coerceIn(0, 255)
         val fill = (fillA shl 24) or 0x00FFFFFF
-        val outline = (outlineA shl 24) or 0x00101014
-        val shadow = ((fillA / 3) shl 24) or 0x00000000
+        val outline = (outlineA shl 24) or 0x000A0A0E
+        val shadow = (shadowA shl 24) or 0x00000000
 
         val ox = tipX.toInt()
         val oy = tipY.toInt()
 
-        // One-pixel shadow underneath so the pointer reads against a white
-        // terminal pane as well as a dark one.
-        for (run in runs) {
-            val sy = oy + run.row + 1
-            graphics.fill(ox + run.x0 + 1, sy + 1, ox + run.x1 + 2, sy + 2, shadow)
+        // 1px down-right drop shadow
+        for (run in cursorShadowSpans) {
+            graphics.fill(ox + run.x0 + 1, oy + run.row + 1, ox + run.x1 + 2, oy + run.row + 2, shadow)
         }
-        // Dilated outline: each run drawn one row above/below, one px wider.
-        for (run in runs) {
-            for (row in run.row - 1..run.row + 1) {
-                if (row < 0 || row >= ARROW_ROWS) continue
-                graphics.fill(ox + run.x0 - 1, oy + row, ox + run.x1 + 2, oy + row + 1, outline)
-            }
+        // Black outline
+        for (run in cursorOutlineSpans) {
+            graphics.fill(ox + run.x0, oy + run.row, ox + run.x1 + 1, oy + run.row + 1, outline)
         }
-        for (run in runs) {
+        // White fill
+        for (run in cursorFillSpans) {
             graphics.fill(ox + run.x0, oy + run.row, ox + run.x1 + 1, oy + run.row + 1, fill)
         }
     }
@@ -816,9 +904,20 @@ object TerminalCursor {
      * the slot coordinates alone are relative to the container, not the screen.
      */
     fun targetFor(screen: AbstractContainerScreen<*>, slotIndex: Int): Pair<Float, Float>? {
-        if (TermGui.active(screen)) return TermGui.gridFor(screen)?.center(slotIndex)
-        val slot = screen.menu.slots.getOrNull(slotIndex) ?: return null
-        val acc = screen as? AbstractContainerScreenAccessor ?: return null
-        return (acc.leftPos + slot.x + 8f) to (acc.topPos + slot.y + 8f)
+        val base = if (TermGui.active(screen)) TermGui.gridFor(screen)?.center(slotIndex)
+        else {
+            val slot = screen.menu.slots.getOrNull(slotIndex) ?: return null
+            val acc = screen as? AbstractContainerScreenAccessor ?: return null
+            (acc.leftPos + slot.x + 8f) to (acc.topPos + slot.y + 8f)
+        } ?: return null
+
+        val human = Config.autoTerminalHumanize.coerceIn(0, 100) / 100f
+        if (human <= 0f) return base
+
+        // Subtle organic off-center aiming within the tile
+        val h = slotIndex * 37 + AutoTerminal.clicksCount() * 19
+        val offX = (((h % 7) - 3) * 0.9f * human)
+        val offY = ((((h / 7) % 7) - 3) * 0.9f * human)
+        return (base.first + offX) to (base.second + offY)
     }
 }

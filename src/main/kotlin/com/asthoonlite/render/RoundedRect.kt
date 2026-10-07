@@ -74,11 +74,20 @@ fun fillRoundedRect(
         graphics.fill(x0, y0, x1, y1, argb)
         return
     }
+    val alpha = (argb ushr 24) and 0xFF
+    val rgb = argb and 0x00FFFFFF
+    val aaColor = (((alpha * 38) / 100) shl 24) or rgb
+
     for (row in 0 until h) {
         val inset = roundedRectRowInset(row, h, radius)
         val left = x0 + inset
         val right = x1 - inset
         if (right <= left) continue
         graphics.fill(left, y0 + row, right, y0 + row + 1, argb)
+        if (inset > 0) {
+            // Anti-aliased corner edge pixels to soften stair-step cuts
+            graphics.fill(left - 1, y0 + row, left, y0 + row + 1, aaColor)
+            graphics.fill(right, y0 + row, right + 1, y0 + row + 1, aaColor)
+        }
     }
 }

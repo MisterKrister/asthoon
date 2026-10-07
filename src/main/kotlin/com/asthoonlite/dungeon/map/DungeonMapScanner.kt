@@ -124,10 +124,8 @@ object DungeonMapScanner {
     fun onMapPacket(packet: ClientboundMapItemDataPacket) {
         val mapId = packet.mapId()
         val invMapId = inventoryMapId()
-        AsthoonLite.LOGGER.info("[AsthoonLite-Debug] DungeonMapScanner.onMapPacket: packetMapId=${mapId.id()}, invMapId=${invMapId?.id()}")
         if (invMapId != null && mapId != invMapId) {
             if (mapId.id() and 1000 != 0) {
-                AsthoonLite.LOGGER.info("[AsthoonLite-Debug] DungeonMapScanner.onMapPacket: filtered out mapId=${mapId.id()} (not inv map and matches mask)")
                 return
             }
         }
@@ -290,9 +288,6 @@ object DungeonMapScanner {
             icons.add(PlayerIcon(rescaleDecX(dec), rescaleDecZ(dec), decRot(dec), name))
         }
         playerIcons = icons
-        if (decorations.isNotEmpty()) {
-            AsthoonLite.LOGGER.info("[AsthoonLite-Debug] DungeonMapScanner.updatePlayerIcons: ${decorations.size} decorations -> ${icons.size} player icons: ${icons.map { "${it.name}@(${it.x.toInt()},${it.z.toInt()})" }}")
-        }
     }
 
     private fun rescaleDecX(dec: MapDecoration): Double =

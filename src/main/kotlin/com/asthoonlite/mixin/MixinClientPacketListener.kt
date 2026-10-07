@@ -11,10 +11,12 @@ import com.asthoonlite.dungeon.solvers.TicTacToeSolver
 import com.asthoonlite.dungeon.solvers.TeleportMazeSolver
 import net.minecraft.client.multiplayer.ClientPacketListener
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket
+import net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket
 import net.minecraft.network.protocol.game.ClientboundMapItemDataPacket
 import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket
 import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket
+import net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket
 import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket
 import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket
 import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket
@@ -70,7 +72,6 @@ abstract class MixinClientPacketListener {
 
     @Inject(method = ["handleMapItemData"], at = [At("TAIL")])
     private fun asthoonlite_onMapItemData(packet: ClientboundMapItemDataPacket, ci: CallbackInfo) {
-        AsthoonLite.LOGGER.info("[AsthoonLite-Debug] handleMapItemData: mapId=${packet.mapId().id()}, scale=${packet.scale()}, locked=${packet.locked()}, decorations=${packet.decorations().map { it.size }.orElse(0)}, colorPatch=${packet.colorPatch().isPresent}")
         DungeonMapScanner.onMapPacket(packet)
     }
 
@@ -100,6 +101,38 @@ abstract class MixinClientPacketListener {
             val mc = net.minecraft.client.Minecraft.getInstance()
             mc.connection?.send(net.minecraft.network.protocol.game.ServerboundContainerClosePacket(packet.containerId))
             ci.cancel()
+        }
+    }
+
+    @Inject(method = ["handleOpenScreen"], at = [At("TAIL")])
+    private fun asthoonlite_onOpenScreenTerminal(packet: net.minecraft.network.protocol.game.ClientboundOpenScreenPacket, ci: CallbackInfo) {
+        com.asthoonlite.dungeon.TerminalSensing.onOpenScreen(packet)
+    }
+
+    @Inject(method = ["handleContainerContent"], at = [At("TAIL")])
+    private fun asthoonlite_onContainerContent(packet: net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket, ci: CallbackInfo) {
+        com.asthoonlite.dungeon.TerminalSensing.onSetContent(packet)
+    }
+
+    @Inject(method = ["handleContainerSetSlot"], at = [At("TAIL")])
+    private fun asthoonlite_onContainerSetSlot(packet: net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket, ci: CallbackInfo) {
+        com.asthoonlite.dungeon.TerminalSensing.onSetSlot(packet)
+    }
+
+    @Inject(method = ["handleContainerClose"], at = [At("TAIL")])
+    private fun asthoonlite_onContainerClose(packet: net.minecraft.network.protocol.game.ClientboundContainerClosePacket, ci: CallbackInfo) {
+        com.asthoonlite.dungeon.TerminalSensing.onClose(packet.containerId)
+    }
+
+    @Inject(method = ["handleBlockUpdate"], at = [At("TAIL")])
+    private fun asthoonlite_onBlockUpdate(packet: ClientboundBlockUpdatePacket, ci: CallbackInfo) {
+        com.asthoonlite.dungeon.F7Devices.onBlockUpdate(packet.pos, packet.blockState)
+    }
+
+    @Inject(method = ["handleChunkBlocksUpdate"], at = [At("TAIL")])
+    private fun asthoonlite_onChunkBlocksUpdate(packet: ClientboundSectionBlocksUpdatePacket, ci: CallbackInfo) {
+        packet.runUpdates { pos, state ->
+            com.asthoonlite.dungeon.F7Devices.onBlockUpdate(pos, state)
         }
     }
 }

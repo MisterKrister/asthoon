@@ -59,14 +59,9 @@ class DungeonRoom(comps: List<WorldComponentPosition>, var height: Int) {
     }
 
     private fun loadFromCore(core: Int): Boolean {
-        for (room in DungeonScanner.roomsData) {
-            if (!room.cores.contains(core)) continue
-
-            loadFromData(room)
-            return true
-        }
-
-        return false
+        val room = DungeonScanner.roomsByCore[core] ?: return false
+        loadFromData(room)
+        return true
     }
 
     fun update() {

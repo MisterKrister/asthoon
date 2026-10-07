@@ -6,7 +6,6 @@ import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.Font
-import java.util.concurrent.CopyOnWriteArrayList
 
 object WorldTextRenderer {
     data class TextEntry(
@@ -19,7 +18,7 @@ object WorldTextRenderer {
         val throughWalls: Boolean = true
     )
 
-    private val queue = CopyOnWriteArrayList<TextEntry>()
+    private val queue = ArrayList<TextEntry>()
 
     fun register() {
         LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register { context ->
@@ -52,13 +51,11 @@ object WorldTextRenderer {
         val camera = mc.gameRenderer.mainCamera
         val camPos = camera.position()
         val stack = context.poseStack()
-        val bufferSource = context.bufferSource() ?: mc.renderBuffers().bufferSource()
+        val bufferSource = context.bufferSource()
         val font = mc.font
 
-        val entries = queue.toList()
-        queue.clear()
-
-        for (entry in entries) {
+        for (i in queue.indices) {
+            val entry = queue[i]
             val rx = entry.x - camPos.x
             val ry = entry.y - camPos.y
             val rz = entry.z - camPos.z
@@ -88,6 +85,7 @@ object WorldTextRenderer {
 
             stack.popPose()
         }
+        queue.clear()
         bufferSource.endBatch()
     }
 }

@@ -168,11 +168,11 @@ object TerminalSolver {
             // the lowest is the only one the server will accept next.
             Kind.ORDER -> {
                 val reds = all.mapIndexedNotNull { i, s ->
-                    if (s.`is`(Items.RED_STAINED_GLASS_PANE)) i to s.count else null
+                    if (s.`is`(Items.RED_STAINED_GLASS_PANE) && i !in blocked) i to s.count else null
                 }
                 if (reds.isEmpty()) return emptyList()
                 val next = reds.minOf { it.second }
-                reds.filter { it.second == next && it.first !in blocked }.map { it.first }
+                reds.filter { it.second == next }.map { it.first }
             }
 
             Kind.SELECT -> {
@@ -273,6 +273,9 @@ object TerminalSolver {
         val kind = kindOf(screenTitle) ?: return null
         val candidates = clickCandidates(screenTitle, items, blocked, rubixTarget)
         if (candidates.isEmpty()) return null
+        if (kind == Kind.RUBIX && lastSlot != null && lastSlot in candidates) {
+            return lastSlot
+        }
         val elsewhere = lastSlot?.let { s -> candidates.filter { it != s } }.orEmpty()
         val pool = if (elsewhere.isNotEmpty()) elsewhere else candidates
         return TerminalClickOrder.pick(clickOrder, pool, lastSlot, kind.slotCount)
@@ -295,9 +298,14 @@ object TerminalSolver {
     /** Slot indices of the nine Rubix panes. */
     private fun rubixPanes(all: List<ItemStack>): List<Pair<Int, Int>> =
         RUBIX_SLOTS.mapNotNull { slot ->
-            val stack = all.getOrNull(slot) ?: return@mapNotNull null
-            val idx = TerminalHelper.rubixColorIndex(stack)
-            if (idx >= 0) slot to idx else null
+            val predicted = AutoTerminal.rubixPredicted(slot)
+            if (predicted != null && predicted in 0..4) {
+                slot to predicted
+            } else {
+                val stack = all.getOrNull(slot) ?: return@mapNotNull null
+                val idx = TerminalHelper.rubixColorIndex(stack)
+                if (idx >= 0) slot to idx else null
+            }
         }
 
     /**
@@ -424,14 +432,14 @@ object TerminalSolver {
     private fun selectColor(title: String, stack: ItemStack): Int? {
         val wanted = selectTarget(title) ?: return null
         if (stack.isEmpty || TerminalHelper.isSelected(stack)) return null
-        return if (TerminalHelper.matchesColor(stack, wanted)) 0xCCFF55FF.toInt() else null
+        return if (TerminalHelper.matchesColor(stack, wanted)) 0xCC55FFFF.toInt() else null
     }
 
     private fun startsColor(title: String, stack: ItemStack): Int? {
         val wanted = startsTarget(title) ?: return null
         if (stack.isEmpty || TerminalHelper.isSelected(stack)) return null
         val name = ChatFormatting.stripFormatting(stack.hoverName.string)?.lowercase(Locale.ROOT) ?: return null
-        return if (name.startsWith(wanted)) 0xCC55FF55.toInt() else null
+        return if (name.startsWith(wanted)) 0xCC55FFFF.toInt() else null
     }
 
     private fun rubixColor(slot: Int, stack: ItemStack, all: List<ItemStack>, committedTarget: Int?): Int? {
@@ -440,7 +448,7 @@ object TerminalSolver {
         if (panes.size < 9) return null
         val target = committedTarget ?: optimalRubixTarget(all) ?: return null
         val currentIdx = TerminalHelper.rubixColorIndex(stack)
-        return if (currentIdx == target) 0xAA00E676.toInt() else 0xAAFFAA00.toInt()
+        return if (currentIdx != target) 0xCC55FFFF.toInt() else null
     }
 
     internal fun melodyColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {

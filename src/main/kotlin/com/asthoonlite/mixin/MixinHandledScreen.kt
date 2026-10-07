@@ -55,6 +55,9 @@ abstract class MixinHandledScreen {
     )
     private fun asthoonlite_onContainerMouseClicked(event: MouseButtonEvent, doubleClick: Boolean, cir: CallbackInfoReturnable<Boolean>) {
         val self = (this as Any) as AbstractContainerScreen<*>
+        if (com.asthoonlite.utils.InputCapture.isCapturing) {
+            com.asthoonlite.utils.InputCapture.onTerminalMousePress(event.button(), event.x(), event.y())
+        }
         if (TermGui.active(self)) {
             TermGui.click(self, event.x(), event.y(), event.button())
             cir.returnValue = true
@@ -155,6 +158,9 @@ abstract class MixinHandledScreen {
         }
 
         if (AutoTerminal.isTerminalTitle(title)) {
+            if (slot != null && com.asthoonlite.utils.InputCapture.isCapturing) {
+                com.asthoonlite.utils.InputCapture.onTerminalClick(self, slot.index, button, "SLOT_CLICK")
+            }
             val mc = Minecraft.getInstance()
             if (!self.menu.carried.isEmpty) {
                 self.menu.carried = ItemStack.EMPTY
@@ -391,7 +397,7 @@ abstract class MixinHandledScreen {
         )
 
         val font = Minecraft.getInstance().font
-        val marker = nextSlotFor(title, all)
+        val marker = if (kind == TerminalSolver.Kind.ORDER || kind == TerminalSolver.Kind.MELODY) nextSlotFor(title, all) else null
         for ((i, s) in termSlots.withIndex()) {
             val x = s.x + TILE_INSET
             val y = s.y + TILE_INSET

@@ -7,6 +7,7 @@ import com.asthoonlite.dungeon.DungeonContext;
 import com.asthoonlite.dungeon.F7Devices;
 import com.asthoonlite.dungeon.StarMobESP;
 import com.asthoonlite.dungeon.SecretHitboxes;
+import com.asthoonlite.utils.InputCapture;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
@@ -36,6 +37,7 @@ public abstract class MixinMinecraft {
 
     @Inject(method = "startUseItem", at = @At("HEAD"), cancellable = true)
     private void asthoonlite$guardRightClick(CallbackInfo ci) {
+        InputCapture.INSTANCE.onRightClick();
         if (player == null || level == null || hitResult == null) return;
         if (hitResult.getType() == HitResult.Type.BLOCK) {
             BlockHitResult block = (BlockHitResult) hitResult;
@@ -65,6 +67,7 @@ public abstract class MixinMinecraft {
 
     @Inject(method = "startAttack", at = @At("HEAD"), cancellable = true)
     private void asthoonlite$guardLeftClick(CallbackInfoReturnable<Boolean> cir) {
+        InputCapture.INSTANCE.onLeftClick();
         if (player == null || level == null || hitResult == null) return;
         if (hitResult.getType() == HitResult.Type.BLOCK) {
             BlockHitResult block = (BlockHitResult) hitResult;

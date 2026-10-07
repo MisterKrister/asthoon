@@ -24,6 +24,8 @@ object TermGui {
     private const val NEUTRAL = 0xFF292F3B.toInt()
     /** How long a click leaves its mark on the pane it was for. */
     private const val CLICK_FLASH_MS = 220L
+    private var cachedRubixTarget: Int? = null
+    private var lastRubixContainerId: Int = -1
 
     data class Tile(val slot: Int, val x: Int, val y: Int)
 
@@ -160,46 +162,93 @@ object TermGui {
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
         val all = items(screen, kind)
         val title = TerminalSolver.cleanTitle(screen.title.string)
-        val target = AutoTerminal.rubixTargetOrNull()
-        val next = if (Config.terminalSolverEnabled)
+        if (kind == Kind.RUBIX) {
+            if (cachedRubixTarget == null || screen.menu.containerId != lastRubixContainerId) {
+                lastRubixContainerId = screen.menu.containerId
+                cachedRubixTarget = AutoTerminal.rubixTargetOrNull() ?: TerminalSolver.optimalRubixTarget(all)
+            }
+        } else {
+            cachedRubixTarget = null
+            lastRubixContainerId = -1
+        }
+        val target = if (kind == Kind.RUBIX) (AutoTerminal.rubixTargetOrNull() ?: cachedRubixTarget) else null
+        val next = if (Config.terminalSolverEnabled && (kind == Kind.ORDER || kind == Kind.MELODY))
             TerminalSolver.nextClickSlot(title, all, AutoTerminal.unsettledSlots(), target,
                 AutoTerminal.lastClickedSlot(), Config.autoTerminalClickOrder) else null
         val hovered = if (TerminalCursor.ownsCursor()) null else grid.hitTest(mouseX.toDouble(), mouseY.toDouble())
         val font = Minecraft.getInstance().font
         graphics.centeredText(font, title, screen.width / 2, (grid.originY - 18).toInt(), 0xFFFFFFFF.toInt())
-        graphics.pose().pushMatrix()
-        graphics.pose().translate(grid.originX, grid.originY)
-        graphics.pose().scale(grid.scale, grid.scale)
-        fillRoundedRect(graphics, -4, -4, grid.width + 4, grid.height + 4, BACKGROUND, 5)
+        val originX = grid.originX
+        val originY = grid.originY
+        val scale = grid.scale
+        val roundness = Config.termGuiRoundness.coerceIn(0, 8)
+
+        // Background panel rendered in true screen pixels
+        val bgPad = (4 * scale).toInt()
+        val bgX0 = (originX - bgPad).toInt()
+        val bgY0 = (originY - bgPad).toInt()
+        val bgX1 = (originX + grid.width * scale + bgPad).toInt()
+        val bgY1 = (originY + grid.height * scale + bgPad).toInt()
+        val bgRadius = if (roundness > 0) ((roundness + 2) * scale).toInt().coerceAtMost(10) else 0
+        fillRoundedRect(graphics, bgX0, bgY0, bgX1, bgY1, BACKGROUND, bgRadius)
+
         for (tile in grid.tiles) {
-            val stack = all.getOrNull(tile.slot) ?: continue
-            val color = if (kind == Kind.MELODY) TerminalSolver.melodyColor(tile.slot, stack, all)
-                else TerminalSolver.colorFor(title, tile.slot, stack, all, target)
+            val sx0 = (originX + tile.x * scale).toInt()
+            val sy0 = (originY + tile.y * scale).toInt()
+            val sx1 = (originX + (tile.x + TILE_SIZE) * scale).toInt()
+            val sy1 = (originY + (tile.y + TILE_SIZE) * scale).toInt()
+            val sw = sx1 - sx0
+            val sh = sy1 - sy0
+            val tileRadius = if (roundness > 0) (roundness * scale).toInt().coerceIn(0, minOf(sw, sh) / 2) else 0
+
+            val slotObj = screen.menu.slots.getOrNull(tile.slot)
+            val stack = slotObj?.item ?: ItemStack.EMPTY
+            val color = if (kind == Kind.MELODY) {
+                TerminalSolver.melodyColor(tile.slot, stack, all)
+            } else if (kind == Kind.RUBIX && Config.terminalSolverEnabled) {
+                val current = AutoTerminal.rubixPredicted(tile.slot)
+                    ?: TerminalHelper.rubixColorIndex(stack).takeIf { it >= 0 }
+                val wanted = target ?: cachedRubixTarget ?: TerminalSolver.optimalRubixTarget(all)
+                if (wanted != null && current != null && current != wanted) 0xCC55FFFF.toInt() else null
+            } else {
+                TerminalSolver.colorFor(title, tile.slot, stack, all, target)
+            }
+
             if (tile.slot == next || tile.slot == hovered) {
-                fillRoundedRect(graphics, tile.x - 1, tile.y - 1, tile.x + TILE_SIZE + 1, tile.y + TILE_SIZE + 1,
-                    if (tile.slot == next) 0xFF00E676.toInt() else 0xFFFFFFFF.toInt(), 4)
+                val borderThickness = maxOf(1, (1.5f * (scale / 2f)).toInt())
+                val borderCol = if (tile.slot == next) 0xFF00E676.toInt() else 0xFFFFFFFF.toInt()
+                val bRadius = if (tileRadius > 0) tileRadius + borderThickness else 0
+                fillRoundedRect(graphics, sx0 - borderThickness, sy0 - borderThickness,
+                    sx1 + borderThickness, sy1 + borderThickness, borderCol, bRadius)
             }
-            fillRoundedRect(graphics, tile.x, tile.y, tile.x + TILE_SIZE, tile.y + TILE_SIZE, color ?: NEUTRAL,
-                Config.termGuiRoundness.coerceIn(0, TILE_SIZE / 2))
-            // Item/name puzzles stay legible even with the solver switched off.
-            if (kind == Kind.SELECT || kind == Kind.STARTS || (!Config.terminalSolverEnabled && kind != Kind.MELODY)) {
-                graphics.item(stack, tile.x + 4, tile.y + 4)
-            }
+            fillRoundedRect(graphics, sx0, sy0, sx1, sy1, color ?: NEUTRAL, tileRadius)
+
             val label = TerminalSolver.labelFor(tile.slot, stack, kind)
                 ?: if (kind == Kind.RUBIX && Config.terminalSolverEnabled) {
-                    val current = TerminalHelper.rubixColorIndex(stack)
-                    val wanted = target ?: TerminalSolver.optimalRubixTarget(all)
-                    if (current >= 0 && wanted != null) ((wanted - current + 5) % 5).toString() else null
+                    val current = AutoTerminal.rubixPredicted(tile.slot)
+                        ?: TerminalHelper.rubixColorIndex(stack).takeIf { it >= 0 }
+                    val wanted = target ?: cachedRubixTarget ?: TerminalSolver.optimalRubixTarget(all)
+                    if (current != null && wanted != null) {
+                        val clicks = (wanted - current + 5) % 5
+                        if (clicks > 0) clicks.toString() else null
+                    } else null
                 } else null
-            if (label != null) graphics.text(font, label, tile.x + (TILE_SIZE - font.width(label)) / 2,
-                tile.y + (TILE_SIZE - font.lineHeight) / 2, 0xFFFFFFFF.toInt())
-        }
-        graphics.pose().popMatrix()
 
-        // The click leaves a mark. Without it a pointer that lands on a pane
-        // and a pane that changes colour are two unrelated things on screen —
-        // the flash is what ties the hand to the pane it was for, and it fades
-        // over the same stretch of time the click itself takes to land.
+            if (label != null) {
+                val fontScale = if (scale >= 1.7f) 1.5f else 1.0f
+                if (fontScale > 1.0f) {
+                    graphics.pose().pushMatrix()
+                    graphics.pose().translate(sx0 + sw / 2f, sy0 + sh / 2f)
+                    graphics.pose().scale(fontScale, fontScale)
+                    graphics.text(font, label, (-font.width(label) / 2f).toInt(), (-font.lineHeight / 2f).toInt(), 0xFFFFFFFF.toInt())
+                    graphics.pose().popMatrix()
+                } else {
+                    graphics.text(font, label, sx0 + (sw - font.width(label)) / 2, sy0 + (sh - font.lineHeight) / 2, 0xFFFFFFFF.toInt())
+                }
+            }
+        }
+
+        // The click leaves a subtle mark on the tile in screen space
         val flash = AutoTerminal.lastClickFlash()
         if (Config.termGuiClickFlash && flash != null) {
             val age = System.currentTimeMillis() - flash.second
@@ -207,9 +256,13 @@ object TermGui {
                 val tile = grid.tiles.firstOrNull { it.slot == flash.first }
                 if (tile != null) {
                     val fade = (1f - age / CLICK_FLASH_MS.toFloat())
-                    val alpha = ((fade * fade) * 0xFF).toInt().coerceIn(0, 0xFF)
-                    fillRoundedRect(graphics, tile.x - 3, tile.y - 3, tile.x + TILE_SIZE + 3, tile.y + TILE_SIZE + 3,
-                        (alpha shl 24) or 0x00FFFFFF, 6)
+                    val alpha = (fade * 0x55).toInt().coerceIn(0, 0x55)
+                    val fsx0 = (originX + tile.x * scale).toInt()
+                    val fsy0 = (originY + tile.y * scale).toInt()
+                    val fsx1 = (originX + (tile.x + TILE_SIZE) * scale).toInt()
+                    val fsy1 = (originY + (tile.y + TILE_SIZE) * scale).toInt()
+                    val fr = if (roundness > 0) (roundness * scale).toInt().coerceIn(0, minOf(fsx1 - fsx0, fsy1 - fsy0) / 2) else 0
+                    fillRoundedRect(graphics, fsx0, fsy0, fsx1, fsy1, (alpha shl 24) or 0x00FFFFFF, fr)
                 }
             }
         }
@@ -235,6 +288,25 @@ object TermGui {
         if (!sent) return
         screen.menu.carried = ItemStack.EMPTY
         player.containerMenu.carried = ItemStack.EMPTY
+        if (kind == Kind.RUBIX) {
+            val slotObj = screen.menu.slots.getOrNull(slot)
+            val currentIdx = AutoTerminal.rubixPredicted(slot)
+                ?: TerminalHelper.rubixColorIndex(slotObj?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
+                ?: 0
+            val nextColor = TerminalSolver.rubixAdvance(currentIdx, button.coerceAtMost(1))
+            AutoTerminal.setRubixPredicted(slot, nextColor)
+            val nextItem = when (nextColor) {
+                0 -> net.minecraft.world.item.Items.ORANGE_STAINED_GLASS_PANE
+                1 -> net.minecraft.world.item.Items.YELLOW_STAINED_GLASS_PANE
+                2 -> net.minecraft.world.item.Items.LIME_STAINED_GLASS_PANE
+                3 -> net.minecraft.world.item.Items.LIGHT_BLUE_STAINED_GLASS_PANE
+                4 -> net.minecraft.world.item.Items.RED_STAINED_GLASS_PANE
+                else -> null
+            }
+            if (nextItem != null && slotObj != null) {
+                slotObj.set(ItemStack(nextItem))
+            }
+        }
     }
 
     internal fun canClick(kind: Kind, title: String, all: List<ItemStack>, slot: Int): Boolean =

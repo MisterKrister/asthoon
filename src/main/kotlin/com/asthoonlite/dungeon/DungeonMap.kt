@@ -41,9 +41,6 @@ object DungeonMap : HudElement {
         DungeonMapScanner.reset()
     }
 
-    private var renderTicks = 0
-    private var lastRenderStateReason = ""
-
     /**
      * Two destinations, one layout:
      *
@@ -74,21 +71,9 @@ object DungeonMap : HudElement {
         }
 
         if (earlyReturnReason != null || player == null) {
-            if (earlyReturnReason != null && earlyReturnReason != lastRenderStateReason) {
-                lastRenderStateReason = earlyReturnReason
-                AsthoonLite.LOGGER.info("[AsthoonLite-Debug] DungeonMap not rendering: $earlyReturnReason")
-            }
             // Nothing to show: do not leave a stale frame up in the window.
             MapOverlayWindow.hide()
             return
-        }
-
-        renderTicks++
-        if (renderTicks % 60 == 0 || lastRenderStateReason.isNotEmpty()) {
-            lastRenderStateReason = ""
-            val nonNullRooms = DungeonScanner.rooms.filterNotNull().size
-            val nonNullDoors = DungeonScanner.doors.filterNotNull().size
-            AsthoonLite.LOGGER.info("[AsthoonLite-Debug] DungeonMap rendering: rooms=$nonNullRooms, doors=$nonNullDoors, icons=${DungeonMapScanner.playerIcons.size}, scale=${Config.dungeonMapScale}, pos=(${Config.dungeonMapX},${Config.dungeonMapY})")
         }
 
         val scale = Config.dungeonMapScale.coerceIn(1f, 6f)
