@@ -245,6 +245,14 @@ load, not a warning. Always confirm the descriptor with `javap` first.
 
 ## 7. The regression harness
 
+`dungeon/simulator/TerminalSimulation.kt` owns seeded local practice boards and
+click rules. `TerminalSimulator.kt` presents separate local menus, delayed input,
+and the one-second random restart. `TerminalInput` routes practice to this model
+before the real menu path. `TerminalCapture.kt` records terminal-scoped callbacks
+and state through three input/menu mixins; `TerminalCaptureStream.kt` hands
+ordered JSONL records to an asynchronous file writer. See
+[`TERMINAL_SIMULATOR.md`](TERMINAL_SIMULATOR.md) for settings and the data format.
+
 `src/test/kotlin/com/asthoonlite/dungeon/DungeonRegressionCheck.kt`.
 
 A `main()` of `check(...)` blocks. No JUnit, no assertions framework. It runs

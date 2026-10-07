@@ -285,6 +285,11 @@ object Config {
 
         // 0 = Normal, 1 = Human, 2 = Legit
         var autoTerminalMode       : Int = 1,
+
+        // Local practice and terminal input recording. Existing config keys stay intact.
+        var terminalSimulatorAutoEnabled: Boolean = false,
+        var terminalSimulatorPingMs: Int = 0,
+        var terminalInputLoggingEnabled: Boolean = false,
     )
 
     var data = Data()
@@ -613,6 +618,18 @@ object Config {
     var autoTerminalEnabled: Boolean
         get() = data.autoTerminalEnabled
         set(v) { data.autoTerminalEnabled = v; save() }
+
+    var terminalSimulatorAutoEnabled: Boolean
+        get() = data.terminalSimulatorAutoEnabled
+        set(v) { data.terminalSimulatorAutoEnabled = v; save() }
+
+    var terminalSimulatorPingMs: Int
+        get() = data.terminalSimulatorPingMs.coerceIn(0, 500)
+        set(v) { data.terminalSimulatorPingMs = v.coerceIn(0, 500); save() }
+
+    var terminalInputLoggingEnabled: Boolean
+        get() = data.terminalInputLoggingEnabled
+        set(v) { data.terminalInputLoggingEnabled = v; save() }
 
     var autoTerminalRandomDelay: Boolean
         get() = data.autoTerminalRandomDelay

@@ -158,6 +158,7 @@ abstract class MixinHandledScreen {
         }
 
         if (AutoTerminal.isTerminalTitle(title)) {
+            com.asthoonlite.dungeon.TerminalCapture.onVanillaClick(self, slot?.index ?: slotId, button, actionType)
             if (slot != null && com.asthoonlite.utils.InputCapture.isCapturing) {
                 com.asthoonlite.utils.InputCapture.onTerminalClick(self, slot.index, button, "SLOT_CLICK")
             }

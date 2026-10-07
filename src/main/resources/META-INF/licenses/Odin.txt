@@ -1,6 +1,8 @@
-Odin terminal GUI adaptation
+Odin terminal GUI and simulator adaptation
 Source: https://github.com/odtheking/Odin/tree/833e0533ef9c47529b790612627a65618ebd5a58
 CustomTermGui.kt, MelodyGui.kt and TerminalTypes.kt
+TerminalSimulator.kt and termsim/{TermSimGUI,PanesSim,RubixSim,NumbersSim,StartsWithSim,SelectAllSim,MelodySim}.kt
+Simulator adapted to ASL's local menu, input recorder and continuous practice loop.
 
 BSD 3-Clause License
 
