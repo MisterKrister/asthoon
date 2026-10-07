@@ -21,9 +21,22 @@ applies each click. The delay setting is fixed for each board. Inputs apply on
 the client tick, so records include both the scheduled time and actual apply
 time. The simulator owns its items and does not change the player's inventory.
 
-The custom grid shows item icons and hover names for starts-with and select-color
-practice. Turning off solver hints still leaves the underlying items visible.
-Wrong answers and repeated selections reach the simulator and are recorded.
+Starts-with and select-color practice use the same gray tile background as the
+same-color terminal. Hovering a tile shows its item name; solver hints still
+mark the correct choices. Wrong answers and repeated selections reach the
+simulator and are recorded.
+
+On the same-color practice board, a manual left click advances or reverses the
+color ring using the shorter direction toward the board's selected target.
+An explicit right click still reverses the ring. Records keep both the requested
+mouse button and the effective button applied to the model.
+
+Live number terminals lay out their actual numbered panes, including wider
+boards, and read formatted numeric names with item counts as a fallback.
+
+When the local Simon Says device reports completion, ASL stops its current aim
+and input sequence and automatically closes an active `/asl capture` session.
+The Auto Simon Says setting remains enabled for the next run.
 
 ## Collecting data
 

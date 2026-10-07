@@ -903,6 +903,7 @@ fun main() {
         terminalSimulationChecks()
         terminalPracticeRegressionChecks()
         terminalCaptureRegressionChecks()
+        simonDeviceRegressionChecks()
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)

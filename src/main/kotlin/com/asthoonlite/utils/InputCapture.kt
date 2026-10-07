@@ -125,7 +125,7 @@ object InputCapture {
 
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             if (isCapturing) {
-                stopCapture()
+                stopCapture("disconnect")
             }
         }
     }
@@ -190,11 +190,12 @@ object InputCapture {
         }
 
         player?.sendSystemMessage(
-            Component.literal("§a[AsthoonLite] §fStarted input capture! Do the device or terminals, then run §e/asl capture §fto finish.")
+            Component.literal("§a[AsthoonLite] §fStarted input capture. Simon Says stops recording when the device completes; §e/asl capture §fstops other recordings.")
         )
     }
 
-    fun stopCapture() {
+    @JvmOverloads
+    fun stopCapture(reason: String = "manual") {
         if (!isCapturing) return
         if (currentTerminalTitle != null) {
             closeActiveTerminal("CAPTURE_STOPPED")
@@ -202,7 +203,7 @@ object InputCapture {
 
         val elapsedMs = System.currentTimeMillis() - startTimeMs
         val seconds = "%.1f".format(elapsedMs / 1000.0)
-        log("[STOP] Capture stopped. Total events=$eventCount, duration=${elapsedMs}ms (${seconds}s)")
+        log("[STOP] Capture stopped. reason=$reason Total events=$eventCount, duration=${elapsedMs}ms (${seconds}s)")
 
         try {
             logWriter?.flush()
@@ -216,6 +217,13 @@ object InputCapture {
         mc.player?.sendSystemMessage(
             Component.literal("§a[AsthoonLite] §fStopped capture. Recorded §e$eventCount §fevents over §e${seconds}s§f. Saved to game log and §e.minecraft/asthoonlite/captures/capture_latest.log§f.")
         )
+    }
+
+    /** A server-confirmed Simon completion ends this recording automatically. */
+    fun onSimonCompleted(reason: String, durationNs: Long?, observedRounds: Int) {
+        if (!isCapturing) return
+        log("[SS_COMPLETE] source=$reason durationNs=$durationNs observedRounds=$observedRounds t=+${System.currentTimeMillis() - startTimeMs}ms")
+        stopCapture("simon_completed")
     }
 
     private fun log(msg: String) {
