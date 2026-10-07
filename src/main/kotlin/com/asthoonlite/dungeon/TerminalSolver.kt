@@ -263,7 +263,10 @@ object TerminalSolver {
         val type = kindOf(cleanTitle(screenTitle)) ?: return 0
         val all = items.take(type.slotCount)
         return when (type) {
-            Kind.ORDER -> pendingNumbers(all).size
+            Kind.ORDER -> {
+                val count = pendingNumbers(all).size
+                if (count == 0) 0 else minOf(NUMBER_TERM_COUNT, count)
+            }
             Kind.RUBIX -> {
                 val target = rubixTarget ?: optimalRubixTarget(all) ?: return 0
                 rubixPanes(all).sumOf { rubixDistance(it.second, target) }

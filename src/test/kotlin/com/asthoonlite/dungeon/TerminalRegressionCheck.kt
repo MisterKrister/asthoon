@@ -253,7 +253,9 @@ internal fun terminalMotionAndGuiChecks() {
         check(TerminalSolver.clickCandidates("Click in order!", named) == listOf(liveSlots.last())) {
             "formatted numeric names must order count-one stacks"
         }
-        check(TerminalSolver.goalFor("Click in order!", named) == 14)
+        check(TerminalSolver.goalFor("Click in order!", named) == 10) {
+            "real numbers terminals display 10, not 14"
+        }
         check(TerminalSolver.numberSlots(named) == liveSlots)
         check(TermGui.requiredSlotsFor(Kind.ORDER, named) == 26) { "the live rightmost number is slot 25" }
         val liveGrid = TermGui.layout(Kind.ORDER, 640, 360, 150, 4, orderSlots = TerminalSolver.numberSlots(named))
@@ -268,7 +270,13 @@ internal fun terminalMotionAndGuiChecks() {
         check(TerminalSolver.numberSlots(named) == liveSlots) { "completed panes must preserve the grid geometry" }
         check(TerminalSolver.labelFor(completedSlot, named[completedSlot], Kind.ORDER) == null)
         check(TerminalSolver.clickCandidates("Click in order!", named) == listOf(liveSlots[liveSlots.lastIndex - 1]))
-        check(TerminalSolver.goalFor("Click in order!", named) == 13)
+        check(TerminalSolver.goalFor("Click in order!", named) == 10) { "remaining count capped at 10" }
+
+        // When fewer than 10 are left, exact count is returned
+        for (i in 0 until 6) {
+            named[liveSlots[i]] = ItemStack(Items.LIME_STAINED_GLASS_PANE)
+        }
+        check(TerminalSolver.goalFor("Click in order!", named) == 7) { "below 10 remaining returns exact count" }
 
         val counted = MutableList(36) { ItemStack(Items.BLACK_STAINED_GLASS_PANE) }
         liveSlots.forEachIndexed { index, slot -> counted[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE, index + 1) }
@@ -514,5 +522,25 @@ internal fun terminalMotionAndGuiChecks() {
     check(abs(F7Devices.easeInOutCubic(0.5f) - 0.5f) < 0.001f)
     check(F7Devices.easeInOutCubic(0.2f) < 0.2f) { "ease-in must start slow" }
     check(F7Devices.easeInOutCubic(0.8f) > 0.8f) { "ease-out must end slow" }
+
+    // ── Legit & Human Delay empirical checks ──
+    val legitPanes = (1..50).map {
+        AutoTerminal.computeClickDelay(TerminalMode.LEGIT, 180, 20, 160, 200, true, 50, 10, 11, Kind.PANES)
+    }
+    check(legitPanes.all { it in 130L..250L }) { "Legit PANES delay must stay in empirical range: $legitPanes" }
+    val legitOrder = (1..50).map {
+        AutoTerminal.computeClickDelay(TerminalMode.LEGIT, 180, 20, 160, 200, true, 50, 11, 24, Kind.ORDER)
+    }
+    check(legitOrder.all { it in 160L..310L }) { "Legit ORDER delay must stay in empirical range: $legitOrder" }
+
+    val legitFirst = (1..50).map {
+        AutoTerminal.computeFirstClickDelay(TerminalMode.LEGIT, 450, true, 50)
+    }
+    check(legitFirst.all { it in 430L..620L }) { "Legit first click delay must stay in empirical range: $legitFirst" }
+
+    val humanDelays = (1..50).map {
+        AutoTerminal.computeClickDelay(TerminalMode.HUMAN, 180, 20, 160, 200, true, 50, 10, 19, Kind.RUBIX)
+    }
+    check(humanDelays.all { it in 120L..280L }) { "Human delays must stay in sensible human range: $humanDelays" }
 }
 

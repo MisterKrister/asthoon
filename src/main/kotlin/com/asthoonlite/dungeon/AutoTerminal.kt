@@ -277,7 +277,7 @@ object AutoTerminal {
         // while the pointer was still crossing the grid.
         if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
         if (kind == Kind.RUBIX && click.slot == lastSlot && now - lastClickAt < RUBIX_REPEAT_GUARD_MS) return
-        fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs(lastSlot.takeIf { it >= 0 }, click.slot))
+        fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs(lastSlot.takeIf { it >= 0 }, click.slot, kind))
     }
 
     /**
@@ -638,70 +638,109 @@ object AutoTerminal {
         return faster to slower
     }
 
-    private fun nextFirstClickDelayMs(): Long {
-        return when (Config.autoTerminalMode) {
+    internal fun computeFirstClickDelay(
+        mode: Int,
+        firstClickDelayMs: Int,
+        randomDelay: Boolean,
+        humanize: Int,
+        sample: Double = gaussianSample()
+    ): Long {
+        return when (mode) {
             TerminalMode.LEGIT -> {
-                // Strictly mimics recorded user data: ~470ms with natural variation (450ms - 510ms in log)
-                val base = 470L
-                val sample = gaussianSample()
-                (base + sample * 16.0).toLong().coerceIn(440L, 510L)
+                // Strictly mimics recorded user data (median 506ms, mean 518ms, 25% 445ms, 75% 560ms)
+                val base = 508L
+                (base + sample * 35.0).toLong().coerceIn(430L, 620L)
             }
             TerminalMode.HUMAN -> {
-                // Scaled from empirical baseline (470ms) using slider ratio against default (430ms)
-                val ratio = Config.autoTerminalFirstClickDelayMs.coerceAtLeast(0) / 430.0f
-                val base = (470f * ratio).toLong().coerceAtLeast(10L)
-                if (!Config.autoTerminalRandomDelay) return base
-                val spread = (FIRST_CLICK_SPREAD_MS * (Config.autoTerminalHumanize.coerceIn(0, 100) / 100f)).toLong().coerceAtLeast(4L)
-                delayFor(base, spread, spread, gaussianSample())
+                // Scaled from empirical baseline (508ms) using slider ratio against default (450ms)
+                val ratio = firstClickDelayMs.coerceAtLeast(0) / 450.0f
+                val base = (508f * ratio).toLong().coerceAtLeast(10L)
+                if (!randomDelay) return base
+                val spread = (35L * (humanize.coerceIn(0, 100) / 100f)).toLong().coerceAtLeast(4L)
+                delayFor(base, spread, spread, sample)
             }
             else -> { // NORMAL (RSM / Noamm standard)
-                val base = Config.autoTerminalFirstClickDelayMs.coerceAtLeast(0).toLong()
-                if (!Config.autoTerminalRandomDelay) return base
-                delayFor(base, FIRST_CLICK_SPREAD_MS, FIRST_CLICK_SPREAD_MS, gaussianSample())
+                val base = firstClickDelayMs.coerceAtLeast(0).toLong()
+                if (!randomDelay) return base
+                delayFor(base, FIRST_CLICK_SPREAD_MS, FIRST_CLICK_SPREAD_MS, sample)
             }
         }
     }
 
-    internal fun nextClickDelayMs(fromSlot: Int? = null, toSlot: Int? = null): Long {
-        return when (Config.autoTerminalMode) {
+    private fun nextFirstClickDelayMs(): Long = computeFirstClickDelay(
+        mode = Config.autoTerminalMode,
+        firstClickDelayMs = Config.autoTerminalFirstClickDelayMs,
+        randomDelay = Config.autoTerminalRandomDelay,
+        humanize = Config.autoTerminalHumanize
+    )
+
+    internal fun computeClickDelay(
+        mode: Int,
+        clickDelayMs: Int,
+        spreadMs: Int,
+        minDelayMs: Int,
+        maxDelayMs: Int,
+        randomDelay: Boolean,
+        humanize: Int,
+        fromSlot: Int? = null,
+        toSlot: Int? = null,
+        kind: Kind? = null,
+        sample: Double = gaussianSample()
+    ): Long {
+        return when (mode) {
             TerminalMode.LEGIT -> {
-                // Strictly mimics recorded user data: mean ~151ms, spread ±12ms (138ms - 177ms in log)
-                val base = delayFor(150L, 12L, 25L, gaussianSample())
+                // Strictly mimics recorded user data across 385 clicks:
+                // Overall median 186ms, mean 208ms (PANES 166ms, RUBIX 177ms, STARTS 184ms, SELECT 198ms, ORDER 217ms)
+                val kindBias = when (kind) {
+                    Kind.PANES -> -18L
+                    Kind.RUBIX -> -8L
+                    Kind.STARTS -> 0L
+                    Kind.SELECT -> +12L
+                    Kind.ORDER -> +28L
+                    null, Kind.MELODY -> 0L
+                }
+                val base = delayFor(180L + kindBias, 18L, 30L, sample)
                 if (fromSlot == null || toSlot == null || fromSlot == toSlot) return base
                 val dx = kotlin.math.abs((fromSlot % 9) - (toSlot % 9))
                 val dy = kotlin.math.abs((fromSlot / 9) - (toSlot / 9))
                 val dist = dx + dy
-                val bonus = if (dist > 1) (dist * 2.5f).toLong().coerceIn(3L, 22L) else 0L
+                val bonus = if (dist > 1) (dist * 4.0f).toLong().coerceIn(4L, 35L) else 0L
                 base + bonus
             }
             TerminalMode.HUMAN -> {
-                // Scaled from empirical baseline (150ms) using slider ratio against default (180ms)
-                val ratio = Config.autoTerminalClickDelayMs.coerceAtLeast(0) / 180.0f
-                val mean = (150f * ratio).toLong().coerceAtLeast(20L)
-                val spreadSlider = Config.autoTerminalDelaySpreadMs.coerceAtLeast(0).toLong()
-                val human = Config.autoTerminalHumanize.coerceIn(0, 100) / 100f
-                val effectiveSpread = if (Config.autoTerminalRandomDelay) {
-                    ((12L + spreadSlider * 0.4f) * human).toLong().coerceAtLeast(4L)
+                // Scaled from empirical baseline (180ms) using slider ratio against default (180ms)
+                val kindBias = when (kind) {
+                    Kind.PANES -> -18L
+                    Kind.RUBIX -> -8L
+                    Kind.STARTS -> 0L
+                    Kind.SELECT -> +12L
+                    Kind.ORDER -> +28L
+                    null, Kind.MELODY -> 0L
+                }
+                val ratio = clickDelayMs.coerceAtLeast(0) / 180.0f
+                val mean = ((180L + kindBias) * ratio).toLong().coerceAtLeast(20L)
+                val spreadSlider = spreadMs.coerceAtLeast(0).toLong()
+                val human = humanize.coerceIn(0, 100) / 100f
+                val effectiveSpread = if (randomDelay) {
+                    ((18L + spreadSlider * 0.45f) * human).toLong().coerceAtLeast(4L)
                 } else 0L
                 val base = if (effectiveSpread > 0L) {
-                    delayFor(mean, effectiveSpread, effectiveSpread, gaussianSample())
+                    delayFor(mean, effectiveSpread, effectiveSpread, sample)
                 } else mean
 
                 if (human <= 0f || fromSlot == null || toSlot == null || fromSlot == toSlot) return base
                 val dx = kotlin.math.abs((fromSlot % 9) - (toSlot % 9))
                 val dy = kotlin.math.abs((fromSlot / 9) - (toSlot / 9))
                 val dist = dx + dy
-                val bonus = (dist * 3.0f * human).toLong().coerceIn(0L, 25L)
+                val bonus = (dist * 4.0f * human).toLong().coerceIn(0L, 35L)
                 base + bonus
             }
             else -> { // NORMAL (RSM / Noamm standard)
-                val mean = Config.autoTerminalClickDelayMs.coerceAtLeast(0).toLong()
-                if (!Config.autoTerminalRandomDelay) return mean
-                val (faster, slower) = delaySpread(
-                    mean.toInt(), Config.autoTerminalMinRandomDelayMs, Config.autoTerminalMaxRandomDelayMs
-                )
-                val base = delayFor(mean, faster, slower, gaussianSample())
-                val human = Config.autoTerminalHumanize.coerceIn(0, 100) / 100f
+                val mean = clickDelayMs.coerceAtLeast(0).toLong()
+                if (!randomDelay) return mean
+                val (faster, slower) = delaySpread(mean.toInt(), minDelayMs, maxDelayMs)
+                val base = delayFor(mean, faster, slower, sample)
+                val human = humanize.coerceIn(0, 100) / 100f
                 if (human <= 0f || fromSlot == null || toSlot == null || fromSlot == toSlot) return base
 
                 val dx = kotlin.math.abs((fromSlot % 9) - (toSlot % 9))
@@ -712,6 +751,19 @@ object AutoTerminal {
             }
         }
     }
+
+    internal fun nextClickDelayMs(fromSlot: Int? = null, toSlot: Int? = null, kind: Kind? = null): Long = computeClickDelay(
+        mode = Config.autoTerminalMode,
+        clickDelayMs = Config.autoTerminalClickDelayMs,
+        spreadMs = Config.autoTerminalDelaySpreadMs,
+        minDelayMs = Config.autoTerminalMinRandomDelayMs,
+        maxDelayMs = Config.autoTerminalMaxRandomDelayMs,
+        randomDelay = Config.autoTerminalRandomDelay,
+        humanize = Config.autoTerminalHumanize,
+        fromSlot = fromSlot,
+        toSlot = toSlot,
+        kind = kind
+    )
 
     fun onEscape() {
         suppressReopenUntil = System.currentTimeMillis() + 750L

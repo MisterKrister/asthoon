@@ -198,8 +198,8 @@ object F7Devices {
                     player.yRot = aimDestYaw
                     player.xRot = aimDestPitch
                     aimState = AimState.SETTLED
-                    // Human aim settlement time: ~75-120ms before clicking
-                    aimSettledUntil = now + Random.nextLong(75L, 120L)
+                    // Empirical aim settlement time from user data: ~15-30ms before clicking
+                    aimSettledUntil = now + Random.nextLong(15L, 30L)
                     if (aimTargetBlock == ssStart) {
                         nextStartClickAt = aimSettledUntil
                     }
@@ -237,8 +237,8 @@ object F7Devices {
         val dp = destPitch - curPitch
         val angleDist = hypot(dy, dp)
 
-        // Turn duration based on user capture: ~160ms for tiny shifts up to ~420ms for large sweeps
-        val duration = (160L + (angleDist * 4.2f).toLong()).coerceIn(160L, 420L)
+        // Turn duration based on user capture: ~75ms for nearby buttons up to ~145ms for full diagonal sweeps
+        val duration = (70L + (angleDist * 1.8f).toLong()).coerceIn(75L, 145L)
 
         aimTargetVec = target
         aimTargetBlock = pos
@@ -339,10 +339,10 @@ object F7Devices {
                     ssStartClicked = true
                     startClicksDone = 0
                     aimState = AimState.POST_CLICK_PAUSE
-                    postClickPauseUntil = now + Random.nextLong(110L, 150L)
+                    postClickPauseUntil = now + Random.nextLong(20L, 45L)
                 } else {
-                    // ~7 CPS: ~140ms cadence between start clicks
-                    nextStartClickAt = now + Random.nextLong(135L, 145L)
+                    // ~9-10 CPS cadence between start clicks (95-115ms)
+                    nextStartClickAt = now + Random.nextLong(95L, 115L)
                 }
             }
             return
@@ -363,7 +363,7 @@ object F7Devices {
                 }
             }
             aimState = AimState.POST_CLICK_PAUSE
-            postClickPauseUntil = now + Random.nextLong(80L, 120L)
+            postClickPauseUntil = now + Random.nextLong(5L, 20L)
             return
         }
 
@@ -371,7 +371,7 @@ object F7Devices {
 
         // 3. Check if device needs to be started
         if (!ssStartClicked && ssSequence.isEmpty()) {
-            if (level.getBlockState(ssStart).block == Blocks.STONE_BUTTON && now - lastSSClick > 300L) {
+            if (level.getBlockState(ssStart).block == Blocks.STONE_BUTTON && now - lastSSClick > 150L) {
                 startClicksDone = 0
                 nextStartClickAt = 0L
                 startAim(player, ssStart)
@@ -388,7 +388,7 @@ object F7Devices {
                     ssSequence.removeFirst()
                     return
                 }
-                if (now - lastSSClick > 70L) {
+                if (now - lastSSClick > 30L) {
                     startAim(player, expected)
                 }
             }
