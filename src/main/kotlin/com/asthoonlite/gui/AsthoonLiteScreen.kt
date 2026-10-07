@@ -482,6 +482,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 NoteRow("Join a world to practice. Records every terminal; next random board 1 second after completion. Esc stops."),
                 ToggleRow("Use Auto Terminal in Simulator", "Uses your enabled Auto Terminal settings instead of manual practice",
                     { Config.terminalSimulatorAutoEnabled }, { Config.terminalSimulatorAutoEnabled = it }),
+                ToggleRow("No Melody in Simulator", "Excludes Melody from simulator rounds",
+                    { Config.terminalSimulatorNoMelody }, { Config.terminalSimulatorNoMelody = it }),
                 WidgetRow(IntSlider(fullX, 0, fullW, 24, 0, 500, Config.terminalSimulatorPingMs, "Simulator Ping: ", " ms") {
                     Config.terminalSimulatorPingMs = it
                 }),

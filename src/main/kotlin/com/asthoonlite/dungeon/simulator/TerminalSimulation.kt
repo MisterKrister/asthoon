@@ -263,8 +263,10 @@ class TerminalSimulation(
         private val RUBIX_ITEMS = listOf(Items.ORANGE_STAINED_GLASS_PANE, Items.YELLOW_STAINED_GLASS_PANE,
             Items.GREEN_STAINED_GLASS_PANE, Items.BLUE_STAINED_GLASS_PANE, Items.RED_STAINED_GLASS_PANE)
 
-        fun random(seed: Long, openedAtMs: Long): TerminalSimulation =
-            TerminalSimulation(Kind.entries.random(Random(seed)), seed, openedAtMs)
+        fun random(seed: Long, openedAtMs: Long, noMelody: Boolean = false): TerminalSimulation {
+            val pool = if (noMelody) Kind.entries.filter { it != Kind.MELODY } else Kind.entries
+            return TerminalSimulation(pool.random(Random(seed)), seed, openedAtMs)
+        }
 
         /** Registry path and displayed name in the same stable item order. */
         internal fun startsCatalogChoice(catalog: List<Pair<String, String>>, random: Random): StartsCatalogChoice {

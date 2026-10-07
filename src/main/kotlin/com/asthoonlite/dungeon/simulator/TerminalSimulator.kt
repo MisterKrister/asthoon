@@ -71,7 +71,7 @@ object TerminalSimulator {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return stop("disconnect")
         val seed = Random.nextLong()
-        val model = TerminalSimulation.random(seed, nowMs())
+        val model = TerminalSimulation.random(seed, nowMs(), Config.terminalSimulatorNoMelody)
         val inventory = Inventory(player, PlayerEquipment(player))
         val container = SimpleContainer(model.items.size)
         val rows = model.items.size / 9
@@ -96,6 +96,7 @@ object TerminalSimulator {
             "seed" to seed, "odin_revision" to ODIN_REVISION,
             "ping_ms" to next.pingMs, "automation_requested" to useAutomation,
             "automatic_inputs_enabled" to (useAutomation && Config.autoTerminalEnabled),
+            "no_melody" to Config.terminalSimulatorNoMelody,
             "initial_correct_slots" to model.correctSlots
         ))
         AsthoonLite.LOGGER.info("[ASL-TermSim] Open #{} {} seed={} ping={}ms mode={}",

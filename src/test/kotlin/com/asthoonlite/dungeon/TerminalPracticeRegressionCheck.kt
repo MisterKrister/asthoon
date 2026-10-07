@@ -5,8 +5,17 @@ import com.asthoonlite.dungeon.simulator.TerminalPracticeClock
 
 fun terminalPracticeRegressionChecks() {
     val defaults = Config.Data()
-    check(!defaults.terminalSimulatorAutoEnabled && !defaults.terminalInputLoggingEnabled)
+    check(!defaults.terminalSimulatorAutoEnabled && !defaults.terminalInputLoggingEnabled && !defaults.terminalSimulatorNoMelody)
     check(defaults.terminalSimulatorPingMs == 0)
+
+    val noMelodySamples = (1..100).map { com.asthoonlite.dungeon.simulator.TerminalSimulation.random(it.toLong(), 0L, noMelody = true).kind }
+    check(noMelodySamples.all { it != TerminalSolver.Kind.MELODY }) {
+        "terminal simulation with noMelody=true must never generate a melody board"
+    }
+    val defaultSamples = (1..100).map { com.asthoonlite.dungeon.simulator.TerminalSimulation.random(it.toLong(), 0L, noMelody = false).kind }
+    check(defaultSamples.any { it == TerminalSolver.Kind.MELODY }) {
+        "terminal simulation with noMelody=false must include melody"
+    }
     val clock = TerminalPracticeClock()
     check(clock.enqueue(10, 0, "manual", 100, 200))
     check(clock.enqueue(11, 2, "automatic", 100, 200))

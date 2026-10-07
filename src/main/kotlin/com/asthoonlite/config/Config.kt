@@ -290,6 +290,7 @@ object Config {
         var terminalSimulatorAutoEnabled: Boolean = false,
         var terminalSimulatorPingMs: Int = 0,
         var terminalInputLoggingEnabled: Boolean = false,
+        var terminalSimulatorNoMelody: Boolean = false,
     )
 
     var data = Data()
@@ -630,6 +631,10 @@ object Config {
     var terminalInputLoggingEnabled: Boolean
         get() = data.terminalInputLoggingEnabled
         set(v) { data.terminalInputLoggingEnabled = v; save() }
+
+    var terminalSimulatorNoMelody: Boolean
+        get() = data.terminalSimulatorNoMelody
+        set(v) { data.terminalSimulatorNoMelody = v; save() }
 
     var autoTerminalRandomDelay: Boolean
         get() = data.autoTerminalRandomDelay
