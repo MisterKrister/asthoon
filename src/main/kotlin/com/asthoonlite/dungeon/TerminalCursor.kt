@@ -264,7 +264,7 @@ object TerminalCursor {
      * mechanical one passes zero.
      */
     internal fun travelDurationMs(distance: Float, speedPercent: Int, jitter: Float): Long {
-        val base = 85f + distance.coerceAtLeast(0f) * 0.62f
+        val base = 95f + distance.coerceAtLeast(0f) * 0.68f
         val speed = speedPercent.coerceIn(25, 400) / 100f
         val raw = (base / speed) * (1f + jitter.coerceIn(-1f, 1f) * 0.18f)
         return raw.coerceIn(70f, 420f).toLong()
@@ -503,8 +503,17 @@ object TerminalCursor {
             val travelTarget = (available / (1f + SETTLE_FRACTION * human)) * 0.94f * speedFactor
             travelTarget.toLong().coerceIn(MIN_FLIGHT_MS, MAX_FLIGHT_MS)
         } else {
-            // Speed: distance plus the speed slider, spread by how human the run is.
-            travelDurationMs(dist, speed, timingJitter(gaussianUnit(), human))
+            val baseTravel = travelDurationMs(dist, speed, timingJitter(gaussianUnit(), human))
+            // Distribute motion smoothly across the available beat in human/legit modes
+            // so the cursor glides with authentic weight instead of snapping across in the first tens of ms
+            if (mode != TerminalMode.NORMAL && window > MIN_FLIGHT_MS) {
+                val d = dwellMs(human)
+                val available = (window - d).coerceAtLeast(MIN_FLIGHT_MS)
+                val stretched = (available * 0.78f).toLong().coerceIn(MIN_FLIGHT_MS, MAX_FLIGHT_MS)
+                maxOf(baseTravel, minOf(stretched, available - settleMs(baseTravel, human)))
+            } else {
+                baseTravel
+            }
         }
 
         // Arc: the slider says how far the path bows; humanize says how much
@@ -526,16 +535,29 @@ object TerminalCursor {
         // hand actually shows.
         val tremor = jitterSetting.coerceIn(0, 100) / 100f * human
 
-        val ease = if (mode == TerminalMode.LEGIT) {
-            // User captured authentic cubic bezier easing
-            val spread = 0.04f
-            CursorMotion.Ease(
-                (0.25f + gaussianUnit() * spread).coerceIn(0f, 1f),
-                0.05f,
-                (0.15f + gaussianUnit() * spread).coerceIn(0f, 1f),
-                0.95f
-            )
-        } else variedEase(human)
+        val ease = when (mode) {
+            TerminalMode.LEGIT -> {
+                // Smooth authentic cubic bezier with gentle acceleration and natural deceleration
+                val spread = 0.04f
+                CursorMotion.Ease(
+                    (0.32f + gaussianUnit() * spread).coerceIn(0f, 1f),
+                    0.12f,
+                    (0.24f + gaussianUnit() * spread).coerceIn(0f, 1f),
+                    0.96f
+                )
+            }
+            TerminalMode.HUMAN -> {
+                // Organic smooth easing, less snappy initial flick
+                val spread = 0.06f
+                CursorMotion.Ease(
+                    (0.30f + gaussianUnit() * spread).coerceIn(0f, 1f),
+                    0.10f,
+                    (0.22f + gaussianUnit() * spread).coerceIn(0f, 1f),
+                    0.96f
+                )
+            }
+            else -> variedEase(human)
+        }
 
         motion.glideTo(
             CursorMotion.Point(targetX, targetY), now, travel, bow,
@@ -899,25 +921,63 @@ object TerminalCursor {
     fun isMoving(now: Long): Boolean = motion.moving(now)
 
     /**
-     * Screen-space centre of [slot], where the pointer is aimed. The container
+     * Compute the organic off-center offset in screen pixels for a slot/button.
+     * Guaranteed to stay inside the button face and never click dead-center in Human/Legit mode.
+     */
+    internal fun buttonOffset(
+        mode: Int,
+        humanize: Int,
+        inTermGui: Boolean,
+        scale: Float,
+        slotIndex: Int,
+        clicksCount: Int,
+        containerId: Int
+    ): Pair<Float, Float> {
+        if (mode == TerminalMode.NORMAL) return 0f to 0f
+        val human = if (mode == TerminalMode.LEGIT) 0.85f else (humanize.coerceIn(0, 100) / 100f)
+        if (human <= 0f) return 0f to 0f
+
+        val minR = if (inTermGui) (2.5f * scale) else 1.8f
+        val maxR = if (inTermGui) (6.8f * scale) else 4.2f
+
+        var h = slotIndex * 31277 + clicksCount * 611953 + containerId * 1013904223
+        h = h xor (h ushr 16)
+        h *= 0x45d9f3b
+        h = h xor (h ushr 16)
+
+        val angle = ((h and 0xFFFF) / 65535.0f) * 6.2831853f
+        val radiusNorm = (((h ushr 16) and 0xFFFF) / 65535.0f)
+        val r = (minR + (maxR - minR) * radiusNorm) * human
+
+        val offX = r * kotlin.math.cos(angle)
+        val offY = r * kotlin.math.sin(angle)
+        return offX to offY
+    }
+
+    /**
+     * Screen-space centre of [slotIndex], where the pointer is aimed. The container
      * origin comes from the accessor because `leftPos`/`topPos` are protected —
      * the slot coordinates alone are relative to the container, not the screen.
      */
     fun targetFor(screen: AbstractContainerScreen<*>, slotIndex: Int): Pair<Float, Float>? {
-        val base = if (TermGui.active(screen)) TermGui.gridFor(screen)?.center(slotIndex)
+        val inTermGui = TermGui.active(screen)
+        val grid = if (inTermGui) TermGui.gridFor(screen) else null
+        val base = if (inTermGui) grid?.center(slotIndex)
         else {
             val slot = screen.menu.slots.getOrNull(slotIndex) ?: return null
             val acc = screen as? AbstractContainerScreenAccessor ?: return null
             (acc.leftPos + slot.x + 8f) to (acc.topPos + slot.y + 8f)
         } ?: return null
 
-        val human = Config.autoTerminalHumanize.coerceIn(0, 100) / 100f
-        if (human <= 0f) return base
-
-        // Subtle organic off-center aiming within the tile
-        val h = slotIndex * 37 + AutoTerminal.clicksCount() * 19
-        val offX = (((h % 7) - 3) * 0.9f * human)
-        val offY = ((((h / 7) % 7) - 3) * 0.9f * human)
+        val (offX, offY) = buttonOffset(
+            mode = Config.autoTerminalMode,
+            humanize = Config.autoTerminalHumanize,
+            inTermGui = inTermGui,
+            scale = grid?.scale ?: 1f,
+            slotIndex = slotIndex,
+            clicksCount = AutoTerminal.clicksCount(),
+            containerId = screen.menu.containerId
+        )
         return (base.first + offX) to (base.second + offY)
     }
 }

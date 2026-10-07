@@ -174,15 +174,33 @@ object F7Devices {
         else 1f - (-2f * clamped + 2f).let { it * it * it } / 2f
     }
 
+    internal fun aimDuration(angleDist: Float, slow: Boolean): Long =
+        if (slow) (320L + (angleDist * 3.0f).toLong()).coerceIn(360L, 480L)
+        else (70L + (angleDist * 1.8f).toLong()).coerceIn(75L, 145L)
+
     private fun updateCameraAim(player: net.minecraft.client.player.LocalPlayer, now: Long) {
         if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) {
             cancelSimonAim()
             return
         }
         val target = aimTargetBlock
-        if (target != null && Minecraft.getInstance().level?.getBlockState(target)?.block != Blocks.STONE_BUTTON) {
-            cancelSimonAim()
-            return
+        val level = Minecraft.getInstance().level ?: return
+        if (target != null) {
+            if (target == ssStart) {
+                if (level.getBlockState(target).block != Blocks.STONE_BUTTON) {
+                    cancelSimonAim()
+                    return
+                }
+            } else if (target in ssButtons) {
+                if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON &&
+                    level.getBlockState(target).block != Blocks.STONE_BUTTON) {
+                    cancelSimonAim()
+                    return
+                }
+            } else {
+                cancelSimonAim()
+                return
+            }
         }
         when (aimState) {
             AimState.TURNING -> {
@@ -218,7 +236,7 @@ object F7Devices {
         }
     }
 
-    private fun startAim(player: net.minecraft.client.player.LocalPlayer, pos: BlockPos) {
+    private fun startAim(player: net.minecraft.client.player.LocalPlayer, pos: BlockPos, slow: Boolean = false) {
         // Target west face of button at x=110.875 with organic micro-offset
         val seed = (pos.x * 31 + pos.y * 17 + pos.z * 13)
         val offY = (((seed % 7) - 3) * 0.02)
@@ -237,8 +255,7 @@ object F7Devices {
         val dp = destPitch - curPitch
         val angleDist = hypot(dy, dp)
 
-        // Turn duration based on user capture: ~75ms for nearby buttons up to ~145ms for full diagonal sweeps
-        val duration = (70L + (angleDist * 1.8f).toLong()).coerceIn(75L, 145L)
+        val duration = aimDuration(angleDist, slow)
 
         aimTargetVec = target
         aimTargetBlock = pos
@@ -260,7 +277,7 @@ object F7Devices {
         if (simonLifecycle.completed) return
 
         val block = state.block
-        if (pos == aimTargetBlock && block != Blocks.STONE_BUTTON) cancelSimonAim()
+        if (pos == aimTargetBlock && block != Blocks.STONE_BUTTON && (pos == ssStart || (simonLifecycle.completed || !simonLifecycle.active))) cancelSimonAim()
         if (pos == ssStart && block == Blocks.STONE_BUTTON &&
             state.getValue(net.minecraft.world.level.block.ButtonBlock.POWERED)) {
             simonLifecycle.observeRun(System.nanoTime())
@@ -353,18 +370,30 @@ object F7Devices {
             val targetBlock = aimTargetBlock
             val targetVec = aimTargetVec
             if (targetBlock != null && targetVec != null && level.getBlockState(targetBlock).block == Blocks.STONE_BUTTON) {
-                val hit = BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
-                mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
-                lastSSClick = now
-                ssLastClientTick = DungeonServerTick.current
+                if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON &&
+                    ssSequence.isNotEmpty() && ssSequence.first() == targetBlock) {
+                    val hit = BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
+                    mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+                    lastSSClick = now
+                    ssLastClientTick = DungeonServerTick.current
 
-                if (ssSequence.isNotEmpty() && ssSequence.first() == targetBlock) {
                     ssSequence.removeFirst()
+                    aimState = AimState.POST_CLICK_PAUSE
+                    postClickPauseUntil = now + Random.nextLong(5L, 20L)
+                    return
                 }
             }
-            aimState = AimState.POST_CLICK_PAUSE
-            postClickPauseUntil = now + Random.nextLong(5L, 20L)
-            return
+        }
+
+        // Inter-round waiting: smoothly look down towards the start button of the sequence
+        // at a relaxed, human pace (~360-480ms), arriving well in time before buttons spawn.
+        val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
+        if (!boardReady && (simonLifecycle.active || ssStartClicked) && !simonLifecycle.completed && simonLifecycle.round < 5) {
+            val waitingTarget = ssSequence.firstOrNull() ?: ssButtonCheck
+            if (aimTargetBlock != waitingTarget && (aimState == AimState.IDLE || aimState == AimState.SETTLED) && now - lastSSClick > 30L) {
+                startAim(player, waitingTarget, slow = true)
+                return
+            }
         }
 
         if (aimState != AimState.IDLE) return
@@ -380,7 +409,7 @@ object F7Devices {
         }
 
         // 4. Check if sequence buttons are ready on the wall (priority order)
-        if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON) {
+        if (boardReady) {
             val expected = ssSequence.firstOrNull() ?: return
             if (level.getBlockState(expected).block == Blocks.STONE_BUTTON) {
                 // If button is already pressed / powered, drop and advance
@@ -389,7 +418,7 @@ object F7Devices {
                     return
                 }
                 if (now - lastSSClick > 30L) {
-                    startAim(player, expected)
+                    startAim(player, expected, slow = false)
                 }
             }
         }
@@ -476,7 +505,7 @@ object F7Devices {
             simonLifecycle.observeRun(System.nanoTime())
         }
         simonLifecycle.observeBoard(ready)
-        if (!ready && aimTargetBlock in ssButtons) cancelSimonAim()
+        if (!ready && aimTargetBlock in ssButtons && (simonLifecycle.completed || !simonLifecycle.active)) cancelSimonAim()
     }
 
     private fun completeSimon(reason: String) {

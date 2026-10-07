@@ -542,5 +542,44 @@ internal fun terminalMotionAndGuiChecks() {
         AutoTerminal.computeClickDelay(TerminalMode.HUMAN, 180, 20, 160, 200, true, 50, 10, 19, Kind.RUBIX)
     }
     check(humanDelays.all { it in 120L..280L }) { "Human delays must stay in sensible human range: $humanDelays" }
+
+    // ── Button Off-Center Targeting Checks ──────────────────────────────
+    // Normal mode must click exact center (middle)
+    for (slot in 0..53) {
+        val (nx, ny) = TerminalCursor.buttonOffset(TerminalMode.NORMAL, 50, true, 2.0f, slot, 0, 1)
+        check(nx == 0f && ny == 0f) { "Normal mode must click the exact middle: ($nx, $ny)" }
+    }
+
+    // Human and Legit modes must click off-center (never exact middle) and stay safely within the button face
+    for (mode in listOf(TerminalMode.HUMAN, TerminalMode.LEGIT)) {
+        val offsets = (0..9).map { slot ->
+            TerminalCursor.buttonOffset(mode, 50, inTermGui = true, scale = 2.0f, slotIndex = slot, clicksCount = 0, containerId = 1)
+        }
+        for ((ox, oy) in offsets) {
+            val dist = kotlin.math.hypot(ox, oy)
+            check(dist > 1.5f) { "Human/Legit mode must not click the dead center (dist was $dist)" }
+            // TermGui tile half-width at scale 2.0 is 24px; offset must stay well inside tile margins
+            check(dist < 15.0f) { "Offset must stay inside the button bounds: $dist" }
+        }
+        // Identical parameters must produce deterministic, stable targets
+        val first = TerminalCursor.buttonOffset(mode, 50, true, 2.0f, 5, 2, 1)
+        val repeat = TerminalCursor.buttonOffset(mode, 50, true, 2.0f, 5, 2, 1)
+        check(first == repeat) { "Identical observation must produce deterministic offset" }
+
+        // Successive clicks on different slots produce varied offsets
+        check(offsets.distinct().size > 1) { "Offsets across buttons must vary" }
+    }
+
+    // ── Simon Says Relaxed Inter-Round Aim Duration ─────────────────────
+    val fastAim = F7Devices.aimDuration(15f, slow = false)
+    val slowAim = F7Devices.aimDuration(15f, slow = true)
+    check(fastAim in 75L..145L) { "Fast aim duration out of range: $fastAim" }
+    check(slowAim in 360L..480L) { "Slow inter-round aim duration out of range: $slowAim" }
+    check(slowAim > fastAim * 2) { "Slow aim must be at least twice as relaxed as fast aim ($slowAim vs $fastAim)" }
+
+    // ── Less snappy easing curve check ──────────────────────────────────
+    // Smooth easing avoids snapping 80%+ of distance in the first 25ms
+    val earlyProgress = TerminalCursor.progressAt(25, 100, 0.32f, 0.12f, 0.24f, 0.96f)
+    check(earlyProgress < 0.45f) { "Early progress must ramp up smoothly to avoid snappiness: $earlyProgress" }
 }
 
