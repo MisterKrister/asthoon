@@ -162,6 +162,42 @@ abstract class MixinHandledScreen {
             if (slot != null && com.asthoonlite.utils.InputCapture.isCapturing) {
                 com.asthoonlite.utils.InputCapture.onTerminalClick(self, slot.index, button, "SLOT_CLICK")
             }
+
+            if (Config.terminalSolverEnabled && slot != null && TerminalSolver.kindOf(title) == TerminalSolver.Kind.RUBIX &&
+                slot.index in TerminalSolver.RUBIX_SLOTS && actionType == ContainerInput.PICKUP) {
+                val mc = Minecraft.getInstance()
+                val player = mc.player
+                val gameMode = mc.gameMode
+                val all = self.menu.slots.take(45).map { it.item }
+                val current = AutoTerminal.rubixPredicted(slot.index)
+                    ?: com.asthoonlite.dungeon.TerminalHelper.rubixColorIndex(slot.item).takeIf { it >= 0 }
+                val target = AutoTerminal.rubixTargetOrNull() ?: TerminalSolver.optimalRubixTarget(all)
+                if (current != null && target != null && current in 0..4 && target in 0..4) {
+                    val effective = if (button == 0) TerminalSolver.rubixButton(current, target) else button
+                    if (button == 0 && effective == 1 && gameMode != null && player != null) {
+                        ci.cancel()
+                        gameMode.handleContainerInput(self.menu.containerId, slot.index, 1, ContainerInput.PICKUP, player)
+                        val nextColor = TerminalSolver.rubixAdvance(current, 1)
+                        AutoTerminal.setRubixPredicted(slot.index, nextColor)
+                        val nextItem = when (nextColor) {
+                            0 -> net.minecraft.world.item.Items.ORANGE_STAINED_GLASS_PANE
+                            1 -> net.minecraft.world.item.Items.YELLOW_STAINED_GLASS_PANE
+                            2 -> net.minecraft.world.item.Items.LIME_STAINED_GLASS_PANE
+                            3 -> net.minecraft.world.item.Items.LIGHT_BLUE_STAINED_GLASS_PANE
+                            4 -> net.minecraft.world.item.Items.RED_STAINED_GLASS_PANE
+                            else -> null
+                        }
+                        if (nextItem != null) slot.set(ItemStack(nextItem))
+                        if (!self.menu.carried.isEmpty) self.menu.carried = ItemStack.EMPTY
+                        if (!player.containerMenu.carried.isEmpty) player.containerMenu.carried = ItemStack.EMPTY
+                        return
+                    } else if (effective in 0..1) {
+                        val nextColor = TerminalSolver.rubixAdvance(current, effective)
+                        AutoTerminal.setRubixPredicted(slot.index, nextColor)
+                    }
+                }
+            }
+
             val mc = Minecraft.getInstance()
             if (!self.menu.carried.isEmpty) {
                 self.menu.carried = ItemStack.EMPTY

@@ -307,12 +307,13 @@ internal fun terminalMotionAndGuiChecks() {
         check(TermGui.rubixLabel(0, 4, simulation = true) == "1") {
             "one backward practice click must display one, rather than four forward clicks"
         }
-        check(TermGui.rubixLabel(0, 4, simulation = false) == "4") { "live labels retain the forward count" }
+        check(TermGui.rubixLabel(0, 4, simulation = false) == "1") {
+            "live labels must display one backward click, rather than four forward clicks"
+        }
         for (current in 0..4) for (wanted in 0..4) {
             val shortest = minOf((wanted - current + 5) % 5, (current - wanted + 5) % 5)
-            val forward = (wanted - current + 5) % 5
             check(TermGui.rubixLabel(current, wanted, simulation = true) == shortest.takeIf { it > 0 }?.toString())
-            check(TermGui.rubixLabel(current, wanted, simulation = false) == forward.takeIf { it > 0 }?.toString())
+            check(TermGui.rubixLabel(current, wanted, simulation = false) == shortest.takeIf { it > 0 }?.toString())
         }
 
         // The two kinds whose candidate list is already the answer.

@@ -59,7 +59,10 @@ internal class TerminalPracticeClock {
         /** Latch an initial target from actual board colors, without global predictions. */
         fun initialRubixTarget(colors: List<Int>): Int? {
             if (colors.size != 9 || colors.any { it !in 0..4 }) return null
-            return (0..4).minByOrNull { target -> colors.sumOf { TerminalSolver.rubixDistance(it, target) } }
+            return (0..4).minWithOrNull(compareBy(
+                { target -> colors.sumOf { TerminalSolver.rubixDistance(it, target) } },
+                { target -> -colors.count { it == target } }
+            ))
         }
 
         /** Practice left clicks take the shortest route; explicit inputs keep their direction. */

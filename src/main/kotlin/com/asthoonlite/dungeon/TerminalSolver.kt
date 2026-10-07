@@ -348,7 +348,7 @@ object TerminalSolver {
                 costs[target] += rubixDistance(p.second, target)
             }
         }
-        return costs.indices.minByOrNull { costs[it] }
+        return costs.indices.minWithOrNull(compareBy({ costs[it] }, { -panes.count { p -> p.second == it } }))
     }
 
     /**

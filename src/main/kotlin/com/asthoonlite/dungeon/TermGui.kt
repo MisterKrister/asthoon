@@ -299,9 +299,9 @@ object TermGui {
         }
     }
 
-    /** Practice left-clicks take the shortest direction; live labels keep their forward count. */
-    internal fun rubixLabel(current: Int, wanted: Int, simulation: Boolean): String? {
-        val clicks = if (simulation) TerminalSolver.rubixDistance(current, wanted) else (wanted - current + 5) % 5
+    /** Both live and practice clicks take the shortest direction (positive or negative). */
+    internal fun rubixLabel(current: Int, wanted: Int, simulation: Boolean = false): String? {
+        val clicks = TerminalSolver.rubixDistance(current, wanted)
         return clicks.takeIf { it > 0 }?.toString()
     }
 
@@ -314,13 +314,28 @@ object TermGui {
         if (button !in 0..2 || (!simulation && !canClick(kind, screen.title.string, all, slot))) return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
+
+        val effectiveButton = if (kind == Kind.RUBIX) {
+            val slotObj = screen.menu.slots.getOrNull(slot)
+            val currentIdx = AutoTerminal.rubixPredicted(slot)
+                ?: TerminalHelper.rubixColorIndex(slotObj?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
+            val target = AutoTerminal.rubixTargetOrNull() ?: cachedRubixTarget ?: TerminalSolver.optimalRubixTarget(all)
+            when (button) {
+                0 -> if (currentIdx != null && target != null && currentIdx in 0..4 && target in 0..4) {
+                    TerminalSolver.rubixButton(currentIdx, target)
+                } else 0
+                1 -> 1
+                else -> 2
+            }
+        } else if (simulation) button else 2
+
         // Same door the clicker uses: the player's window sends the packet, a
         // screen holding its own menu gets the click through slotClicked —
         // which is where a hand's click lands on such a screen too, and
         // therefore the only way a manual click can reach it at all.
         val sent = TerminalInput.send(
             screen, slot,
-            if (simulation) button else if (kind == Kind.RUBIX) button.coerceAtMost(1) else 2,
+            effectiveButton,
             if (kind == Kind.RUBIX) ContainerInput.PICKUP else ContainerInput.CLONE,
             source
         )
@@ -332,7 +347,7 @@ object TermGui {
             val currentIdx = AutoTerminal.rubixPredicted(slot)
                 ?: TerminalHelper.rubixColorIndex(slotObj?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
                 ?: 0
-            val nextColor = TerminalSolver.rubixAdvance(currentIdx, button.coerceAtMost(1))
+            val nextColor = TerminalSolver.rubixAdvance(currentIdx, effectiveButton)
             AutoTerminal.setRubixPredicted(slot, nextColor)
             val nextItem = when (nextColor) {
                 0 -> net.minecraft.world.item.Items.ORANGE_STAINED_GLASS_PANE
