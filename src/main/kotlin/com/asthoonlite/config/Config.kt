@@ -22,10 +22,17 @@ object Config {
 
     private val gson = GsonBuilder().setPrettyPrinting().create()
 
-    private val configDir = FabricLoader.getInstance().configDir
-        .resolve(AsthoonLite.MOD_ID).toFile()
+    private val configDir: File by lazy {
+        try {
+            FabricLoader.getInstance().configDir.resolve(AsthoonLite.MOD_ID).toFile()
+        } catch (_: Throwable) {
+            File("config", AsthoonLite.MOD_ID)
+        }
+    }
 
-    private val configFile = File(configDir, "asthoonLite.json")
+    private val configFile: File by lazy {
+        File(configDir, "asthoonLite.json")
+    }
 
     data class Data(
         // ── QOL ───────────────────────────────────────────────────────────
@@ -295,6 +302,9 @@ object Config {
         // ── Hitbox environment & visibility ─────────────────────────────────
         var secretHitboxAnywhere: Boolean = true,
         var secretHitboxThroughWalls: Boolean = true,
+
+        // ── Simon Says Fast Mode ─────────────────────────────────────────────
+        var autoSimonSaysFast: Boolean = false,
     )
 
     var data = Data()
@@ -852,6 +862,10 @@ object Config {
     var autoSimonSaysEnabled: Boolean
         get() = data.autoSimonSaysEnabled
         set(v) { data.autoSimonSaysEnabled = v; save() }
+
+    var autoSimonSaysFast: Boolean
+        get() = data.autoSimonSaysFast
+        set(v) { data.autoSimonSaysFast = v; save() }
 
     var autoSimonSaysStart: Boolean
         get() = data.autoSimonSaysStart

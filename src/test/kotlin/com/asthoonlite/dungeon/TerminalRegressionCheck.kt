@@ -577,6 +577,24 @@ internal fun terminalMotionAndGuiChecks() {
     check(slowAim in 360L..480L) { "Slow inter-round aim duration out of range: $slowAim" }
     check(slowAim > fastAim * 2) { "Slow aim must be at least twice as relaxed as fast aim ($slowAim vs $fastAim)" }
 
+    // ── Simon Says Fast Mode Aim Duration ────────────────────────────────
+    val fastModeBtn = F7Devices.aimDuration(15f, slow = false, fastMode = true)
+    val fastModeReturn = F7Devices.aimDuration(15f, slow = true, fastMode = true)
+    check(fastModeBtn in 40L..80L) { "Fast mode button aim duration out of range: $fastModeBtn" }
+    check(fastModeReturn in 180L..260L) { "Fast mode return aim duration out of range: $fastModeReturn" }
+    check(fastModeBtn < fastAim) { "Fast mode button aim must be faster than normal ($fastModeBtn vs $fastAim)" }
+    check(fastModeReturn < slowAim) { "Fast mode return aim must be faster than normal ($fastModeReturn vs $slowAim)" }
+
+    // ── Simon Says Organic Natural Easing ────────────────────────────────
+    check(abs(F7Devices.easeNatural(0f, 3f) - 0f) < 0.001f)
+    check(abs(F7Devices.easeNatural(1f, 3f) - 1f) < 0.001f)
+    check(abs(F7Devices.easeNatural(0.45f, 3f) - 0.45f) < 0.001f)
+    check(F7Devices.easeNatural(0.2f, 3f) < 0.2f) { "easeNatural must accelerate gently" }
+    check(F7Devices.easeNatural(0.8f, 3f) > 0.8f) { "easeNatural must decelerate softly" }
+
+    val ssConfig = Gson().fromJson("{\"autoSimonSaysFast\":true}", Config.Data::class.java)
+    check(ssConfig.autoSimonSaysFast) { "autoSimonSaysFast must deserialize cleanly" }
+
     // ── Less snappy easing curve check ──────────────────────────────────
     // Smooth easing avoids snapping 80%+ of distance in the first 25ms
     val earlyProgress = TerminalCursor.progressAt(25, 100, 0.32f, 0.12f, 0.24f, 0.96f)

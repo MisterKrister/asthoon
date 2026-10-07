@@ -739,6 +739,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         { Config.autoI4Enabled }, { Config.autoI4Enabled = it }),
                     ToggleRow("Auto Simon Says", "Automatically solves Simon Says, looking at each button with human camera movement and timing",
                         { Config.autoSimonSaysEnabled }, { Config.autoSimonSaysEnabled = it }),
+                    ToggleRow("  ↳ Fast Mode", "Increases rotation speed and click cadence for Simon Says",
+                        { Config.autoSimonSaysFast }, { Config.autoSimonSaysFast = it }),
                     ToggleRow("Mask Display", "Bonzo, Spirit, and Phoenix mask cooldown HUD",
                         { Config.maskDisplayEnabled }, { Config.maskDisplayEnabled = it }),
                 )

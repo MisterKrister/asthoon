@@ -46,6 +46,7 @@ object F7Devices {
     private var lastSSClick = 0L
     private var lastSSState = BooleanArray(ssObsidians.size)
     private var ssLastClientTick = -1L
+    private var isSkipping = false
     private var skipOver = false
     private var ssStartClicked = false
     private var startClicksDone = 0
@@ -73,6 +74,14 @@ object F7Devices {
     private var aimDurationMs = 0L
     private var aimSettledUntil = 0L
     private var postClickPauseUntil = 0L
+
+    // Organic varied movement parameters per aim
+    private var aimArcAmplitudeYaw = 0f
+    private var aimArcAmplitudePitch = 0f
+    private var aimEasePower = 3.0f
+    private var aimTremorAmpYaw = 0f
+    private var aimTremorAmpPitch = 0f
+    private var aimTremorFreq = 12.0f
 
     fun register() {
         ClientReceiveMessageEvents.ALLOW_GAME.register { text, overlay ->
@@ -174,9 +183,26 @@ object F7Devices {
         else 1f - (-2f * clamped + 2f).let { it * it * it } / 2f
     }
 
+    internal fun easeNatural(t: Float, power: Float = 3.0f): Float {
+        val clamped = t.coerceIn(0f, 1f)
+        return if (clamped < 0.45f) {
+            (clamped / 0.45f).pow(power) * 0.45f
+        } else {
+            1f - ((1f - clamped) / 0.55f).pow(power) * 0.55f
+        }
+    }
+
+    internal fun aimDuration(angleDist: Float, slow: Boolean, fastMode: Boolean = false): Long =
+        if (fastMode) {
+            if (slow) (170L + (angleDist * 1.3f).toLong() + Random.nextLong(-15L, 20L)).coerceIn(180L, 260L)
+            else (38L + (angleDist * 0.95f).toLong() + Random.nextLong(-5L, 10L)).coerceIn(40L, 80L)
+        } else {
+            if (slow) (320L + (angleDist * 3.0f).toLong() + Random.nextLong(-25L, 30L)).coerceIn(360L, 480L)
+            else (70L + (angleDist * 1.8f).toLong() + Random.nextLong(-8L, 18L)).coerceIn(75L, 145L)
+        }
+
     internal fun aimDuration(angleDist: Float, slow: Boolean): Long =
-        if (slow) (320L + (angleDist * 3.0f).toLong()).coerceIn(360L, 480L)
-        else (70L + (angleDist * 1.8f).toLong()).coerceIn(75L, 145L)
+        aimDuration(angleDist, slow, fastMode = false)
 
     private fun updateCameraAim(player: net.minecraft.client.player.LocalPlayer, now: Long) {
         if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) {
@@ -192,8 +218,11 @@ object F7Devices {
                     return
                 }
             } else if (target in ssButtons) {
-                if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON &&
-                    level.getBlockState(target).block != Blocks.STONE_BUTTON) {
+                if (level.getBlockState(target).block != Blocks.STONE_BUTTON) {
+                    cancelSimonAim()
+                    return
+                }
+                if (isSkipping && !skipOver) {
                     cancelSimonAim()
                     return
                 }
@@ -206,18 +235,33 @@ object F7Devices {
             AimState.TURNING -> {
                 val elapsed = now - aimStartTime
                 val t = (elapsed.toFloat() / aimDurationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
-                val eased = easeInOutCubic(t)
+                val eased = easeNatural(t, aimEasePower)
                 val dy = shortestAngleDist(aimStartYaw, aimDestYaw)
                 val dp = aimDestPitch - aimStartPitch
-                player.yRot = aimStartYaw + dy * eased
-                player.xRot = aimStartPitch + dp * eased
+
+                // Path arc curvature (sine envelope: 0 at start, 1 in middle, 0 at end)
+                val envelope = sin(t * Math.PI.toFloat())
+                val arcYaw = aimArcAmplitudeYaw * envelope
+                val arcPitch = aimArcAmplitudePitch * envelope
+
+                // Subtle physiological tremor during travel
+                val tremor = envelope * sin(t * aimTremorFreq)
+                val tremorYaw = aimTremorAmpYaw * tremor
+                val tremorPitch = aimTremorAmpPitch * tremor
+
+                player.yRot = aimStartYaw + dy * eased + arcYaw + tremorYaw
+                player.xRot = aimStartPitch + dp * eased + arcPitch + tremorPitch
 
                 if (t >= 1f) {
                     player.yRot = aimDestYaw
                     player.xRot = aimDestPitch
                     aimState = AimState.SETTLED
-                    // Empirical aim settlement time from user data: ~15-30ms before clicking
-                    aimSettledUntil = now + Random.nextLong(15L, 30L)
+                    val settleDelay = if (Config.autoSimonSaysFast) {
+                        Random.nextLong(4L, 12L)
+                    } else {
+                        Random.nextLong(20L, 40L)
+                    }
+                    aimSettledUntil = now + settleDelay
                     if (aimTargetBlock == ssStart) {
                         nextStartClickAt = aimSettledUntil
                     }
@@ -237,10 +281,14 @@ object F7Devices {
     }
 
     private fun startAim(player: net.minecraft.client.player.LocalPlayer, pos: BlockPos, slow: Boolean = false) {
-        // Target west face of button at x=110.875 with organic micro-offset
-        val seed = (pos.x * 31 + pos.y * 17 + pos.z * 13)
-        val offY = (((seed % 7) - 3) * 0.02)
-        val offZ = ((((seed / 7) % 7) - 3) * 0.02)
+        val fastMode = Config.autoSimonSaysFast
+
+        // Target west face of button at x=110.875 with organic random offset.
+        // Button is 0.25 x 0.25 blocks wide on Y and Z (from 0.375 to 0.625).
+        // For buttons, ±0.065 is ~1 pixel away from center (0.52), guaranteed to be on the button face.
+        // For slow (going back between sequences), allow wider natural variation around the waiting button
+        val offY = if (slow) Random.nextDouble(-0.12, 0.12) else Random.nextDouble(-0.065, 0.065)
+        val offZ = if (slow) Random.nextDouble(-0.12, 0.12) else Random.nextDouble(-0.065, 0.065)
         val target = Vec3(110.875, pos.y + 0.52 + offY, pos.z + 0.52 + offZ)
 
         val eye = player.eyePosition
@@ -255,7 +303,43 @@ object F7Devices {
         val dp = destPitch - curPitch
         val angleDist = hypot(dy, dp)
 
-        val duration = aimDuration(angleDist, slow)
+        val duration = aimDuration(angleDist, slow, fastMode)
+
+        // Path curvature (arc/bow) perpendicular to travel direction:
+        // A natural wrist/arm sweep curves slightly off the straight line.
+        val arcMagnitude = if (slow) {
+            // Going back: relaxed, wider arc variations (-2.2 to +2.2 degrees)
+            if (fastMode) Random.nextFloat() * 2.4f - 1.2f
+            else Random.nextFloat() * 4.4f - 2.2f
+        } else {
+            // Sequence buttons: subtle wrist curve (-1.2 to +1.2 degrees scaled by distance)
+            val base = if (fastMode) 0.8f else 1.5f
+            (Random.nextFloat() * (2 * base) - base) * (angleDist / 18f).coerceIn(0.4f, 1.4f)
+        }
+
+        // Perpendicular vector (-dp, dy) normalized
+        if (angleDist > 0.01f) {
+            val perpX = -dp / angleDist
+            val perpY = dy / angleDist
+            aimArcAmplitudeYaw = perpX * arcMagnitude
+            aimArcAmplitudePitch = perpY * arcMagnitude
+        } else {
+            aimArcAmplitudeYaw = 0f
+            aimArcAmplitudePitch = 0f
+        }
+
+        // Organic easing parameter (randomized asymmetry per aim)
+        aimEasePower = if (fastMode) {
+            Random.nextFloat() * 0.4f + 2.4f
+        } else {
+            Random.nextFloat() * 0.8f + 2.6f // 2.6 to 3.4
+        }
+
+        // Micro-tremor amplitude: subtle hand variation during movement
+        val tremorScale = if (fastMode) 0.03f else 0.07f
+        aimTremorAmpYaw = (Random.nextFloat() * 2f - 1f) * tremorScale
+        aimTremorAmpPitch = (Random.nextFloat() * 2f - 1f) * tremorScale
+        aimTremorFreq = Random.nextFloat() * 4.0f + 10.0f // 10 to 14 Hz physiological tremor
 
         aimTargetVec = target
         aimTargetBlock = pos
@@ -285,7 +369,7 @@ object F7Devices {
         if (pos in ssObsidians && block == Blocks.SEA_LANTERN) {
             simonLifecycle.observeRun(System.nanoTime())
             val button = pos.west()
-            if (!skipOver && ssSequence.size == 2) {
+            if (isSkipping && !skipOver && ssSequence.size == 2) {
                 ssSequence.removeAt(0)
             }
             if (ssSequence.size < 5 && !ssSequence.contains(button)) {
@@ -293,7 +377,9 @@ object F7Devices {
             }
         } else if (pos == ssButtonCheck) {
             if (block == Blocks.STONE_BUTTON) {
-                skipOver = true
+                if (!isSkipping || ssSequence.size >= 2) {
+                    skipOver = true
+                }
             }
         }
     }
@@ -306,12 +392,17 @@ object F7Devices {
                 lastSSState = BooleanArray(ssObsidians.size)
                 // An empty board also appears between rounds. A new local
                 // start or a new dungeon run rearms the start button.
-                if (!simonLifecycle.active) ssStartClicked = false
+                if (!simonLifecycle.active) {
+                    ssStartClicked = false
+                    isSkipping = false
+                }
             }
             return
         }
-        if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON && ssSequence.isEmpty()) {
-            skipOver = true
+        if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON) {
+            if (!isSkipping || ssSequence.size >= 2) {
+                skipOver = true
+            }
         }
 
         val now = BooleanArray(ssObsidians.size)
@@ -324,7 +415,7 @@ object F7Devices {
             val button = ssObsidians[index].west()
 
             // Direct port of NoammAddons' SS-skip queue behavior.
-            if (!skipOver && ssSequence.size == 2) {
+            if (isSkipping && !skipOver && ssSequence.size == 2) {
                 ssSequence.removeAt(0)
             }
             if (ssSequence.size < 5 && !ssSequence.contains(button)) {
@@ -343,7 +434,9 @@ object F7Devices {
         val now = System.currentTimeMillis()
         updateCameraAim(player, now)
 
-        // 1. If currently settled on start button and performing 3 start clicks at ~7 CPS:
+        val fastMode = Config.autoSimonSaysFast
+
+        // 1. If currently settled on start button and performing 3 start clicks:
         if (aimTargetBlock == ssStart && aimState == AimState.SETTLED) {
             if (now >= nextStartClickAt && level.getBlockState(ssStart).block == Blocks.STONE_BUTTON) {
                 val targetVec = aimTargetVec ?: Vec3(110.875, ssStart.y + 0.52, ssStart.z + 0.52)
@@ -354,12 +447,15 @@ object F7Devices {
                 startClicksDone++
                 if (startClicksDone >= 3) {
                     ssStartClicked = true
+                    isSkipping = true
+                    skipOver = false
                     startClicksDone = 0
                     aimState = AimState.POST_CLICK_PAUSE
-                    postClickPauseUntil = now + Random.nextLong(20L, 45L)
+                    postClickPauseUntil = now + (if (fastMode) Random.nextLong(10L, 25L) else Random.nextLong(20L, 45L))
                 } else {
-                    // ~9-10 CPS cadence between start clicks (95-115ms)
-                    nextStartClickAt = now + Random.nextLong(95L, 115L)
+                    // Cadence between start clicks: fast mode ~15 CPS (55-75ms), normal ~9-10 CPS (95-115ms)
+                    val delay = if (fastMode) Random.nextLong(55L, 75L) else Random.nextLong(95L, 115L)
+                    nextStartClickAt = now + delay
                 }
             }
             return
@@ -371,6 +467,7 @@ object F7Devices {
             val targetVec = aimTargetVec
             if (targetBlock != null && targetVec != null && level.getBlockState(targetBlock).block == Blocks.STONE_BUTTON) {
                 if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON &&
+                    (!isSkipping || skipOver) &&
                     ssSequence.isNotEmpty() && ssSequence.first() == targetBlock) {
                     val hit = BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
                     mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
@@ -379,18 +476,21 @@ object F7Devices {
 
                     ssSequence.removeFirst()
                     aimState = AimState.POST_CLICK_PAUSE
-                    postClickPauseUntil = now + Random.nextLong(5L, 20L)
+                    val pause = if (fastMode) Random.nextLong(2L, 8L) else Random.nextLong(12L, 28L)
+                    postClickPauseUntil = now + pause
                     return
                 }
             }
         }
 
-        // Inter-round waiting: smoothly look down towards the start button of the sequence
-        // at a relaxed, human pace (~360-480ms), arriving well in time before buttons spawn.
+        // Inter-round waiting: smoothly look down towards the start button / sequence base
+        // at a relaxed, human pace arriving well in time before buttons spawn.
+        // If skipping, ignore the first button that breaks off and keep gaze relaxed down near neutral/start.
         val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
         if (!boardReady && (simonLifecycle.active || ssStartClicked) && !simonLifecycle.completed && simonLifecycle.round < 5) {
-            val waitingTarget = ssSequence.firstOrNull() ?: ssButtonCheck
-            if (aimTargetBlock != waitingTarget && (aimState == AimState.IDLE || aimState == AimState.SETTLED) && now - lastSSClick > 30L) {
+            val waitingTarget = if (isSkipping && !skipOver) ssButtonCheck else (ssSequence.firstOrNull() ?: ssButtonCheck)
+            val waitCooldown = if (fastMode) 15L else 30L
+            if (aimTargetBlock != waitingTarget && (aimState == AimState.IDLE || aimState == AimState.SETTLED) && now - lastSSClick > waitCooldown) {
                 startAim(player, waitingTarget, slow = true)
                 return
             }
@@ -400,7 +500,7 @@ object F7Devices {
 
         // 3. Check if device needs to be started
         if (!ssStartClicked && ssSequence.isEmpty()) {
-            if (level.getBlockState(ssStart).block == Blocks.STONE_BUTTON && now - lastSSClick > 150L) {
+            if (level.getBlockState(ssStart).block == Blocks.STONE_BUTTON && now - lastSSClick > (if (fastMode) 80L else 150L)) {
                 startClicksDone = 0
                 nextStartClickAt = 0L
                 startAim(player, ssStart)
@@ -409,7 +509,8 @@ object F7Devices {
         }
 
         // 4. Check if sequence buttons are ready on the wall (priority order)
-        if (boardReady) {
+        // If skipping, ignore round 1 buttons that spawn on the device (they break off)
+        if (boardReady && (!isSkipping || skipOver)) {
             val expected = ssSequence.firstOrNull() ?: return
             if (level.getBlockState(expected).block == Blocks.STONE_BUTTON) {
                 // If button is already pressed / powered, drop and advance
@@ -417,7 +518,8 @@ object F7Devices {
                     ssSequence.removeFirst()
                     return
                 }
-                if (now - lastSSClick > 30L) {
+                val minDelay = if (fastMode) 12L else 28L
+                if (now - lastSSClick > minDelay) {
                     startAim(player, expected, slow = false)
                 }
             }
@@ -432,12 +534,18 @@ object F7Devices {
             val mc = Minecraft.getInstance()
             val player = mc.player ?: return
             if (player.distanceToSqr(ssDeviceCenter) > 36.0 || mc.level?.getBlockState(pos)?.block != Blocks.STONE_BUTTON) return
+            startClicksDone++
+            if (startClicksDone >= 2) {
+                isSkipping = true
+                skipOver = false
+            }
             if (!simonLifecycle.startFromInput(System.nanoTime(), activatesButton)) return
             resetSimonState()
             return
         }
         if (simonLifecycle.completed) return
         if (pos !in ssButtons) return
+        if (isSkipping && !skipOver) return
         simonLifecycle.observeRun(System.nanoTime())
         val expected = ssSequence.firstOrNull() ?: return
 
@@ -459,6 +567,7 @@ object F7Devices {
         if (!Config.blockWrongDeviceClicks || !DungeonContext.inDungeon || simonLifecycle.completed) return false
         val player = Minecraft.getInstance().player ?: return false
         if (player.isCrouching || pos !in ssButtons) return false
+        if (isSkipping && !skipOver) return true
         val expected = ssSequence.firstOrNull() ?: return false
         return pos != expected
     }
@@ -482,6 +591,7 @@ object F7Devices {
         if (clearCompletion) simonLifecycle.reset()
         ssSequence.clear()
         lastSSState = BooleanArray(ssObsidians.size)
+        isSkipping = false
         skipOver = false
         ssStartClicked = false
         startClicksDone = 0
@@ -496,6 +606,10 @@ object F7Devices {
         aimTargetBlock = null
         aimSettledUntil = 0L
         postClickPauseUntil = 0L
+        aimArcAmplitudeYaw = 0f
+        aimArcAmplitudePitch = 0f
+        aimTremorAmpYaw = 0f
+        aimTremorAmpPitch = 0f
     }
 
     private fun observeSimonBoard(level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
