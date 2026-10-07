@@ -1,6 +1,8 @@
 package com.asthoonlite.dungeon
 
+import com.asthoonlite.AsthoonLite
 import com.asthoonlite.config.Config
+import com.asthoonlite.utils.InputCapture
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
@@ -50,6 +52,7 @@ object F7Devices {
     private var nextStartClickAt = 0L
     private val ssSequence = ArrayList<BlockPos>()
     private val ssButtonCheck = BlockPos(110, 120, 93)
+    private val simonLifecycle = SimonDeviceLifecycle()
 
     // ── Human Aim Controller State ──────────────────────────────────────────
     enum class AimState {
@@ -88,25 +91,42 @@ object F7Devices {
             emeraldSeen.clear()
             activeEmerald = null
         }
-        if (msg.contains("Goldor: Who dares trespass into my domain?") || msg.contains("completed a device!")) {
-            resetSimonState()
+        if (msg.contains("Goldor: Who dares trespass into my domain?")) {
+            resetSimonState(clearCompletion = true)
+        }
+        if (DungeonContext.inDungeon) {
+            val player = Minecraft.getInstance().player
+            if (player != null && simonLifecycle.completeFromMessage(msg, player.name.string,
+                    player.distanceToSqr(ssDeviceCenter) <= 36.0)) {
+                completeSimon("server_device_message")
+            }
         }
     }
 
     private fun onRenderFrame() {
-        if (!DungeonContext.inDungeon || !Config.autoSimonSaysEnabled) return
+        if (!DungeonContext.inDungeon || !Config.autoSimonSaysEnabled || simonLifecycle.completed) return
         val player = Minecraft.getInstance().player ?: return
         updateCameraAim(player, System.currentTimeMillis())
     }
 
     private fun tick() {
-        if (!DungeonContext.inDungeon || !Config.inAnyDeviceFeatureEnabled()) {
+        if (!DungeonContext.inDungeon) {
             resetDeviceStateOnly()
             return
         }
         val mc = Minecraft.getInstance()
         val level = mc.level ?: return
         val player = mc.player ?: return
+
+        // Recording a hand-solved device must still observe its lifecycle
+        // when all automatic input features are disabled.
+        if (Config.autoSimonSaysEnabled || Config.blockWrongDeviceClicks || InputCapture.isCapturing) {
+            observeSimonBoard(level, player)
+        }
+        if (!Config.inAnyDeviceFeatureEnabled() && !Config.blockWrongDeviceClicks) {
+            cancelSimonAim()
+            return
+        }
 
         if (Config.autoI4Enabled && stormStarted) tickI4(mc, level, player)
         if (Config.blockWrongDeviceClicks || Config.autoSimonSaysEnabled) updateSimonSequence(level, player)
@@ -155,8 +175,13 @@ object F7Devices {
     }
 
     private fun updateCameraAim(player: net.minecraft.client.player.LocalPlayer, now: Long) {
-        if (player.distanceToSqr(ssDeviceCenter) > 36.0) {
-            aimState = AimState.IDLE
+        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) {
+            cancelSimonAim()
+            return
+        }
+        val target = aimTargetBlock
+        if (target != null && Minecraft.getInstance().level?.getBlockState(target)?.block != Blocks.STONE_BUTTON) {
+            cancelSimonAim()
             return
         }
         when (aimState) {
@@ -228,12 +253,20 @@ object F7Devices {
 
     /** Real-time packet-driven block updates for instant, zero-delay SS sequence tracking. */
     fun onBlockUpdate(pos: BlockPos, state: net.minecraft.world.level.block.state.BlockState) {
-        if (!DungeonContext.inDungeon || !Config.autoSimonSaysEnabled) return
+        if (!DungeonContext.inDungeon ||
+            (!Config.autoSimonSaysEnabled && !Config.blockWrongDeviceClicks && !InputCapture.isCapturing)) return
         val player = Minecraft.getInstance().player ?: return
         if (player.distanceToSqr(ssDeviceCenter) > 36.0) return
+        if (simonLifecycle.completed) return
 
         val block = state.block
+        if (pos == aimTargetBlock && block != Blocks.STONE_BUTTON) cancelSimonAim()
+        if (pos == ssStart && block == Blocks.STONE_BUTTON &&
+            state.getValue(net.minecraft.world.level.block.ButtonBlock.POWERED)) {
+            simonLifecycle.observeRun(System.nanoTime())
+        }
         if (pos in ssObsidians && block == Blocks.SEA_LANTERN) {
+            simonLifecycle.observeRun(System.nanoTime())
             val button = pos.west()
             if (!skipOver && ssSequence.size == 2) {
                 ssSequence.removeAt(0)
@@ -249,12 +282,14 @@ object F7Devices {
     }
 
     private fun updateSimonSequence(level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
-        if (player.distanceToSqr(ssDeviceCenter) > 36.0) return
+        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) return
 
         if (level.getBlockState(ssButtonCheck).block == Blocks.AIR) {
             if (ssSequence.isEmpty()) {
                 lastSSState = BooleanArray(ssObsidians.size)
-                ssStartClicked = false
+                // An empty board also appears between rounds. A new local
+                // start or a new dungeon run rearms the start button.
+                if (!simonLifecycle.active) ssStartClicked = false
             }
             return
         }
@@ -283,8 +318,8 @@ object F7Devices {
     }
 
     private fun tickSimon(mc: Minecraft, level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
-        if (player.distanceToSqr(ssDeviceCenter) > 36.0) {
-            aimState = AimState.IDLE
+        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) {
+            cancelSimonAim()
             return
         }
 
@@ -296,6 +331,7 @@ object F7Devices {
             if (now >= nextStartClickAt && level.getBlockState(ssStart).block == Blocks.STONE_BUTTON) {
                 val targetVec = aimTargetVec ?: Vec3(110.875, ssStart.y + 0.52, ssStart.z + 0.52)
                 val hit = BlockHitResult(targetVec, Direction.WEST, ssStart, false)
+                if (!simonLifecycle.active) simonLifecycle.start(System.nanoTime())
                 mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
                 lastSSClick = now
                 startClicksDone++
@@ -360,13 +396,20 @@ object F7Devices {
     }
 
     /** Called after an allowed manual interaction. Uses NoammAddons' queue model. */
-    fun onSimonClick(pos: BlockPos) {
+    @JvmOverloads
+    fun onSimonClick(pos: BlockPos, activatesButton: Boolean = true) {
         if (!DungeonContext.inDungeon) return
         if (pos == ssStart) {
+            val mc = Minecraft.getInstance()
+            val player = mc.player ?: return
+            if (player.distanceToSqr(ssDeviceCenter) > 36.0 || mc.level?.getBlockState(pos)?.block != Blocks.STONE_BUTTON) return
+            if (!simonLifecycle.startFromInput(System.nanoTime(), activatesButton)) return
             resetSimonState()
             return
         }
+        if (simonLifecycle.completed) return
         if (pos !in ssButtons) return
+        simonLifecycle.observeRun(System.nanoTime())
         val expected = ssSequence.firstOrNull() ?: return
 
         if (pos != expected) {
@@ -384,7 +427,7 @@ object F7Devices {
 
     /** Exact NoammAddons-style pre-interaction protection. */
     fun shouldBlockSimonClick(pos: BlockPos): Boolean {
-        if (!Config.blockWrongDeviceClicks || !DungeonContext.inDungeon) return false
+        if (!Config.blockWrongDeviceClicks || !DungeonContext.inDungeon || simonLifecycle.completed) return false
         val player = Minecraft.getInstance().player ?: return false
         if (player.isCrouching || pos !in ssButtons) return false
         val expected = ssSequence.firstOrNull() ?: return false
@@ -403,10 +446,11 @@ object F7Devices {
         stormStarted = false
         emeraldSeen.clear()
         activeEmerald = null
-        resetSimonState()
+        resetSimonState(clearCompletion = true)
     }
 
-    private fun resetSimonState() {
+    private fun resetSimonState(clearCompletion: Boolean = false) {
+        if (clearCompletion) simonLifecycle.reset()
         ssSequence.clear()
         lastSSState = BooleanArray(ssObsidians.size)
         skipOver = false
@@ -414,9 +458,35 @@ object F7Devices {
         startClicksDone = 0
         nextStartClickAt = 0L
         ssLastClientTick = -1L
+        cancelSimonAim()
+    }
+
+    private fun cancelSimonAim() {
         aimState = AimState.IDLE
         aimTargetVec = null
         aimTargetBlock = null
+        aimSettledUntil = 0L
+        postClickPauseUntil = 0L
+    }
+
+    private fun observeSimonBoard(level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
+        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) return
+        val ready = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
+        if (ready || ssObsidians.any { level.getBlockState(it).block == Blocks.SEA_LANTERN }) {
+            simonLifecycle.observeRun(System.nanoTime())
+        }
+        simonLifecycle.observeBoard(ready)
+        if (!ready && aimTargetBlock in ssButtons) cancelSimonAim()
+    }
+
+    private fun completeSimon(reason: String) {
+        val durationNs = simonLifecycle.startedNs?.let { System.nanoTime() - it }
+        val rounds = simonLifecycle.round
+        // Clear every pending turn/click while retaining the acknowledgement
+        // latch. Neither a config toggle nor a board reset restarts this run.
+        resetSimonState()
+        AsthoonLite.LOGGER.info("[ASL-SIMON] complete source={} durationNs={} observedRounds={}", reason, durationNs, rounds)
+        InputCapture.onSimonCompleted(reason, durationNs, rounds)
     }
 
     fun reset() {

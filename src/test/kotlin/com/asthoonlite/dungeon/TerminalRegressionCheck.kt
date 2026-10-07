@@ -5,6 +5,8 @@ import com.asthoonlite.config.TerminalMode
 import com.asthoonlite.config.spreadWindow
 import com.asthoonlite.dungeon.TerminalSolver.Kind
 import com.google.gson.Gson
+import net.minecraft.core.component.DataComponents
+import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import kotlin.math.abs
@@ -228,13 +230,60 @@ internal fun terminalMotionAndGuiChecks() {
         // readout pinned at 1/1 for the whole terminal.
         val order = MutableList(36) { ItemStack(Items.WHITE_STAINED_GLASS_PANE) }
         val reds = listOf(0, 4, 7, 13, 18, 20, 24, 28, 30, 33)
-        check(reds.size == TerminalSolver.NUMBER_TERM_COUNT) { "numbers ships ten panes" }
+        check(reds.size == TerminalSolver.NUMBER_TERM_COUNT) { "the practice fixture has ten panes" }
         reds.forEachIndexed { i, slot -> order[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE, i + 1) }
         check(TerminalSolver.clickCandidates("Click in order!", order).size == 1) { "numbers is a chain" }
         check(TerminalSolver.goalFor("Click in order!", order) == reds.size) {
             "all ten numbered panes count, not the one the chain happens to offer"
         }
         check(TerminalSolver.goalFor("Chest", order) == 0) { "a non-terminal wants nothing" }
+
+        // Live menus can use two seven-wide rows and put numbers in formatted
+        // names while every stack has count one. The same values must drive
+        // text, candidates and the grid the pointer uses.
+        val liveSlots = (1..2).flatMap { row -> (1..7).map { col -> row * 9 + col } }
+        val named = MutableList(36) { ItemStack(Items.BLACK_STAINED_GLASS_PANE) }
+        liveSlots.forEachIndexed { index, slot ->
+            val number = 14 - index
+            named[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE).apply {
+                set(DataComponents.CUSTOM_NAME, Component.literal("§c$number"))
+            }
+            check(TerminalSolver.labelFor(slot, named[slot], Kind.ORDER) == number.toString())
+        }
+        check(TerminalSolver.clickCandidates("Click in order!", named) == listOf(liveSlots.last())) {
+            "formatted numeric names must order count-one stacks"
+        }
+        check(TerminalSolver.goalFor("Click in order!", named) == 14)
+        check(TerminalSolver.numberSlots(named) == liveSlots)
+        check(TermGui.requiredSlotsFor(Kind.ORDER, named) == 26) { "the live rightmost number is slot 25" }
+        val liveGrid = TermGui.layout(Kind.ORDER, 640, 360, 150, 4, orderSlots = TerminalSolver.numberSlots(named))
+        check(liveGrid.tiles.map { it.slot } == liveSlots)
+        check(liveGrid.width == 7 * 24 + 6 * 4 && liveGrid.height == 2 * 24 + 4)
+        for (slot in liveSlots) {
+            val center = liveGrid.center(slot)!!
+            check(liveGrid.hitTest(center.first.toDouble(), center.second.toDouble()) == slot)
+        }
+        val completedSlot = liveSlots.last()
+        named[completedSlot] = ItemStack(Items.LIME_STAINED_GLASS_PANE)
+        check(TerminalSolver.numberSlots(named) == liveSlots) { "completed panes must preserve the grid geometry" }
+        check(TerminalSolver.labelFor(completedSlot, named[completedSlot], Kind.ORDER) == null)
+        check(TerminalSolver.clickCandidates("Click in order!", named) == listOf(liveSlots[liveSlots.lastIndex - 1]))
+        check(TerminalSolver.goalFor("Click in order!", named) == 13)
+
+        val counted = MutableList(36) { ItemStack(Items.BLACK_STAINED_GLASS_PANE) }
+        liveSlots.forEachIndexed { index, slot -> counted[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE, index + 1) }
+        check(TerminalSolver.clickCandidates("Click in order!", counted) == listOf(liveSlots.first()))
+        check(TerminalSolver.labelFor(liveSlots.last(), counted[liveSlots.last()], Kind.ORDER) == "14")
+        check(TerminalSolver.numberSlots(counted + List(36) { ItemStack(Items.RED_STAINED_GLASS_PANE, 64) }) == liveSlots) {
+            "inventory panes must not grow the number grid"
+        }
+        val practiceSlots = (1..2).flatMap { row -> (2..6).map { col -> row * 9 + col } }
+        val practice = MutableList(36) { ItemStack(Items.BLACK_STAINED_GLASS_PANE) }
+        practiceSlots.forEachIndexed { index, slot -> practice[slot] = ItemStack(Items.RED_STAINED_GLASS_PANE, index + 1) }
+        val practiceGrid = TermGui.layout(Kind.ORDER, 640, 360, 100, 4, orderSlots = TerminalSolver.numberSlots(practice))
+        check(practiceGrid.tiles.map { it.slot } == practiceSlots && practiceGrid.tiles.size == 10)
+        check(TermGui.requiredSlotsFor(Kind.ORDER, practice) == 25)
+        check(TerminalSolver.goalFor("Click in order!", practice) == 10)
 
         // Rubix counts clicks, not panes: a pane two rings from the target is
         // two clicks of work, which no candidate list says.
@@ -254,6 +303,16 @@ internal fun terminalMotionAndGuiChecks() {
         check(TerminalSolver.goalFor("Change all to same color!", rubix, rubixTarget) == clicksNeeded)
         check(TerminalSolver.clickCandidates("Change all to same color!", rubix, rubixTarget = rubixTarget).size == 1) {
             "the candidate list counts panes, the goal counts clicks"
+        }
+        check(TermGui.rubixLabel(0, 4, simulation = true) == "1") {
+            "one backward practice click must display one, rather than four forward clicks"
+        }
+        check(TermGui.rubixLabel(0, 4, simulation = false) == "4") { "live labels retain the forward count" }
+        for (current in 0..4) for (wanted in 0..4) {
+            val shortest = minOf((wanted - current + 5) % 5, (current - wanted + 5) % 5)
+            val forward = (wanted - current + 5) % 5
+            check(TermGui.rubixLabel(current, wanted, simulation = true) == shortest.takeIf { it > 0 }?.toString())
+            check(TermGui.rubixLabel(current, wanted, simulation = false) == forward.takeIf { it > 0 }?.toString())
         }
 
         // The two kinds whose candidate list is already the answer.

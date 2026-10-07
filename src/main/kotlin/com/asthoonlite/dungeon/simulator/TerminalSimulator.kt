@@ -140,6 +140,11 @@ internal class TerminalSimulatorScreen(
 ) : ContainerScreen(menu, inventory, Component.literal(model.title)), TerminalCapture.PracticeScreen {
     private val clock = TerminalPracticeClock()
     private var wrongClicks = 0
+    private val initialRubixTarget = if (model.kind == TerminalSolver.Kind.RUBIX) {
+        model.items.let { items -> TerminalPracticeClock.initialRubixTarget(TerminalSolver.RUBIX_SLOTS.map {
+            TerminalHelper.rubixColorIndex(items[it])
+        }) }
+    } else null
 
     init { syncItems() }
 
@@ -147,15 +152,22 @@ internal class TerminalSimulatorScreen(
 
     fun submit(slot: Int, button: Int, source: String): Boolean {
         val requested = System.nanoTime()
-        if (!clock.enqueue(slot, button, source, requested / 1_000_000L, pingMs, requested)) return false
+        val rubixPane = model.kind == TerminalSolver.Kind.RUBIX && slot in model.correctSlots && button in 0..2
+        val predicted = if (rubixPane) clock.rubixPredictedColor(slot,
+            TerminalHelper.rubixColorIndex(container.getItem(slot))) else null
+        val target = if (rubixPane) AutoTerminal.rubixTargetOrNull() ?: initialRubixTarget else null
+        val effectiveButton = if (predicted != null) TerminalPracticeClock.effectiveRubixButton(button, source, predicted, target) else button
+        if (!clock.enqueue(slot, effectiveButton, source, requested / 1_000_000L, pingMs, requested,
+                requestedButton = button, rubixTarget = target, rubixPredictedBefore = predicted)) return false
         val queued = requireNotNull(clock.lastQueued)
         TerminalCapture.simulationInput(this, "click_queued", mapOf(
-            "inputId" to queued.id, "slot" to slot, "button" to button, "source" to source,
+            "inputId" to queued.id, "slot" to slot, "button" to effectiveButton,
+            "requestedButton" to button, "effectiveButton" to effectiveButton, "source" to source,
+            "rubixTarget" to target, "rubixPredictedBefore" to predicted,
             "requestedAtNs" to requested, "dueAtMs" to queued.dueAtMs, "pingMs" to pingMs
         ))
-        if (model.kind == TerminalSolver.Kind.RUBIX && slot in model.correctSlots && button in 0..2) {
-            val previous = AutoTerminal.rubixPredicted(slot) ?: TerminalHelper.rubixColorIndex(container.getItem(slot))
-            AutoTerminal.setRubixPredicted(slot, TerminalSolver.rubixAdvance(previous, if (button == 1) 1 else 0))
+        if (predicted != null && predicted in 0..4) {
+            AutoTerminal.setRubixPredicted(slot, TerminalSolver.rubixAdvance(predicted, if (effectiveButton == 1) 1 else 0))
         }
         return true
     }
@@ -220,6 +232,8 @@ internal class TerminalSimulatorScreen(
             syncItems()
             TerminalCapture.clickOutcome(this, click.slot, click.source, result.reason, wrongClicks, mapOf(
                 "inputId" to click.id, "button" to click.button, "accepted" to result.accepted,
+                "requestedButton" to click.requestedButton, "effectiveButton" to click.button,
+                "rubixTarget" to click.rubixTarget, "rubixPredictedBefore" to click.rubixPredictedBefore,
                 "requestedAtNs" to click.requestedAtNs, "dueAtMs" to click.dueAtMs,
                 "appliedAtNs" to System.nanoTime(), "modelTimeMs" to nowMs,
                 "modelRevision" to model.revision, "changedSlots" to result.changedSlots

@@ -22,7 +22,7 @@ import java.util.regex.Pattern
  * packet path the player would use by hand.
  */
 object TerminalSolver {
-    /** How many panes the number terminal ships with: ten, not nine. */
+    /** Odin's practice board has ten panes; live boards are read from their slots. */
     internal const val NUMBER_TERM_COUNT = 10
 
     /**
@@ -129,8 +129,31 @@ object TerminalSolver {
         if (stack == null || stack.isEmpty) return null
         if (slot < 0 || slot >= kind.slotCount) return null
         if (!stack.`is`(Items.RED_STAINED_GLASS_PANE)) return null
-        return stack.count.toString()
+        return numberValue(stack)?.toString()
     }
+
+    /** Some menus put the number in the formatted name instead of the stack count. */
+    internal fun numberValue(stack: ItemStack): Int? {
+        if (stack.isEmpty || !isNumberPane(stack)) return null
+        val name = cleanTitle(stack.hoverName.string)
+        return name.removePrefix("#").trim().toIntOrNull()?.takeIf { it > 0 }
+            ?: stack.count.takeIf { it > 0 }
+    }
+
+    private fun isNumberPane(stack: ItemStack): Boolean =
+        stack.`is`(Items.RED_STAINED_GLASS_PANE) || stack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+            stack.`is`(Items.GREEN_STAINED_GLASS_PANE)
+
+    /** Completed green panes retain their places so the live grid does not shrink. */
+    internal fun numberSlots(items: List<ItemStack>): List<Int> =
+        items.take(Kind.ORDER.slotCount).mapIndexedNotNull { slot, stack ->
+            slot.takeIf { numberValue(stack) != null }
+        }
+
+    private fun pendingNumbers(items: List<ItemStack>): List<Pair<Int, Int>> =
+        items.take(Kind.ORDER.slotCount).mapIndexedNotNull { slot, stack ->
+            if (stack.`is`(Items.RED_STAINED_GLASS_PANE)) numberValue(stack)?.let { slot to it } else null
+        }
 
     /**
      * Every slot in this terminal that still wants a click, unordered.
@@ -167,9 +190,7 @@ object TerminalSolver {
             // The number terminal is a chain: the pane whose count is still
             // the lowest is the only one the server will accept next.
             Kind.ORDER -> {
-                val reds = all.mapIndexedNotNull { i, s ->
-                    if (s.`is`(Items.RED_STAINED_GLASS_PANE) && i !in blocked) i to s.count else null
-                }
+                val reds = pendingNumbers(all).filter { it.first !in blocked }
                 if (reds.isEmpty()) return emptyList()
                 val next = reds.minOf { it.second }
                 reds.filter { it.second == next }.map { it.first }
@@ -242,7 +263,7 @@ object TerminalSolver {
         val type = kindOf(cleanTitle(screenTitle)) ?: return 0
         val all = items.take(type.slotCount)
         return when (type) {
-            Kind.ORDER -> all.count { it.`is`(Items.RED_STAINED_GLASS_PANE) }
+            Kind.ORDER -> pendingNumbers(all).size
             Kind.RUBIX -> {
                 val target = rubixTarget ?: optimalRubixTarget(all) ?: return 0
                 rubixPanes(all).sumOf { rubixDistance(it.second, target) }
@@ -417,9 +438,7 @@ object TerminalSolver {
 
     private fun orderColor(slot: Int, stack: ItemStack, all: List<ItemStack>): Int? {
         if (!stack.`is`(Items.RED_STAINED_GLASS_PANE)) return null
-        val ordered = all.mapIndexedNotNull { i, s ->
-            if (s.`is`(Items.RED_STAINED_GLASS_PANE)) i to s.count else null
-        }.sortedBy { it.second }.take(NUMBER_TERM_COUNT)
+        val ordered = pendingNumbers(all).sortedBy { it.second }
         val index = ordered.indexOfFirst { it.first == slot }
         return when (index) {
             0 -> 0xDD00E676.toInt()

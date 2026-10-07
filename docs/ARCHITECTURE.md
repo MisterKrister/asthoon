@@ -233,8 +233,10 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   and layout share the same **three**-row model: melody ships content rows
   1–3, row 0 above them is the marker strip and row 4 below them is the
   indicator, and `TermGui.contentRows` drops anything else out of the data
-  before it can grow the grid. Numbers ships ten panes
-  (`TerminalSolver.NUMBER_TERM_COUNT`), not nine. An unacknowledged melody
+  before it can grow the grid. Number practice ships ten panes
+  (`TerminalSolver.NUMBER_TERM_COUNT`); live number grids follow the actual
+  numbered slots so wider boards share the same drawing and cursor targets.
+  An unacknowledged melody
   click waits `MELODY_ROW_RETRY_MS` (250 ms) plus `MELODY_UPDATE_GRACE_MS`
   (three ticks, 150 ms) — the row is given time to arrive before the aim or
   the click answers for it, which is what keeps the pointer from walking back

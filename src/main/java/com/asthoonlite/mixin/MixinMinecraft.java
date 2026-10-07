@@ -75,7 +75,7 @@ public abstract class MixinMinecraft {
                 cir.cancel();
                 return;
             }
-            F7Devices.INSTANCE.onSimonClick(block.getBlockPos());
+            F7Devices.INSTANCE.onSimonClick(block.getBlockPos(), false);
         } else if (hitResult.getType() == HitResult.Type.ENTITY) {
             Entity entity = ((EntityHitResult) hitResult).getEntity();
             if (entity instanceof ItemFrame frame) {

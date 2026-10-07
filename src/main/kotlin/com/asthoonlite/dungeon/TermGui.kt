@@ -22,6 +22,7 @@ object TermGui {
     internal const val TILE_SIZE = 24
     private const val BACKGROUND = 0xF0090B10.toInt()
     private const val NEUTRAL = 0xFF292F3B.toInt()
+    private val DEFAULT_NUMBER_SLOTS = (1..2).flatMap { row -> (2..6).map { col -> row * 9 + col } }
     /** How long a click leaves its mark on the pane it was for. */
     private const val CLICK_FLASH_MS = 220L
     private var cachedRubixTarget: Int? = null
@@ -47,15 +48,15 @@ object TermGui {
     /** One layout feeds rendering, manual input and the animated cursor. */
     internal fun layout(
         kind: Kind, width: Int, height: Int, scalePercent: Int, gapPixels: Int,
-        melodyRows: List<Int> = listOf(1, 2, 3)
+        melodyRows: List<Int> = listOf(1, 2, 3), orderSlots: List<Int> = DEFAULT_NUMBER_SLOTS
     ): Grid {
-        val (rows, cols, startRow, startCol) = shape(kind, melodyRows)
+        val (rows, cols, startRow, startCol) = shape(kind, melodyRows, orderSlots)
         val gap = gapPixels.coerceIn(0, 12)
         val w = cols * TILE_SIZE + (cols - 1) * gap
         val h = rows * TILE_SIZE + (rows - 1) * gap
         val scale = minOf(scalePercent.coerceIn(50, 300) / 100f,
             (width - 16).coerceAtLeast(1) / w.toFloat(), (height - 48).coerceAtLeast(1) / h.toFloat())
-        return Grid((width - w * scale) / 2f, (height - h * scale) / 2f, scale, w, h, tiles(kind, melodyRows, gap))
+        return Grid((width - w * scale) / 2f, (height - h * scale) / 2f, scale, w, h, tiles(kind, melodyRows, gap, orderSlots))
     }
 
     /**
@@ -71,10 +72,15 @@ object TermGui {
     private fun contentRows(melodyRows: List<Int>): List<Int> = melodyRows.filter { it in 1..3 }
 
     /** rows, columns, and where the first one sits in the 9-wide menu list. */
-    private fun shape(kind: Kind, melodyRows: List<Int>): IntArray = when (kind) {
+    private fun shape(kind: Kind, melodyRows: List<Int>, orderSlots: List<Int>): IntArray = when (kind) {
         Kind.PANES -> intArrayOf(3, 5, 1, 2)
         Kind.RUBIX -> intArrayOf(3, 3, 1, 3)
-        Kind.ORDER -> intArrayOf(2, 5, 1, 2)
+        Kind.ORDER -> {
+            val slots = numberLayoutSlots(orderSlots)
+            val firstRow = slots.minOf { it / 9 }
+            val firstCol = slots.minOf { it % 9 }
+            intArrayOf(slots.maxOf { it / 9 } - firstRow + 1, slots.maxOf { it % 9 } - firstCol + 1, firstRow, firstCol)
+        }
         Kind.STARTS -> intArrayOf(3, 7, 1, 1)
         Kind.SELECT -> intArrayOf(4, 7, 1, 1)
         // Marker row, the three content rows, indicator row: five rows, seven
@@ -84,20 +90,28 @@ object TermGui {
 
     /** The tiles themselves — independent of the screen they will be drawn on,
      *  which is what lets the slot requirement be answered without one. */
-    internal fun tiles(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3), gapPixels: Int = 0): List<Tile> {
+    internal fun tiles(
+        kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3), gapPixels: Int = 0,
+        orderSlots: List<Int> = DEFAULT_NUMBER_SLOTS
+    ): List<Tile> {
         val rows = contentRows(melodyRows)
-        val (rowCount, cols, startRow, startCol) = shape(kind, rows)
+        val (rowCount, cols, startRow, startCol) = shape(kind, rows, orderSlots)
+        val numbers = if (kind == Kind.ORDER) numberLayoutSlots(orderSlots).toSet() else emptySet()
         val gap = gapPixels.coerceIn(0, 12)
         return buildList {
             for (r in 0 until rowCount) for (c in 0 until cols) {
                 val row = startRow + r
                 val col = startCol + c
+                if (kind == Kind.ORDER && row * 9 + col !in numbers) continue
                 if (kind == Kind.MELODY && (col == 6 ||
                     (row !in rows && (row != 0 && row != rowCount - 1 || col == 7)))) continue
                 add(Tile(row * 9 + col, c * (TILE_SIZE + gap), r * (TILE_SIZE + gap)))
             }
         }
     }
+
+    private fun numberLayoutSlots(slots: List<Int>): List<Int> =
+        slots.filter { it in 0 until Kind.ORDER.slotCount }.distinct().ifEmpty { DEFAULT_NUMBER_SLOTS }
 
     /**
      * How many slots the menu has to have for this terminal's grid to be
@@ -112,13 +126,17 @@ object TermGui {
      * draw it. Melody is the one kind whose rows are live, so its callers pass
      * what the menu actually shows.
      */
-    internal fun requiredSlots(kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3)): Int =
-        (tiles(kind, melodyRows).maxOfOrNull { it.slot } ?: -1) + 1
+    internal fun requiredSlots(
+        kind: Kind, melodyRows: List<Int> = listOf(1, 2, 3), orderSlots: List<Int> = DEFAULT_NUMBER_SLOTS
+    ): Int = (tiles(kind, melodyRows, orderSlots = orderSlots).maxOfOrNull { it.slot } ?: -1) + 1
 
     /** [requiredSlots] for a live menu: melody's answer depends on its rows. */
     internal fun requiredSlotsFor(kind: Kind, items: List<ItemStack>): Int =
-        if (kind == Kind.MELODY) requiredSlots(kind, TerminalSolver.melodyRows(items).map { it.row })
-        else requiredSlots(kind)
+        when (kind) {
+            Kind.MELODY -> requiredSlots(kind, TerminalSolver.melodyRows(items).map { it.row })
+            Kind.ORDER -> requiredSlots(kind, orderSlots = TerminalSolver.numberSlots(items))
+            else -> requiredSlots(kind)
+        }
 
     internal fun covers(kind: Kind, slotCount: Int, melodyRows: List<Int> = listOf(1, 2, 3)): Boolean =
         slotCount >= requiredSlots(kind, melodyRows)
@@ -127,7 +145,7 @@ object TermGui {
         if (!Config.termGuiEnabled || QuietMode.suppressing()) return false
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return false
         val slots = screen.menu.slots.size
-        return covers(kind, slots, liveMelodyRows(screen, kind))
+        return slots >= requiredSlotsFor(kind, items(screen, kind))
     }
 
     /** Melody's rows as the menu currently shows them; nothing else asks. */
@@ -142,7 +160,8 @@ object TermGui {
         // at the pane size, which is the entire reason the setting is separate.
         val tileScale = if (kind == Kind.MELODY) Config.termGuiMelodySize else Config.termGuiSize
         return layout(kind, screen.width, screen.height,
-            (tileScale * 100f).toInt(), Config.termGuiGap, rows)
+            (tileScale * 100f).toInt(), Config.termGuiGap, rows,
+            if (kind == Kind.ORDER) TerminalSolver.numberSlots(items(screen, kind)) else DEFAULT_NUMBER_SLOTS)
     }
 
     private fun items(screen: AbstractContainerScreen<*>, kind: Kind) = screen.menu.slots.take(kind.slotCount).map { it.item }
@@ -224,16 +243,16 @@ object TermGui {
             }
             fillRoundedRect(graphics, sx0, sy0, sx1, sy1, color ?: NEUTRAL, tileRadius)
 
-            // Practice must show the items a person is choosing, even with solver hints off.
-            if (simulation && (kind == Kind.SELECT || kind == Kind.STARTS || !Config.terminalSolverEnabled) && !stack.isEmpty) {
+            if (simulation && kind != Kind.SELECT && kind != Kind.STARTS && !Config.terminalSolverEnabled && !stack.isEmpty) {
                 graphics.pose().pushMatrix()
                 graphics.pose().translate(sx0.toFloat(), sy0.toFloat())
                 graphics.pose().scale(scale, scale)
                 graphics.item(stack, 1, 1)
                 graphics.pose().popMatrix()
-                if (tile.slot == hovered) {
-                    graphics.setTooltipForNextFrame(font, stack.hoverName, mouseX, mouseY)
-                }
+            }
+            if (simulation && tile.slot == hovered && !stack.isEmpty &&
+                (kind == Kind.SELECT || kind == Kind.STARTS || !Config.terminalSolverEnabled)) {
+                graphics.setTooltipForNextFrame(font, stack.hoverName, mouseX, mouseY)
             }
 
             val label = TerminalSolver.labelFor(tile.slot, stack, kind)
@@ -242,8 +261,7 @@ object TermGui {
                         ?: TerminalHelper.rubixColorIndex(stack).takeIf { it >= 0 }
                     val wanted = target ?: cachedRubixTarget ?: TerminalSolver.optimalRubixTarget(all)
                     if (current != null && wanted != null) {
-                        val clicks = (wanted - current + 5) % 5
-                        if (clicks > 0) clicks.toString() else null
+                        rubixLabel(current, wanted, simulation)
                     } else null
                 } else null
 
@@ -279,6 +297,12 @@ object TermGui {
                 }
             }
         }
+    }
+
+    /** Practice left-clicks take the shortest direction; live labels keep their forward count. */
+    internal fun rubixLabel(current: Int, wanted: Int, simulation: Boolean): String? {
+        val clicks = if (simulation) TerminalSolver.rubixDistance(current, wanted) else (wanted - current + 5) % 5
+        return clicks.takeIf { it > 0 }?.toString()
     }
 
     /** Gaps and padding consume input, but never become hidden vanilla slot clicks. */
