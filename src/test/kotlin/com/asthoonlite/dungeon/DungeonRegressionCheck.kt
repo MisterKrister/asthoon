@@ -900,6 +900,9 @@ fun main() {
         check(TerminalCursor.progressAt(90, 100) > 0.99f) { "the default curve should land gently" }
 
         terminalMotionAndGuiChecks()
+        terminalSimulationChecks()
+        terminalPracticeRegressionChecks()
+        terminalCaptureRegressionChecks()
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)
