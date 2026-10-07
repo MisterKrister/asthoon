@@ -4,6 +4,8 @@ import com.asthoonlite.AsthoonLite
 import com.asthoonlite.QuietMode
 import com.mojang.blaze3d.pipeline.BlendFunction
 import com.mojang.blaze3d.pipeline.ColorTargetState
+import com.mojang.blaze3d.pipeline.DepthStencilState
+import com.mojang.blaze3d.platform.CompareOp
 import com.mojang.blaze3d.buffers.GpuBuffer
 import com.mojang.blaze3d.buffers.GpuBufferSlice
 import com.mojang.blaze3d.pipeline.RenderPipeline
@@ -76,6 +78,7 @@ object WorldBoxRenderer {
             .withLocation(Identifier.fromNamespaceAndPath(AsthoonLite.MOD_ID, "pipeline/world_box"))
             .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.QUADS)
             .withColorTargetState(ColorTargetState(BlendFunction.TRANSLUCENT))
+            .withDepthStencilState(DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, false))
             .build()
     )
 

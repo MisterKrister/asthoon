@@ -291,6 +291,10 @@ object Config {
         var terminalSimulatorPingMs: Int = 0,
         var terminalInputLoggingEnabled: Boolean = false,
         var terminalSimulatorNoMelody: Boolean = false,
+
+        // ── Hitbox environment & visibility ─────────────────────────────────
+        var secretHitboxAnywhere: Boolean = true,
+        var secretHitboxThroughWalls: Boolean = true,
     )
 
     var data = Data()
@@ -1148,6 +1152,14 @@ object Config {
     var autoTerminalMode: Int
         get() = data.autoTerminalMode
         set(v) { data.autoTerminalMode = v; save() }
+
+    var secretHitboxAnywhere: Boolean
+        get() = data.secretHitboxAnywhere
+        set(v) { data.secretHitboxAnywhere = v; save() }
+
+    var secretHitboxThroughWalls: Boolean
+        get() = data.secretHitboxThroughWalls
+        set(v) { data.secretHitboxThroughWalls = v; save() }
 
     fun load() {
         if (!configDir.exists()) configDir.mkdirs()

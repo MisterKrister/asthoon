@@ -373,10 +373,12 @@ object AutoTerminal {
      * is where the pointer is coming from. [rubixTargetOrNull] is the colour
      * Rubix has committed to; null before the first read.
      */
-    internal fun unsettledSlots(now: Long = System.currentTimeMillis()): Set<Int> =
+    @JvmStatic
+    fun unsettledSlots(now: Long = System.currentTimeMillis()): Set<Int> =
         clickedSlotsWithTime.filterValues { now - it < CLICK_TIMEOUT_MS }.keys.toSet()
 
-    internal fun lastClickedSlot(): Int? = lastSlot.takeIf { it >= 0 }
+    @JvmStatic
+    fun lastClickedSlot(): Int? = lastSlot.takeIf { it >= 0 }
 
     /** The pane that was last clicked and the moment it happened, for the
      *  grid's flash. Null before the first click of a terminal. */
@@ -396,7 +398,8 @@ object AutoTerminal {
 
     internal data class Progress(val name: String, val done: Int, val goal: Int)
 
-    internal fun rubixTargetOrNull(): Int? = lastRubixTarget
+    @JvmStatic
+    fun rubixTargetOrNull(): Int? = lastRubixTarget
 
     fun rubixPredicted(slot: Int): Int? = rubixPredicted[slot]
 

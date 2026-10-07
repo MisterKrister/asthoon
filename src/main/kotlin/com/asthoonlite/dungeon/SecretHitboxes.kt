@@ -98,7 +98,7 @@ object SecretHitboxes {
      */
     @JvmStatic
     fun shapeOverrideEnabled(): Boolean =
-        DungeonContext.inDungeon && Config.secretHitboxesEnabled
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled
 
     /**
      * Enlarged interaction shape for this state/pos, or null to let vanilla
@@ -153,19 +153,19 @@ object SecretHitboxes {
 
     @JvmStatic
     fun isValidLever(pos: BlockPos): Boolean =
-        DungeonContext.inDungeon && Config.secretHitboxesEnabled && Config.leverHitboxEnabled && pos !in blackListedLevers
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled && Config.leverHitboxEnabled && pos !in blackListedLevers
 
     @JvmStatic
     fun isButtonHitboxEnabled(): Boolean =
-        DungeonContext.inDungeon && Config.secretHitboxesEnabled && Config.buttonHitboxEnabled
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled && Config.buttonHitboxEnabled
 
     @JvmStatic
     fun isSkullHitboxEnabled(): Boolean =
-        DungeonContext.inDungeon && Config.secretHitboxesEnabled && Config.skullHitboxEnabled
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled && Config.skullHitboxEnabled
 
     @JvmStatic
     fun isMushroomHitboxEnabled(): Boolean =
-        DungeonContext.inDungeon && Config.secretHitboxesEnabled && Config.mushroomHitboxEnabled
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled && Config.mushroomHitboxEnabled
 
     @JvmStatic
     fun isLeverHitboxEnabled(pos: BlockPos): Boolean = isValidLever(pos)
@@ -403,7 +403,8 @@ object SecretHitboxes {
     }
 
     private fun tick() {
-        if (!DungeonContext.inDungeon || (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled)) {
+        if ((!DungeonContext.inDungeon && !Config.secretHitboxAnywhere) ||
+            (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled)) {
             if (tracked.isNotEmpty() || pressedUntil.isNotEmpty() || previousPowered.isNotEmpty()) {
                 pressedUntil.clear()
                 previousPowered.clear()
@@ -477,7 +478,7 @@ object SecretHitboxes {
     }
 
     private fun render() {
-        if (!DungeonContext.inDungeon) return
+        if (!DungeonContext.inDungeon && !Config.secretHitboxAnywhere) return
         if (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled) return
         val mc = Minecraft.getInstance()
         val level = mc.level ?: return
@@ -493,11 +494,13 @@ object SecretHitboxes {
                 val pz = secret.pos.z.toDouble()
                 WorldBoxRenderer.queueOutline(
                     px + b[0], py + b[1], pz + b[2], px + b[3], py + b[4], pz + b[5],
-                    0.12f, 0.70f, 1f, 1f, thickness = 0.025
+                    0.12f, 0.70f, 1f, 1f, thickness = 0.025,
+                    throughWalls = Config.secretHitboxThroughWalls
                 )
                 WorldBoxRenderer.queueFilled(
                     px + b[0], py + b[1], pz + b[2], px + b[3], py + b[4], pz + b[5],
-                    0.12f, 0.70f, 1f, 0.08f
+                    0.12f, 0.70f, 1f, 0.08f,
+                    throughWalls = Config.secretHitboxThroughWalls
                 )
             }
         }
@@ -514,7 +517,8 @@ object SecretHitboxes {
             WorldBoxRenderer.queueOutline(
                 pos.x + shape.minX, pos.y + shape.minY, pos.z + shape.minZ,
                 pos.x + shape.maxX, pos.y + shape.maxY, pos.z + shape.maxZ,
-                1f, 0.82f, 0.1f, 1f
+                1f, 0.82f, 0.1f, 1f,
+                throughWalls = Config.secretHitboxThroughWalls
             )
         }
     }

@@ -565,6 +565,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     Config.autoTerminalEaseY2 = it
                 }),
                 SectionHeader("Custom Terminal GUI"),
+                ToggleRow("Custom Terminal GUI", "Renders clean custom centered grid overlay for terminals",
+                    { Config.termGuiEnabled }, { Config.termGuiEnabled = it }),
                 WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 3.0f, Config.termGuiSize, "Term Size: ", "x") {
                     Config.termGuiSize = it
                 }),
@@ -598,6 +600,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Secret Hitbox Toggles"),
                 ToggleRow("Secret Hitboxes", "Enlarged clickboxes for dungeon secrets",
                     { Config.secretHitboxesEnabled }, { Config.secretHitboxesEnabled = it }),
+                ToggleRow("  ↳ Run Anywhere", "Also applies outside Catacombs (housing, practice worlds, singleplayer)",
+                    { Config.secretHitboxAnywhere }, { Config.secretHitboxAnywhere = it }),
                 ToggleRow("  ↳ Lever Hitbox", "Hitbox matching the 3D lever target area",
                     { Config.leverHitboxEnabled }, { Config.leverHitboxEnabled = it }),
                 ToggleRow("  ↳ Button Hitbox", "Enlarged button target area",
@@ -623,6 +627,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Hitbox Visuals & Outline"),
                 ToggleRow("Show 3D Hitbox Boxes", "Renders custom 3D boxes in-game",
                     { Config.moddedHitboxDisplayEnabled }, { Config.moddedHitboxDisplayEnabled = it }),
+                ToggleRow("  ↳ Through Walls", "Renders 3D boxes through walls so recessed secrets stay visible",
+                    { Config.secretHitboxThroughWalls }, { Config.secretHitboxThroughWalls = it }),
                 ToggleRow("Legit Selection Outline", "Shows vanilla outline when looking at blocks",
                     { Config.secretHitboxVanillaOutline }, { Config.secretHitboxVanillaOutline = it }),
                 ToggleRow("Hide Selection Outline", "Completely hide the in-game black selection outline",

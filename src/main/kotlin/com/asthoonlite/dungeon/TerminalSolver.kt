@@ -435,7 +435,8 @@ object TerminalSolver {
     fun melodyActiveButton(all: List<ItemStack>): Int? =
         melodyRows(all).firstOrNull { !it.completed && it.movingSlot != null }?.buttonSlot
 
-    internal val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
+    @JvmField
+    val RUBIX_SLOTS = listOf(12, 13, 14, 21, 22, 23, 30, 31, 32)
 
     // ── Presentation ─────────────────────────────────────────────────────────
 
