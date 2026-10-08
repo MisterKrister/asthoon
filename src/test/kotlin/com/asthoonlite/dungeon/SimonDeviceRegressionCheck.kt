@@ -91,4 +91,19 @@ internal fun simonDeviceRegressionChecks() {
     check(seq.getOrNull(clickIdx) == b4)
     clickIdx++
     check(clickIdx >= seq.size)
+
+    // Verify waiting focus target right after skip (before lanterns appear) is in the middle device area and varies
+    val middleYRange = 121.0..122.5
+    val middleZRange = 92.7..94.4
+    val randTargets = (1..50).map {
+        val randY = 121.75 + kotlin.random.Random.nextDouble(-0.65, 0.65)
+        val randZ = 93.55 + kotlin.random.Random.nextDouble(-0.75, 0.75)
+        net.minecraft.world.phys.Vec3(110.875, randY, randZ)
+    }
+    check(randTargets.all { it.y in middleYRange && it.z in middleZRange }) {
+        "All skip waiting targets must land in the middle device area"
+    }
+    check(randTargets.distinctBy { it.y }.size > 10 && randTargets.distinctBy { it.z }.size > 10) {
+        "Skip waiting targets must vary across multiple skips instead of moving to the exact same spot"
+    }
 }

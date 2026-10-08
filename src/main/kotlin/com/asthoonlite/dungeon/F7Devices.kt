@@ -81,10 +81,20 @@ object F7Devices {
     // Organic varied movement parameters per aim
     private var aimArcAmplitudeYaw = 0f
     private var aimArcAmplitudePitch = 0f
-    private var aimEasePower = 3.0f
+    private var aimArcSkew = 0f
+    private var aimEasePowerYaw = 3.0f
+    private var aimEasePowerPitch = 3.0f
+    private var aimYawLead = 0f
     private var aimTremorAmpYaw = 0f
     private var aimTremorAmpPitch = 0f
-    private var aimTremorFreq = 12.0f
+    private var aimTremorFreq1 = 11.0f
+    private var aimTremorFreq2 = 22.0f
+    private var aimTremorPhase1 = 0f
+    private var aimTremorPhase2 = 0f
+    private var aimOvershootYaw = 0f
+    private var aimOvershootPitch = 0f
+
+    private var skipWaitTargetVec: Vec3? = null
 
     fun register() {
         ClientReceiveMessageEvents.ALLOW_GAME.register { text, overlay ->
@@ -239,22 +249,44 @@ object F7Devices {
             AimState.TURNING -> {
                 val elapsed = now - aimStartTime
                 val t = (elapsed.toFloat() / aimDurationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
-                val eased = easeNatural(t, aimEasePower)
+
+                // Asymmetric arc envelope: smooth bell curve with subtle skew
+                val envelope = (sin(t * Math.PI.toFloat()) * (1f + aimArcSkew * (t - 0.5f))).coerceAtLeast(0f)
+
+                // Decoupled yaw and pitch easing with slight phase lead/lag
+                val tYaw = (t + aimYawLead * envelope).coerceIn(0f, 1f)
+                val tPitch = (t - aimYawLead * envelope).coerceIn(0f, 1f)
+                val easedYaw = easeNatural(tYaw, aimEasePowerYaw)
+                val easedPitch = easeNatural(tPitch, aimEasePowerPitch)
+
                 val dy = shortestAngleDist(aimStartYaw, aimDestYaw)
                 val dp = aimDestPitch - aimStartPitch
 
-                // Path arc curvature (sine envelope: 0 at start, 1 in middle, 0 at end)
-                val envelope = sin(t * Math.PI.toFloat())
+                // Path arc curvature
                 val arcYaw = aimArcAmplitudeYaw * envelope
                 val arcPitch = aimArcAmplitudePitch * envelope
 
-                // Subtle physiological tremor during travel
-                val tremor = envelope * sin(t * aimTremorFreq)
-                val tremorYaw = aimTremorAmpYaw * tremor
-                val tremorPitch = aimTremorAmpPitch * tremor
+                // Multi-frequency physiological motor noise
+                val tremor1 = sin(t * aimTremorFreq1 + aimTremorPhase1)
+                val tremor2 = sin(t * aimTremorFreq2 + aimTremorPhase2) * 0.4f
+                val noiseYaw = aimTremorAmpYaw * envelope * (tremor1 + tremor2)
+                val noisePitch = aimTremorAmpPitch * envelope * (tremor1 + tremor2)
 
-                player.yRot = aimStartYaw + dy * eased + arcYaw + tremorYaw
-                player.xRot = aimStartPitch + dp * eased + arcPitch + tremorPitch
+                // Subtle organic deceleration micro-adjustment in final 25%
+                val overYaw: Float
+                val overPitch: Float
+                if (t > 0.75f) {
+                    val st = ((t - 0.75f) / 0.25f).coerceIn(0f, 1f)
+                    val overEnv = sin(st * Math.PI.toFloat()) * (1f - st)
+                    overYaw = aimOvershootYaw * overEnv
+                    overPitch = aimOvershootPitch * overEnv
+                } else {
+                    overYaw = 0f
+                    overPitch = 0f
+                }
+
+                player.yRot = aimStartYaw + dy * easedYaw + arcYaw + noiseYaw + overYaw
+                player.xRot = aimStartPitch + dp * easedPitch + arcPitch + noisePitch + overPitch
 
                 if (t >= 1f) {
                     player.yRot = aimDestYaw
@@ -272,8 +304,12 @@ object F7Devices {
                 }
             }
             AimState.SETTLED -> {
-                player.yRot = aimDestYaw
-                player.xRot = aimDestPitch
+                // Organic resting hand micro-sway while waiting / settled
+                val settleTime = (now - (aimStartTime + aimDurationMs)).coerceAtLeast(0L).toFloat()
+                val swayYaw = sin(settleTime * 0.007f + aimTremorPhase1) * 0.025f
+                val swayPitch = cos(settleTime * 0.009f + aimTremorPhase2) * 0.02f
+                player.yRot = aimDestYaw + swayYaw
+                player.xRot = aimDestPitch + swayPitch
             }
             AimState.POST_CLICK_PAUSE -> {
                 if (now >= postClickPauseUntil) {
@@ -285,15 +321,19 @@ object F7Devices {
     }
 
     private fun startAim(player: net.minecraft.client.player.LocalPlayer, pos: BlockPos, slow: Boolean = false) {
-        val fastMode = Config.autoSimonSaysFast
-
-        // Target west face of button at x=110.875 with organic random offset.
-        // Button is 0.25 x 0.25 blocks wide on Y and Z (from 0.375 to 0.625).
-        // For buttons, ±0.065 is ~1 pixel away from center (0.52), guaranteed to be on the button face.
-        // For slow (going back between sequences), allow wider natural variation around the waiting button
-        val offY = if (slow) Random.nextDouble(-0.12, 0.12) else Random.nextDouble(-0.065, 0.065)
-        val offZ = if (slow) Random.nextDouble(-0.12, 0.12) else Random.nextDouble(-0.065, 0.065)
+        val offY = if (slow) Random.nextDouble(-0.16, 0.16) else Random.nextDouble(-0.085, 0.085)
+        val offZ = if (slow) Random.nextDouble(-0.16, 0.16) else Random.nextDouble(-0.085, 0.085)
         val target = Vec3(110.875, pos.y + 0.52 + offY, pos.z + 0.52 + offZ)
+        startAimVec(player, target, pos, slow)
+    }
+
+    private fun startAimVec(
+        player: net.minecraft.client.player.LocalPlayer,
+        target: Vec3,
+        pos: BlockPos?,
+        slow: Boolean = false
+    ) {
+        val fastMode = Config.autoSimonSaysFast
 
         val eye = player.eyePosition
         val d = target.subtract(eye)
@@ -310,15 +350,13 @@ object F7Devices {
         val duration = aimDuration(angleDist, slow, fastMode)
 
         // Path curvature (arc/bow) perpendicular to travel direction:
-        // A natural wrist/arm sweep curves slightly off the straight line.
+        // A natural wrist/arm sweep curves off the straight line.
         val arcMagnitude = if (slow) {
-            // Going back: relaxed, wider arc variations (-2.2 to +2.2 degrees)
-            if (fastMode) Random.nextFloat() * 2.4f - 1.2f
-            else Random.nextFloat() * 4.4f - 2.2f
+            if (fastMode) Random.nextFloat() * 3.4f - 1.7f
+            else Random.nextFloat() * 5.8f - 2.9f
         } else {
-            // Sequence buttons: subtle wrist curve (-1.2 to +1.2 degrees scaled by distance)
-            val base = if (fastMode) 0.8f else 1.5f
-            (Random.nextFloat() * (2 * base) - base) * (angleDist / 18f).coerceIn(0.4f, 1.4f)
+            val base = if (fastMode) 1.2f else 2.2f
+            (Random.nextFloat() * (2 * base) - base) * (angleDist / 16f).coerceIn(0.4f, 1.6f)
         }
 
         // Perpendicular vector (-dp, dy) normalized
@@ -332,18 +370,29 @@ object F7Devices {
             aimArcAmplitudePitch = 0f
         }
 
-        // Organic easing parameter (randomized asymmetry per aim)
-        aimEasePower = if (fastMode) {
-            Random.nextFloat() * 0.4f + 2.4f
-        } else {
-            Random.nextFloat() * 0.8f + 2.6f // 2.6 to 3.4
-        }
+        // Asymmetric arc envelope skew (-0.35 to +0.35)
+        aimArcSkew = Random.nextFloat() * 0.7f - 0.35f
 
-        // Micro-tremor amplitude: subtle hand variation during movement
-        val tremorScale = if (fastMode) 0.03f else 0.07f
+        // Decoupled easing powers: yaw and pitch accelerate/decelerate independently
+        aimEasePowerYaw = if (fastMode) Random.nextFloat() * 0.6f + 2.3f else Random.nextFloat() * 0.9f + 2.5f
+        aimEasePowerPitch = if (fastMode) Random.nextFloat() * 0.6f + 2.4f else Random.nextFloat() * 0.9f + 2.6f
+
+        // Axis phase lead/lag: either wrist leads fingers or fingers lead wrist slightly
+        aimYawLead = Random.nextFloat() * 0.10f - 0.05f
+
+        // Multi-frequency neuromuscular tremor
+        val tremorScale = if (fastMode) 0.035f else 0.075f
         aimTremorAmpYaw = (Random.nextFloat() * 2f - 1f) * tremorScale
         aimTremorAmpPitch = (Random.nextFloat() * 2f - 1f) * tremorScale
-        aimTremorFreq = Random.nextFloat() * 4.0f + 10.0f // 10 to 14 Hz physiological tremor
+        aimTremorFreq1 = Random.nextFloat() * 4.0f + 9.0f   // 9 to 13 Hz primary sway
+        aimTremorFreq2 = Random.nextFloat() * 8.0f + 18.0f  // 18 to 26 Hz secondary micro-fluctuation
+        aimTremorPhase1 = Random.nextFloat() * (2 * Math.PI.toFloat())
+        aimTremorPhase2 = Random.nextFloat() * (2 * Math.PI.toFloat())
+
+        // Subtle organic deceleration micro-adjustment (overshoot/dampening)
+        val overScale = if (fastMode) 0.09f else 0.18f
+        aimOvershootYaw = (Random.nextFloat() * 2f - 1f) * overScale * (angleDist / 20f).coerceIn(0.3f, 1.0f)
+        aimOvershootPitch = (Random.nextFloat() * 2f - 1f) * overScale * (angleDist / 20f).coerceIn(0.3f, 1.0f)
 
         aimTargetVec = target
         aimTargetBlock = pos
@@ -411,6 +460,7 @@ object F7Devices {
                     skipOver = false
                     brokenButton = null
                     startingButton = null
+                    skipWaitTargetVec = null
                 }
             }
             return
@@ -471,6 +521,9 @@ object F7Devices {
                     startClicksDone = 0
                     aimState = AimState.POST_CLICK_PAUSE
                     postClickPauseUntil = now + (if (fastMode) Random.nextLong(10L, 25L) else Random.nextLong(20L, 45L))
+                    val randY = 121.75 + Random.nextDouble(-0.65, 0.65)
+                    val randZ = 93.55 + Random.nextDouble(-0.75, 0.75)
+                    skipWaitTargetVec = Vec3(110.875, randY, randZ)
                 } else {
                     // Cadence between start clicks: fast mode ~15 CPS (55-75ms), normal ~9-10 CPS (95-115ms)
                     val delay = if (fastMode) Random.nextLong(55L, 75L) else Random.nextLong(95L, 115L)
@@ -504,19 +557,33 @@ object F7Devices {
 
         val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
 
-        // Inter-round waiting: smoothly look back towards the button at the start of the sequence,
-        // ignoring the one that broke off, arriving well in time before buttons spawn.
+        // Inter-round waiting: smoothly look back towards the button at the start of the sequence
+        // (if known, ignoring broken button) or towards the middle of the device right after skip.
         if (!boardReady && (simonLifecycle.active || ssStartClicked) && !simonLifecycle.completed && simonLifecycle.round < 5) {
             clickIndex = 0
-            val waitingTarget = startingButton ?: ssButtonCheck
             val waitCooldown = if (fastMode) 15L else 30L
-            if (aimTargetBlock != waitingTarget && (aimState == AimState.IDLE || aimState == AimState.SETTLED) && now - lastSSClick > waitCooldown) {
-                startAim(player, waitingTarget, slow = true)
-                return
+            if (now - lastSSClick > waitCooldown && (aimState == AimState.IDLE || aimState == AimState.SETTLED)) {
+                if (startingButton != null) {
+                    val startBtn = startingButton!!
+                    if (aimTargetBlock != startBtn) {
+                        startAim(player, startBtn, slow = true)
+                        return
+                    }
+                } else {
+                    val targetVec = skipWaitTargetVec ?: run {
+                        val randY = 121.75 + Random.nextDouble(-0.65, 0.65)
+                        val randZ = 93.55 + Random.nextDouble(-0.75, 0.75)
+                        Vec3(110.875, randY, randZ).also { skipWaitTargetVec = it }
+                    }
+                    if (aimTargetVec != targetVec) {
+                        startAimVec(player, targetVec, pos = null, slow = true)
+                        return
+                    }
+                }
             }
         }
 
-        if (aimState != AimState.IDLE) return
+        if (aimState == AimState.TURNING || aimState == AimState.POST_CLICK_PAUSE) return
 
         // 3. Check if device needs to be started
         if (!ssStartClicked && ssSequence.isEmpty()) {
@@ -625,6 +692,7 @@ object F7Devices {
         startClicksDone = 0
         nextStartClickAt = 0L
         ssLastClientTick = -1L
+        skipWaitTargetVec = null
         cancelSimonAim()
     }
 
@@ -636,8 +704,12 @@ object F7Devices {
         postClickPauseUntil = 0L
         aimArcAmplitudeYaw = 0f
         aimArcAmplitudePitch = 0f
+        aimArcSkew = 0f
+        aimYawLead = 0f
         aimTremorAmpYaw = 0f
         aimTremorAmpPitch = 0f
+        aimOvershootYaw = 0f
+        aimOvershootPitch = 0f
     }
 
     private fun observeSimonBoard(level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
