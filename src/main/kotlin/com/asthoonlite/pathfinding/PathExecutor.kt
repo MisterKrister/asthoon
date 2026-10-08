@@ -6,6 +6,7 @@ import com.asthoonlite.dungeon.F7Devices
 import com.asthoonlite.dungeon.TerminalInteraction
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
+import net.minecraft.client.DeltaTracker
 import net.minecraft.client.Minecraft
 import net.minecraft.client.player.LocalPlayer
 import net.minecraft.core.BlockPos
@@ -289,10 +290,10 @@ object PathExecutor {
             val isAtLaunchLedge = isLedgeOrGapAhead(level, player, nextYaw)
 
             // Must be on solid ground (NEVER mid-air while landing from a prior jump)
-            // Must have arrived on the platform (distH <= 1.5 or at launch ledge)
-            // Must have forward sprint speed (bpsH >= 8.0) or be right at the platform edge
-            val isArrivedOnPlatform = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-            val hasLaunchSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
+            // Must have arrived on the platform (distH <= 2.2 or at launch ledge, or distH <= 2.8 if at starting node)
+            // Must have forward sprint speed (bpsH >= 6.0, or at ledge, or if close to start node)
+            val isArrivedOnPlatform = distH <= 2.2 || (isAtLaunchLedge && distH <= 2.8) || (currentNodeIndex == 0 && distH <= 2.8)
+            val hasLaunchSpeed = currentBpsH >= 6.0 || isAtLaunchLedge || (currentNodeIndex == 0 && (currentBpsH >= 4.5 || distH <= 0.8))
             val canLaunch = player.onGround() && !player.isInLava && !player.isInWater &&
                             isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed
 
@@ -547,19 +548,19 @@ object PathExecutor {
                 mc.options.keyLeft.setDown(false)
                 mc.options.keyRight.setDown(false)
                 mc.options.keySprint.setDown(false)
-            } else if (target.hasLookNode) {
-                // Explicit look-node: camera is decoupled, full WASD vectoring
-                mc.options.keyUp.setDown(forward > 0.25)
-                mc.options.keyDown.setDown(forward < -0.25)
-                mc.options.keyLeft.setDown(strafe > 0.25)
-                mc.options.keyRight.setDown(strafe < -0.25)
+            } else if (target.hasLookNode || nodeType == RouteNodeType.BONZO_STAFF) {
+                // Decoupled camera or Bonzo pre-aiming: full WASD vectoring to steer onto platform
+                mc.options.keyUp.setDown(forward > 0.20)
+                mc.options.keyDown.setDown(forward < -0.20)
+                mc.options.keyLeft.setDown(strafe > 0.20)
+                mc.options.keyRight.setDown(strafe < -0.20)
 
                 if (isCrouchNode) {
                     mc.options.keyShift.setDown(true)
                     mc.options.keySprint.setDown(false)
                 } else {
                     mc.options.keyShift.setDown(false)
-                    val wantsSprint = forward > 0.38
+                    val wantsSprint = (forward > 0.20 || nodeType == RouteNodeType.BONZO_STAFF) && !isSlowingForStationary
                     mc.options.keySprint.setDown(wantsSprint)
                     if (wantsSprint && !player.isSprinting) player.setSprinting(true)
                 }
@@ -639,6 +640,142 @@ object PathExecutor {
         }
     }
 
+    fun onRenderFrame(deltaTracker: DeltaTracker) {
+        if (!isActive) return
+        val preset = activePreset ?: return
+        val mc = Minecraft.getInstance()
+        val player = mc.player ?: return
+        val points = preset.points
+        if (currentNodeIndex !in points.indices) return
+
+        val target = points[currentNodeIndex]
+        val nodeType = target.nodeType()
+        val nextTarget = points.getOrNull(currentNodeIndex + 1)
+
+        val partialTick = deltaTracker.getGameTimeDeltaPartialTick(true)
+        val dtTicks = deltaTracker.realtimeDeltaTicks.coerceIn(0.005f, 1.0f)
+
+        // Intra-tick kinematic prediction: extrapolate player position along current velocity vector
+        val renderX = Mth.lerp(partialTick.toDouble(), player.xo, player.x)
+        val renderY = Mth.lerp(partialTick.toDouble(), player.yo, player.y)
+        val renderZ = Mth.lerp(partialTick.toDouble(), player.zo, player.z)
+
+        val vx = player.deltaMovement.x
+        val vy = player.deltaMovement.y
+        val vz = player.deltaMovement.z
+
+        // Forward prediction lookahead (0.5 ticks ahead to lead the camera smoothly along movement)
+        val predLead = 0.5
+        val predX = renderX + vx * predLead
+        val predY = renderY + vy * predLead
+        val predZ = renderZ + vz * predLead
+        val predEyeY = predY + player.eyeHeight
+
+        val dx = target.x - predX
+        val dz = target.z - predZ
+        val distH = sqrt(dx * dx + dz * dz)
+
+        val goalYaw: Float
+        val goalPitch: Float
+        val isFastAim: Boolean
+
+        when {
+            bonzoState == BonzoState.POST_FIRE_PROPEL -> {
+                goalYaw = bonzoLaunchYaw
+                goalPitch = 10.0f
+                isFastAim = true
+            }
+            nodeType == RouteNodeType.BONZO_STAFF && distH < 2.8 -> {
+                goalYaw = if (target.hasLookNode) {
+                    val ldx = target.lookX - predX
+                    val ldz = target.lookZ - predZ
+                    (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+                } else if (nextTarget != null) {
+                    val bDx = nextTarget.x - predX
+                    val bDz = nextTarget.z - predZ
+                    (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
+                } else {
+                    target.yaw
+                }
+                goalPitch = if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
+                isFastAim = true
+            }
+            nodeType == RouteNodeType.SIMON_SAYS && distH < 3.0 -> {
+                val simonPos = Vec3(110.5, 121.5, 93.5)
+                val sdx = simonPos.x - predX
+                val sdy = simonPos.y - predEyeY
+                val sdz = simonPos.z - predZ
+                val sdistH = sqrt(sdx * sdx + sdz * sdz)
+                goalYaw = (-Math.toDegrees(atan2(sdx, sdz))).toFloat()
+                goalPitch = (-Math.toDegrees(atan2(sdy, sdistH))).toFloat().coerceIn(-89f, 89f)
+                isFastAim = false
+            }
+            nodeType == RouteNodeType.ARROWS_ALIGN && distH < 3.0 -> {
+                val arrowPos = Vec3(-2.0, 122.5, 77.0)
+                val adx = arrowPos.x - predX
+                val ady = arrowPos.y - predEyeY
+                val adz = arrowPos.z - predZ
+                val adistH = sqrt(adx * adx + adz * adz)
+                goalYaw = (-Math.toDegrees(atan2(adx, adz))).toFloat()
+                goalPitch = (-Math.toDegrees(atan2(ady, adistH))).toFloat().coerceIn(-89f, 89f)
+                isFastAim = false
+            }
+            target.hasLookNode -> {
+                val ldx = target.lookX - predX
+                val ldy = target.lookY - predEyeY
+                val ldz = target.lookZ - predZ
+                val ldistH = sqrt(ldx * ldx + ldz * ldz)
+                goalYaw = (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+                goalPitch = (-Math.toDegrees(atan2(ldy, ldistH))).toFloat().coerceIn(-89f, 89f)
+                isFastAim = false
+            }
+            else -> {
+                val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+                    val t = ((2.8 - distH) / 2.8).coerceIn(0.0, 1.0)
+                    t * t * (3.0 - 2.0 * t) * 0.40
+                } else {
+                    0.0
+                }
+                val aimX = if (lookaheadBlend > 0.0 && nextTarget != null) {
+                    target.x * (1.0 - lookaheadBlend) + nextTarget.x * lookaheadBlend
+                } else {
+                    target.x
+                }
+                val aimZ = if (lookaheadBlend > 0.0 && nextTarget != null) {
+                    target.z * (1.0 - lookaheadBlend) + nextTarget.z * lookaheadBlend
+                } else {
+                    target.z
+                }
+                val aimDx = aimX - predX
+                val aimDz = aimZ - predZ
+                val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
+                goalYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
+                val targetEyeY = target.y + 1.2
+                val aimDy = targetEyeY - predEyeY
+                val pitchDistH = aimDistH.coerceAtLeast(3.5)
+                goalPitch = (-Math.toDegrees(atan2(aimDy, pitchDistH))).toFloat().coerceIn(-15.0f, 15.0f)
+                isFastAim = false
+            }
+        }
+
+        // Frame-rate independent continuous exponential smoothing
+        val lambda = if (isFastAim) 32.0 else 16.0
+        val alpha = (1.0 - exp(-lambda * dtTicks.toDouble())).toFloat().coerceIn(0.05f, 0.95f)
+        val deltaYaw = Mth.wrapDegrees(goalYaw - player.yRot)
+        val deltaPitch = (goalPitch - player.xRot)
+
+        val maxFrameYawStep = if (isFastAim) 50.0f * dtTicks else 24.0f * dtTicks
+        val maxFramePitchStep = if (isFastAim) 45.0f * dtTicks else 18.0f * dtTicks
+
+        val stepYaw = (deltaYaw * alpha).coerceIn(-maxFrameYawStep, maxFrameYawStep)
+        val stepPitch = (deltaPitch * alpha).coerceIn(-maxFramePitchStep, maxFramePitchStep)
+
+        player.yRot += stepYaw
+        player.xRot = (player.xRot + stepPitch).coerceIn(-89.9f, 89.9f)
+        player.yRotO = player.yRot
+        player.xRotO = player.xRot
+    }
+
     private fun aimTowards(player: net.minecraft.client.player.LocalPlayer, node: PathPoint, defaultPos: Vec3?) {
         val targetPos = if (node.hasLookNode) {
             Vec3(node.lookX, node.lookY, node.lookZ)
@@ -663,6 +800,10 @@ object PathExecutor {
     private fun aimRotation(player: LocalPlayer, yaw: Float, pitch: Float, launching: Boolean = false) {
         if (aimedThisTick) return
         aimedThisTick = true
+        // When route execution is active, camera rotation is continuously interpolated
+        // at the full render refresh rate (144Hz+) in onRenderFrame. Overwriting player.yRot
+        // at 20 Hz tick creates visible micro-stutters.
+        if (isActive) return
         val oldYaw = player.yRot
         val oldPitch = player.xRot
         val rate = if (launching) 1.2 else 0.55
@@ -780,14 +921,12 @@ object PathExecutor {
             val ldx = currentNode.lookX - player.x
             val ldz = currentNode.lookZ - player.z
             (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
-        } else if (currentNode.yaw != 0f) {
-            currentNode.yaw
         } else {
             calculatedYaw
         }
         bonzoLaunchYaw = launchYaw
 
-        val launchPitch = if (currentNode.pitch != 0f) currentNode.pitch else 79.0f
+        val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
 
         player.yRotO = launchYaw
         player.xRotO = launchPitch
