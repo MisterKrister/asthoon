@@ -311,6 +311,16 @@ object Config {
 
         // ── Secret Triggerbot ────────────────────────────────────────────────
         var secretTriggerBotEnabled: Boolean = false,
+
+        // ── Terminals & Aura Toggles ─────────────────────────────────────────
+        var terminalAuraEnabled        : Boolean = false,
+        var terminalTriggerBotEnabled   : Boolean = false,
+        var terminalHighlightEnabled    : Boolean = false,
+        var terminalAuraRange          : Double  = 4.5,
+
+        // ── Secret Aura Options ──────────────────────────────────────────────
+        var secretAuraThroughWalls     : Boolean = true,
+        var secretAuraVisualizer       : Boolean = false,
     )
 
     var data = Data()
@@ -984,6 +994,30 @@ object Config {
     var secretAuraBreakBlocks: Boolean
         get() = data.secretAuraBreakBlocks
         set(v) { data.secretAuraBreakBlocks = v; save() }
+
+    var secretAuraThroughWalls: Boolean
+        get() = data.secretAuraThroughWalls
+        set(v) { data.secretAuraThroughWalls = v; save() }
+
+    var secretAuraVisualizer: Boolean
+        get() = data.secretAuraVisualizer
+        set(v) { data.secretAuraVisualizer = v; save() }
+
+    var terminalAuraEnabled: Boolean
+        get() = data.terminalAuraEnabled
+        set(v) { data.terminalAuraEnabled = v; save() }
+
+    var terminalTriggerBotEnabled: Boolean
+        get() = data.terminalTriggerBotEnabled
+        set(v) { data.terminalTriggerBotEnabled = v; save() }
+
+    var terminalHighlightEnabled: Boolean
+        get() = data.terminalHighlightEnabled
+        set(v) { data.terminalHighlightEnabled = v; save() }
+
+    var terminalAuraRange: Double
+        get() = data.terminalAuraRange
+        set(v) { data.terminalAuraRange = v.coerceIn(1.0, 10.0); save() }
 
     var autoCloseSecretChest: Boolean
         get() = data.autoCloseSecretChest

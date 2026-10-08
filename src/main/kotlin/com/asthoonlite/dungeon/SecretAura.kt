@@ -66,6 +66,23 @@ object SecretAura {
                     if (to.lengthSqr() <= 1.0e-6) continue
                     val dot = look.dot(to.normalize()).coerceIn(-1.0, 1.0)
                     val angle = Math.toDegrees(acos(dot))
+                    if (angle > Config.secretAuraFov / 2.0) continue
+
+                    if (!Config.secretAuraThroughWalls) {
+                        val clip = level.clip(
+                            net.minecraft.world.level.ClipContext(
+                                eye,
+                                center,
+                                net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                                net.minecraft.world.level.ClipContext.Fluid.NONE,
+                                player
+                            )
+                        )
+                        if (clip.type == net.minecraft.world.phys.HitResult.Type.BLOCK && clip.blockPos != pos) {
+                            continue
+                        }
+                    }
+
                     val currentBest = best
                     if (currentBest == null || angle < currentBest.second) best = pos to angle
                 }
@@ -192,10 +209,64 @@ object SecretAura {
     }
 
     private fun render() {
-        if (!Config.secretAuraEnabled || !DungeonContext.inDungeon) return
+        if (!DungeonContext.inDungeon) return
+        val mc = Minecraft.getInstance()
+        val player = mc.player ?: return
+
+        if (Config.secretAuraEnabled && Config.secretAuraVisualizer) {
+            renderFovVisualizer(player)
+        }
+
+        if (!Config.secretAuraEnabled) return
         val pos = target ?: return
         WorldBoxRenderer.queueOutline(pos.x.toDouble(), pos.y.toDouble(), pos.z.toDouble(), pos.x + 1.0, pos.y + 1.0, pos.z + 1.0, 0.2f, 0.9f, 1f, 1f, throughWalls = true)
         WorldBoxRenderer.queueFilled(pos.x.toDouble(), pos.y.toDouble(), pos.z.toDouble(), pos.x + 1.0, pos.y + 1.0, pos.z + 1.0, 0.2f, 0.9f, 1f, 0.08f, throughWalls = true)
+    }
+
+    private fun renderFovVisualizer(player: net.minecraft.world.entity.player.Player) {
+        val radius = Config.secretAuraRange.toDouble()
+        val fov = Config.secretAuraFov.toDouble()
+        val halfFov = fov / 2.0
+        val y = player.y + 0.05
+        val segments = 64
+        val lookYaw = player.yRot.toDouble()
+
+        val lookDirX = -sin(Math.toRadians(lookYaw))
+        val lookDirZ = cos(Math.toRadians(lookYaw))
+
+        for (i in 0 until segments) {
+            val a1 = (2.0 * Math.PI * i) / segments
+            val a2 = (2.0 * Math.PI * (i + 1)) / segments
+
+            val x1 = player.x - sin(a1) * radius
+            val z1 = player.z + cos(a1) * radius
+            val x2 = player.x - sin(a2) * radius
+            val z2 = player.z + cos(a2) * radius
+
+            val midA = (a1 + a2) / 2.0
+            val dirX = -sin(midA)
+            val dirZ = cos(midA)
+            val dot = (dirX * lookDirX + dirZ * lookDirZ).coerceIn(-1.0, 1.0)
+            val angleFromLook = Math.toDegrees(acos(dot))
+
+            if (angleFromLook <= halfFov) {
+                WorldBoxRenderer.queueLine(x1, y, z1, x2, y, z2, 0.2f, 0.9f, 1.0f, 0.85f, thickness = 0.035, throughWalls = true)
+            } else {
+                WorldBoxRenderer.queueLine(x1, y, z1, x2, y, z2, 0.2f, 0.9f, 1.0f, 0.20f, thickness = 0.02, throughWalls = true)
+            }
+        }
+
+        if (fov < 180.0) {
+            val leftRad = Math.toRadians(lookYaw - halfFov)
+            val lx = player.x - sin(leftRad) * radius
+            val lz = player.z + cos(leftRad) * radius
+            WorldBoxRenderer.queueLine(player.x, y, player.z, lx, y, lz, 0.2f, 0.9f, 1.0f, 0.6f, thickness = 0.03, throughWalls = true)
+
+            val rightRad = Math.toRadians(lookYaw + halfFov)
+            val rx = player.x - sin(rightRad) * radius
+            val rz = player.z + cos(rightRad) * radius
+            WorldBoxRenderer.queueLine(player.x, y, player.z, rx, y, rz, 0.2f, 0.9f, 1.0f, 0.6f, thickness = 0.03, throughWalls = true)
+        }
     }
 
     fun isRightClickSecret(block: net.minecraft.world.level.block.Block): Boolean =

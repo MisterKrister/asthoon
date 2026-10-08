@@ -125,4 +125,64 @@ internal fun simonDeviceRegressionChecks() {
     check(SecretHitboxes.kindOf(playerWallHeadState) == null) { "Player wall heads must not be classified as secret skulls" }
     check(SecretHitboxes.kindOf(witherSkullState) == SecretHitboxes.Kind.SKULL) { "Wither skeleton skulls must be classified as secret skulls" }
     check(SecretHitboxes.kindOf(witherWallSkullState) == SecretHitboxes.Kind.SKULL) { "Wither skeleton wall skulls must be classified as secret skulls" }
+
+    // ── Terminal Item & Hitbox Filtering Checks ───────────────────────────
+    val arrowItem = net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.ARROW)
+    val mapItem = net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.FILLED_MAP)
+    val emptyItem = net.minecraft.world.item.ItemStack.EMPTY
+
+    check(arrowItem.`is`(net.minecraft.world.item.Items.ARROW)) { "Arrow item must be recognized as ARROW" }
+    check(!mapItem.`is`(net.minecraft.world.item.Items.ARROW)) { "Non-arrow item must not be recognized as ARROW" }
+    check(!emptyItem.`is`(net.minecraft.world.item.Items.ARROW)) { "Empty item must not be recognized as ARROW" }
+
+    // Arrow align coordinate exclusion
+    fun isArrowAlignPos(x: Int, y: Int, z: Int): Boolean =
+        x == -2 && y in 120..124 && z in 75..79
+
+    check(isArrowAlignPos(-2, 120, 75)) { "Arrow align grid corner must be recognized" }
+    check(isArrowAlignPos(-2, 124, 79)) { "Arrow align grid max bounds must be recognized" }
+    check(!isArrowAlignPos(50, 120, 75)) { "Non-arrow align position must not be marked as arrow align" }
+
+    // Hologram completion status check
+    fun isTerminalActiveHologram(name: String): Boolean {
+        if (name.contains("Completed", ignoreCase = true)) return false
+        if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) return false
+        return name.contains("Terminal", ignoreCase = true) || name.contains("Click Here", ignoreCase = true)
+    }
+
+    check(isTerminalActiveHologram("INACTIVE TERMINAL CLICK HERE")) { "Inactive terminal hologram must be active" }
+    check(isTerminalActiveHologram("§cInactive Terminal")) { "Colored inactive terminal must be active" }
+    check(!isTerminalActiveHologram("§aCompleted Terminal")) { "Completed terminal must not be active" }
+    check(!isTerminalActiveHologram("Active Terminal")) { "Active/finished terminal without Inactive must not be active" }
+
+    // ── Secret Aura FOV & Visualizer Math Checks ──────────────────────────
+    val fov = 90.0
+    val halfFov = fov / 2.0
+    val lookYaw = 0.0 // Facing South (+Z)
+    val lookDirX = -kotlin.math.sin(Math.toRadians(lookYaw))
+    val lookDirZ = kotlin.math.cos(Math.toRadians(lookYaw))
+
+    // Point directly in front (South) -> 0° offset
+    val dirFrontX = 0.0
+    val dirFrontZ = 1.0
+    val dotFront = (dirFrontX * lookDirX + dirFrontZ * lookDirZ).coerceIn(-1.0, 1.0)
+    val angleFront = Math.toDegrees(kotlin.math.acos(dotFront))
+    check(angleFront < 1e-4 && angleFront <= halfFov) { "Direct forward direction must be within FOV" }
+
+    // Point 30° to the right -> 30° offset <= 45°
+    val rad30 = Math.toRadians(30.0)
+    val dir30X = -kotlin.math.sin(rad30)
+    val dir30Z = kotlin.math.cos(rad30)
+    val dot30 = (dir30X * lookDirX + dir30Z * lookDirZ).coerceIn(-1.0, 1.0)
+    val angle30 = Math.toDegrees(kotlin.math.acos(dot30))
+    check(kotlin.math.abs(angle30 - 30.0) < 1e-4 && angle30 <= halfFov) { "30° direction must be within 90° FOV" }
+
+    // Point 60° to the right -> 60° offset > 45° (outside FOV)
+    val rad60 = Math.toRadians(60.0)
+    val dir60X = -kotlin.math.sin(rad60)
+    val dir60Z = kotlin.math.cos(rad60)
+    val dot60 = (dir60X * lookDirX + dir60Z * lookDirZ).coerceIn(-1.0, 1.0)
+    val angle60 = Math.toDegrees(kotlin.math.acos(dot60))
+    check(kotlin.math.abs(angle60 - 60.0) < 1e-4 && angle60 > halfFov) { "60° direction must be outside 90° FOV" }
 }
+

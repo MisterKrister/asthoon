@@ -101,6 +101,7 @@ object AsthoonLite : ClientModInitializer {
         SecretHitboxes.register()
         SecretAura.register()
         com.asthoonlite.dungeon.SecretTriggerBot.register()
+        com.asthoonlite.dungeon.TerminalInteraction.register()
         RelicAura.register()
         com.asthoonlite.dungeon.solvers.TicTacToeSolver.register()
         com.asthoonlite.dungeon.solvers.IceFillSolver.register()

@@ -503,6 +503,16 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
                 ToggleRow("Terminal Progress", "Shows the terminal's name and how far through it the clicker is, centred near the top while a terminal is open",
                     { Config.autoTerminalHudProgress }, { Config.autoTerminalHudProgress = it }),
+                SectionHeader("Terminal Interaction & Aura"),
+                ToggleRow("Terminal Highlight", "Highlights the clickable interaction hitbox in front of terminals",
+                    { Config.terminalHighlightEnabled }, { Config.terminalHighlightEnabled = it }),
+                ToggleRow("Terminal Triggerbot", "Automatically clicks terminal when looking at its interaction hitbox within range",
+                    { Config.terminalTriggerBotEnabled }, { Config.terminalTriggerBotEnabled = it }),
+                ToggleRow("Terminal Aura", "Automatically opens terminals within reach and FOV",
+                    { Config.terminalAuraEnabled }, { Config.terminalAuraEnabled = it }),
+                WidgetRow(FloatSlider(subX, 0, subW, 24, 2.0f, 6.0f, Config.terminalAuraRange.toFloat(), "Terminal Aura Range: ", " blocks") {
+                    Config.terminalAuraRange = it.toDouble()
+                }),
                 SectionHeader(if (Config.autoTerminalMode == TerminalMode.LEGIT) "Click Timing (Locked in Legit Mode)" else "Click Timing"),
                 ToggleRow("Random Delay", "Humanized random delays between clicks",
                     { Config.autoTerminalRandomDelay }, { Config.autoTerminalRandomDelay = it }),
@@ -772,6 +782,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         { Config.autoCloseSecretChest }, { Config.autoCloseSecretChest = it }),
                     ToggleRow("Secret Aura", "Auto-interact with secrets in configured range and FOV",
                         { Config.secretAuraEnabled }, { Config.secretAuraEnabled = it }),
+                    ToggleRow("  ↳ Through Walls", "Allows secret aura to interact with secrets through walls and obstacles",
+                        { Config.secretAuraThroughWalls }, { Config.secretAuraThroughWalls = it }),
+                    ToggleRow("  ↳ FOV / Range Visualizer", "Renders circle and FOV cone displaying the configured pickup radius",
+                        { Config.secretAuraVisualizer }, { Config.secretAuraVisualizer = it }),
                     ToggleRow("  ↳ Break Block Secrets", "Allow aura to break mushroom blocks",
                         { Config.secretAuraBreakBlocks }, { Config.secretAuraBreakBlocks = it }),
                     WidgetRow(IntSlider(subX, 0, subW, 24, 1, 20, Config.secretAuraRange, "Secret Aura Range: ", " blocks") {
