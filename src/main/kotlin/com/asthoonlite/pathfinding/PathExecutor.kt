@@ -431,7 +431,23 @@ object PathExecutor {
         // 5. Waypoint Lookahead, Look Node Aiming & Smooth Natural Camera Control
         val isClimbingToNode = target.y > player.y + 0.4
         val arrivalThreshold = if (isClimbingToNode) 1.2 else if (isHighSpeed) 2.2 else 1.2
-        val aimPos = waypointLookahead(target, nextTarget, distH, arrivalThreshold)
+
+        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+            ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
+        } else {
+            0.0
+        }
+
+        val aimX = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.x * (1.0 - lookaheadBlend) + nextTarget.x * lookaheadBlend
+        } else {
+            target.x
+        }
+        val aimZ = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.z * (1.0 - lookaheadBlend) + nextTarget.z * lookaheadBlend
+        } else {
+            target.z
+        }
 
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
@@ -451,29 +467,17 @@ object PathExecutor {
                 target.yaw
             }
             val prePitch = if (target.pitch != 0f) target.pitch else 79.0f
-            aimRotation(player, preYaw, prePitch)
+            aimRotation(player, preYaw, prePitch, launching = true)
         } else {
-            var aimDx = aimPos.x - player.x
-            var aimDz = aimPos.z - player.z
-            var aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
-
-            // Lookahead extension: when within 4.0m of the node, project lookahead along upcoming track
-            // to avoid camera whipping as player runs directly over or near the waypoint
-            if (aimDistH < 4.0 && nextTarget != null) {
-                val trackDx = nextTarget.x - target.x
-                val trackDz = nextTarget.z - target.z
-                val trackLen = sqrt(trackDx * trackDx + trackDz * trackDz)
-                if (trackLen > 0.1) {
-                    val extend = 4.0 - aimDistH
-                    aimDx += (trackDx / trackLen) * extend
-                    aimDz += (trackDz / trackLen) * extend
-                    aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
-                }
-            }
+            val aimDx = aimX - player.x
+            val aimDz = aimZ - player.z
+            val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
 
             val destYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
-            val aimDy = aimPos.y - (player.y + player.eyeHeight)
-            val destPitch = (-Math.toDegrees(atan2(aimDy, aimDistH))).toFloat().coerceIn(-15.0f, 15.0f)
+            val targetEyeY = target.y + 1.2
+            val aimDy = targetEyeY - (player.y + player.eyeHeight)
+            val pitchDistH = aimDistH.coerceAtLeast(3.5)
+            val destPitch = (-Math.toDegrees(atan2(aimDy, pitchDistH))).toFloat().coerceIn(-15.0f, 15.0f)
 
             aimRotation(player, destYaw, destPitch)
         }
@@ -525,8 +529,8 @@ object PathExecutor {
             player.setSprinting(true)
         } else {
             // On ground: calculate movement vector towards target
-            val targetMoveX = if (distH > arrivalThreshold && nextTarget != null) aimPos.x else target.x
-            val targetMoveZ = if (distH > arrivalThreshold && nextTarget != null) aimPos.z else target.z
+            val targetMoveX = if (lookaheadBlend > 0.0 && nextTarget != null) aimX else target.x
+            val targetMoveZ = if (lookaheadBlend > 0.0 && nextTarget != null) aimZ else target.z
             val moveYaw = (-Math.toDegrees(atan2(targetMoveX - player.x, targetMoveZ - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
             val rad = Math.toRadians(angleDiff.toDouble())
@@ -561,7 +565,7 @@ object PathExecutor {
                 }
             } else {
                 // Normal pathing: forward W dominates to eliminate sideways drift/crab-walking
-                val isSharpTurn = Math.abs(angleDiff) > 50.0
+                val isSharpTurn = Math.abs(angleDiff) > 50.0 && nodeType != RouteNodeType.BONZO_STAFF
                 mc.options.keyUp.setDown(forward > 0.1 || !isSharpTurn)
                 mc.options.keyDown.setDown(forward < -0.5)
                 // Only assist with strafe keys on very sharp corners (> 50°)
@@ -573,7 +577,7 @@ object PathExecutor {
                     mc.options.keySprint.setDown(false)
                 } else {
                     mc.options.keyShift.setDown(false)
-                    val wantsSprint = (forward > 0.2 || !isSharpTurn) && !isSlowingForStationary
+                    val wantsSprint = (forward > 0.2 || !isSharpTurn || nodeType == RouteNodeType.BONZO_STAFF) && !isSlowingForStationary
                     mc.options.keySprint.setDown(wantsSprint)
                     if (wantsSprint && !player.isSprinting) {
                         player.setSprinting(true)
@@ -661,9 +665,11 @@ object PathExecutor {
         aimedThisTick = true
         val oldYaw = player.yRot
         val oldPitch = player.xRot
-        val rate = if (launching) 1.6 else 0.8
-        val (nextYaw, yawVelocity) = dampRotation(oldYaw, yaw, cameraYawVelocity, rate, if (launching) 30f else 12f, wrap = true)
-        val (nextPitch, pitchVelocity) = dampRotation(oldPitch, pitch, cameraPitchVelocity, rate, if (launching) 30f else 12f)
+        val rate = if (launching) 1.2 else 0.55
+        val maxYawStep = if (launching) 24f else 10f
+        val maxPitchStep = if (launching) 20f else 6f
+        val (nextYaw, yawVelocity) = dampRotation(oldYaw, yaw, cameraYawVelocity, rate, maxYawStep, wrap = true)
+        val (nextPitch, pitchVelocity) = dampRotation(oldPitch, pitch, cameraPitchVelocity, rate, maxPitchStep)
         cameraYawVelocity = yawVelocity
         cameraPitchVelocity = pitchVelocity
         player.yRotO = oldYaw
@@ -677,7 +683,7 @@ object PathExecutor {
     ): Pair<Float, Float> {
         val delta = if (wrap) Mth.wrapDegrees(target - current) else target - current
         if (abs(delta) < 0.02f) return (current + delta) to 0f
-        val alpha = (1.0 - exp(-rate)).toFloat().coerceIn(0.15f, 0.65f)
+        val alpha = (1.0 - exp(-rate * 0.65)).toFloat().coerceIn(0.15f, 0.45f)
         val step = (delta * alpha).coerceIn(-maxStep, maxStep)
         return (current + step) to step
     }
@@ -836,7 +842,7 @@ object PathExecutor {
 
                 // Smoothly recover camera pitch from ground (79°) back up to eye level (10°)
                 // and keep yaw smoothly aligned with launchYaw
-                aimRotation(player, bonzoLaunchYaw, 10.0f)
+                aimRotation(player, bonzoLaunchYaw, 10.0f, launching = true)
 
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {
