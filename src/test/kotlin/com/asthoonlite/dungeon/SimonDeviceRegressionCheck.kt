@@ -455,6 +455,36 @@ internal fun simonDeviceRegressionChecks() {
     // In-between (e.g. 10 bps): smoothly interpolated
     val midPitch = computeBonzoPitch(10.0, 32.55f)
     check(midPitch in 33.0f..79.0f) { "Bonzo at intermediate speed must interpolate pitch smoothly" }
+
+    // 21. Stair-climb elevation arrival gating
+    fun canArriveElevatedNode(playerY: Double, targetY: Double, distH: Double): Boolean {
+        val isClimbing = targetY > playerY + 0.4
+        val threshold = if (isClimbing) 1.2 else 2.2
+        val elevOk = if (isClimbing) playerY >= targetY - 0.4 else Math.abs(playerY - targetY) < 2.2
+        return distH < threshold && elevOk
+    }
+    // While on stairs at Y=117.5 heading to Node at Y=119.0: must NOT arrive prematurely
+    check(!canArriveElevatedNode(117.5, 119.0, 1.8)) { "Player on stairs below node must not trigger arrival" }
+    // Once player steps onto platform at Y=118.8, distH 0.9: arrival triggers cleanly
+    check(canArriveElevatedNode(118.8, 119.0, 0.9)) { "Player arriving at top platform must trigger arrival" }
+
+    // 22. In-air overshoot brake detection
+    fun shouldInAirBrake(vy: Double, currentBpsH: Double, playerY: Double, targetY: Double, distToTargetH: Double): Boolean {
+        if (vy >= -0.05 || distToTargetH >= 6.0) return false
+        val height = playerY - targetY
+        if (height <= 0.0) return false
+        val ticksToLand = (height / Math.abs(vy)).coerceIn(1.0, 15.0)
+        val predictedDist = (currentBpsH / 20.0) * ticksToLand
+        return (predictedDist - distToTargetH) > 0.8
+    }
+    // High velocity (18 bps) close to target (2.0m) while descending: must brake to prevent overshoot
+    check(shouldInAirBrake(vy = -0.3, currentBpsH = 18.0, playerY = 120.5, targetY = 119.0, distToTargetH = 2.0)) {
+        "High-velocity airborne descent overshooting target must engage air brake"
+    }
+    // Normal trajectory falling short (need distance): must NOT brake
+    check(!shouldInAirBrake(vy = -0.3, currentBpsH = 12.0, playerY = 120.5, targetY = 119.0, distToTargetH = 5.0)) {
+        "Airborne descent needing distance must not engage air brake"
+    }
 }
 
 

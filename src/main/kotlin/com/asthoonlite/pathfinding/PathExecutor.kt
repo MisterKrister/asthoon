@@ -452,10 +452,40 @@ object PathExecutor {
             player.xRot += deltaPitch * 0.42f
         }
 
-        // 6. Movement Controls with Look-Node, Crouch & Pre-Aim Strafe Compensation
+        // 6. Movement Controls with Look-Node, Crouch, Pre-Aim & In-Air Speed/Overshoot Adjustment
         val isCrouchNode = (nodeType == RouteNodeType.CROUCH)
         val isPreAimingBonzo = (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 1.8)
-        if ((target.hasLookNode || isPreAimingBonzo) && distH > 0.8) {
+        val isAirborne = !player.onGround() && !player.isInLava && !player.isInWater
+
+        // In-air speed & trajectory distance adjustment:
+        // When airborne and descending towards the target, estimate if horizontal velocity will overshoot the platform.
+        // If overshooting, tap S and release sprint to brake in the air; if falling short, hold W and sprint to stretch distance.
+        var inAirBrakeActive = false
+        if (isAirborne && bonzoState == BonzoState.IDLE) {
+            val vy = player.deltaMovement.y
+            val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
+            val distToTargetH = Math.hypot(target.x - player.x, target.z - player.z)
+            if (vy < -0.05 && distToTargetH < 6.0) {
+                val heightAboveTarget = player.y - target.y
+                if (heightAboveTarget > 0.0) {
+                    val ticksToLand = (heightAboveTarget / Math.abs(vy)).coerceIn(1.0, 15.0)
+                    val predictedDistance = (currentBpsH / 20.0) * ticksToLand
+                    val overshoot = predictedDistance - distToTargetH
+                    if (overshoot > 0.8) {
+                        inAirBrakeActive = true
+                    }
+                }
+            }
+        }
+
+        if (inAirBrakeActive) {
+            // Apply air brake: release sprint and tap S
+            mc.options.keySprint.setDown(false)
+            mc.options.keyUp.setDown(false)
+            mc.options.keyDown.setDown(true)
+            mc.options.keyLeft.setDown(false)
+            mc.options.keyRight.setDown(false)
+        } else if ((target.hasLookNode || isPreAimingBonzo) && distH > 0.8) {
             val moveYaw = (-Math.toDegrees(atan2(target.x - player.x, target.z - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
             val rad = Math.toRadians(angleDiff.toDouble())
@@ -495,13 +525,13 @@ object PathExecutor {
             }
         }
 
-        // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection on WALK nodes
+        // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection
         val toTargetDx = target.x - player.x
         val toTargetDz = target.z - player.z
         val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
         val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
-        val canAutoGapJump = (nodeType == RouteNodeType.WALK) &&
-                             player.onGround() && isLedge && distH > 1.2
+        // Auto gap jump: on WALK nodes, OR when target is across a chasm on another platform (distH > 2.0)
+        val canAutoGapJump = player.onGround() && isLedge && (nodeType == RouteNodeType.WALK || distH > 2.0)
         val isObstacleCollision = player.horizontalCollision && player.onGround()
         val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
@@ -535,8 +565,12 @@ object PathExecutor {
         }
 
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
-        val arrivalThreshold = if (isHighSpeed) 2.2 else 1.2
-        if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP && distH < arrivalThreshold && distY < 2.2) {
+        val isClimbingToNode = target.y > player.y + 0.4
+        val arrivalThreshold = if (isClimbingToNode) 1.2 else if (isHighSpeed) 2.2 else 1.2
+        val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.4 else distY < 2.2
+
+        if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP &&
+            distH < arrivalThreshold && canArriveElevation) {
             currentNodeIndex++
             resetSpecialNodeState()
             if (currentNodeIndex >= points.size) {
