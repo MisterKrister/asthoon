@@ -544,7 +544,7 @@ internal fun simonDeviceRegressionChecks() {
     // 25. Bonzo Staff launch platform arrival & sprint momentum gating
     fun canLaunchBonzo(onGround: Boolean, distH: Double, currentBpsH: Double, isAtLaunchLedge: Boolean): Boolean {
         val isArrived = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-        val hasSpeed = currentBpsH >= 7.0 || distH <= 0.8
+        val hasSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
         return onGround && isArrived && hasSpeed
     }
     // Airborne descending from jump onto pillar (onGround = false): must NEVER fire mid-air!
@@ -622,10 +622,10 @@ internal fun simonDeviceRegressionChecks() {
         "Look-node override must take highest priority for Bonzo launch yaw"
     }
 
-    // 27. Bonzo launch jump key suppression: never jump on fire
-    fun isJumpAllowedOnBonzoFire(): Boolean = false
-    check(!isJumpAllowedOnBonzoFire()) {
-        "Jump key must remain FALSE on Bonzo fire to maintain ground sprint acceleration"
+    // 27. Bonzo launch single jump pulse on fire
+    fun isJumpPulseOnBonzoFire(): Boolean = true
+    check(isJumpPulseOnBonzoFire()) {
+        "Jump key must pulse on Bonzo fire for upward launch boost"
     }
 }
 
