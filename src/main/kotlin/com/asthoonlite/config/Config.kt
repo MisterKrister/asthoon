@@ -321,6 +321,11 @@ object Config {
         // ── Secret Aura Options ──────────────────────────────────────────────
         var secretAuraThroughWalls     : Boolean = true,
         var secretAuraVisualizer       : Boolean = false,
+
+        // ── Pathfinding Options ──────────────────────────────────────────────
+        var pathfindingEnabled         : Boolean = false,
+        var activePathfindingPresetId  : String  = "",
+        var pathfindingDebugRender     : Boolean = true,
     )
 
     var data = Data()
@@ -1222,6 +1227,18 @@ object Config {
     var secretHitboxThroughWalls: Boolean
         get() = data.secretHitboxThroughWalls
         set(v) { data.secretHitboxThroughWalls = v; save() }
+
+    var pathfindingEnabled: Boolean
+        get() = data.pathfindingEnabled
+        set(v) { data.pathfindingEnabled = v; save() }
+
+    var activePathfindingPresetId: String
+        get() = data.activePathfindingPresetId
+        set(v) { data.activePathfindingPresetId = v; save() }
+
+    var pathfindingDebugRender: Boolean
+        get() = data.pathfindingDebugRender
+        set(v) { data.pathfindingDebugRender = v; save() }
 
     fun load() {
         if (!configDir.exists()) configDir.mkdirs()

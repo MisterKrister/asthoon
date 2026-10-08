@@ -30,6 +30,10 @@ import net.minecraft.world.scores.criteria.ObjectiveCriteria
 import java.awt.image.BufferedImage
 import java.util.Optional
 import java.util.stream.Stream
+import com.asthoonlite.pathfinding.RouteCategory
+import com.asthoonlite.pathfinding.PathPreset
+import com.asthoonlite.pathfinding.PathPoint
+import com.google.gson.Gson
 
 /** Run with ./gradlew regressionCheck (also included in build). No game or server needed. */
 fun main() {
@@ -1111,7 +1115,46 @@ fun main() {
         check(TerminalCursor.rawFromScaled(100f, 1920, 0) == 0.0) { "a zero gui scale must not divide by zero" }
     }
 
-    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer flight timing, terminal motion and gui, terminal pointer motion, cursor trail fade, rounded tile arcs, real cursor handback and pointer linger.")
+    // ── Pathfinding Presets, Categories and Subcategories ─────────────────
+    run {
+        check(RouteCategory.entries.size == 4) { "must define exactly 4 route categories" }
+        check(RouteCategory.fromString("mining") == RouteCategory.MINING) { "case-insensitive category lookup" }
+        check(RouteCategory.fromString("combat") == RouteCategory.COMBAT) { "case-insensitive category lookup" }
+        check(RouteCategory.fromString("dungeons") == RouteCategory.DUNGEONS) { "case-insensitive category lookup" }
+        check(RouteCategory.fromString("m7") == RouteCategory.M7) { "case-insensitive category lookup" }
+
+        val miningSubs = RouteCategory.MINING.getSubcategories().map { it.name }
+        check(miningSubs == listOf("Macro", "Powder", "Return Route")) { "Mining subcategories must match spec" }
+
+        val combatSubs = RouteCategory.COMBAT.getSubcategories().map { it.name }
+        check(combatSubs == listOf("Mob", "Return Route")) { "Combat subcategories must match spec" }
+
+        val dungeonSubs = RouteCategory.DUNGEONS.getSubcategories().map { it.name }
+        check(dungeonSubs.isEmpty()) { "Dungeons subcategories must be blank initially" }
+
+        val m7Subs = RouteCategory.M7.getSubcategories().map { it.name }
+        check(m7Subs == listOf("P1", "P2", "P3", "P4", "P5")) { "M7 subcategories must have phases P1 through P5" }
+
+        // Color coding hierarchy
+        val preset = PathPreset(
+            name = "Test Route",
+            category = "Mining",
+            subcategory = "Macro",
+            points = mutableListOf(PathPoint(1.0, 2.0, 3.0, 45f, 0f, "MOVE", 5.0))
+        )
+        check(preset.routeCategory() == RouteCategory.MINING) { "preset must resolve category correctly" }
+        check(preset.subcategoryColor() == 0xFFFDE047.toInt()) { "preset subcategory must resolve distinct shade" }
+
+        // JSON roundtrip
+        val gson = Gson()
+        val json = gson.toJson(preset)
+        val deserialized = gson.fromJson(json, PathPreset::class.java)
+        check(deserialized.name == "Test Route" && deserialized.points.size == 1) {
+            "PathPreset must serialize and deserialize cleanly via Gson"
+        }
+    }
+
+    println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer flight timing, terminal motion and gui, terminal pointer motion, cursor trail fade, rounded tile arcs, real cursor handback, pointer linger, and pathfinding preset taxonomy.")
 }
 
 /**

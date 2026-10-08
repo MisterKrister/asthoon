@@ -3,6 +3,10 @@ package com.asthoonlite.gui
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.config.TerminalMode
+import com.asthoonlite.pathfinding.RouteCategory
+import com.asthoonlite.pathfinding.RouteSubcategory
+import com.asthoonlite.pathfinding.PathPreset
+import com.asthoonlite.pathfinding.PathPresetManager
 import com.asthoonlite.pet.PetHudEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
 import net.minecraft.client.Minecraft
@@ -19,6 +23,7 @@ import org.lwjgl.glfw.GLFW
  * Modern, clean, user-friendly settings GUI for AsthoonLite.
  * Features dark card styling, emerald toggle switches, dynamic sliders,
  * dedicated Map & Terminals workspaces with Devonian & RSM preset loading,
+ * dedicated Pathfinding workspace with route creation, dropdowns, import/export,
  * smooth scrolling, and instant click responsiveness across entire rows.
  */
 class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
@@ -28,6 +33,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         DUNGEON("Dungeon"),
         MAP("Map"),
         TERMINALS("Terminals"),
+        PATHFINDING("Pathfinding"),
         HITBOXES("Hitboxes"),
         MINING("Mining"),
         FISHING("Fishing"),
@@ -42,11 +48,19 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         SECRETS("Secrets")
     }
 
+    private enum class PathfindingSection(val label: String) {
+        USER_PRESETS("User Presets"),
+        CREATE_PRESET("Create Preset"),
+        EXPORT_PRESET("Export Preset"),
+        IMPORT_PRESET("Import Preset")
+    }
+
     private var activeTab = Tab.QOL
     private var activeDungeonSection = DungeonSection.GENERAL
+    private var activePathfindingSection = PathfindingSection.USER_PRESETS
 
     companion object {
-        private const val PANEL_W = 500
+        private const val PANEL_W = 540
         private const val HEADER_H = 38
         private const val TAB_BAR_H = 26
         private const val DUNGEON_BAR_H = 26
@@ -110,6 +124,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         override val height: Int = widget.height
     }
 
+    private data class MultiWidgetRow(val widgets: List<AbstractWidget>, override val height: Int = 24) : ContentItem
+
     private data class SearchableEntry(
         val category: String,
         val cleanLabel: String,
@@ -125,6 +141,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
 
     private lateinit var tabButtons: List<ModernButton>
     private var dungeonSectionButtons: MutableList<ModernButton> = mutableListOf()
+    private var pathfindingSectionButtons: MutableList<ModernButton> = mutableListOf()
     private var extraWidgets: MutableList<Pair<AbstractWidget, Int>> = mutableListOf()
     private lateinit var btnClose: ModernButton
     private lateinit var btnDone: ModernButton
@@ -138,13 +155,27 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var searchQuery = ""
     private var scrollOffset = 0
 
+    // Pathfinding preset creator state
+    private var createCategory: RouteCategory = RouteCategory.MINING
+    private var createSubcategory: String = "Macro"
+    private var createDropdownOpen: Boolean = false
+    private var createPresetName: String = ""
+    private var exportFeedbackMsg: String = ""
+    private var importFeedbackMsg: String = ""
+
+    // Scrollbar drag state
+    private var isDraggingScrollbar = false
+    private var scrollDragStartOffset = 0
+    private var scrollDragStartY = 0.0
+
     private fun panelH() = (height - 24).coerceIn(360, 560)
     private fun px() = (width - PANEL_W) / 2
     private fun py() = (height - panelH()) / 2
 
     private fun contentTop(): Int {
         val base = py() + HEADER_H + TAB_BAR_H
-        return if (searchQuery.isEmpty() && activeTab == Tab.DUNGEON) base + DUNGEON_BAR_H + 8 else base + 8
+        val hasSubBar = searchQuery.isEmpty() && (activeTab == Tab.DUNGEON || activeTab == Tab.PATHFINDING)
+        return if (hasSubBar) base + DUNGEON_BAR_H + 8 else base + 8
     }
 
     private fun contentBottom(): Int = py() + panelH() - FOOTER_H
@@ -179,10 +210,16 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         btnClose = ModernButton(px + PANEL_W - 28, py + 9, 20, 20, Component.literal("✕")) { onClose() }
         addRenderableWidget(btnClose)
 
-        // ── Tab bar ──────────────────────────────────────────────────────────
-        val tabW = (PANEL_W - 16) / Tab.entries.size
+        // ── Tab bar (proportional tab sizing for crisp layout) ───────────────
+        val availableW = PANEL_W - 16
+        val labels = Tab.entries.map { it.label }
+        val textWidths = labels.map { font.width(it) }
+        val totalTextW = textWidths.sum()
+        val extraPerTab = (availableW - totalTextW) / Tab.entries.size
+        var curTabX = px + 8
         tabButtons = Tab.entries.mapIndexed { i, tab ->
-            ModernButton(px + 8 + i * tabW, py + HEADER_H, tabW, TAB_BAR_H, Component.literal(tab.label)) {
+            val w = textWidths[i] + extraPerTab
+            val btn = ModernButton(curTabX, py + HEADER_H, w, TAB_BAR_H, Component.literal(tab.label)) {
                 if (::searchBox.isInitialized && searchBox.value.isNotEmpty()) {
                     searchBox.value = ""
                 }
@@ -192,6 +229,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     rebuildTab(tab)
                 }
             }
+            curTabX += w
+            btn
         }
         tabButtons.forEach { addRenderableWidget(it) }
 
@@ -206,11 +245,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         activeTab = tab
         searchQuery = ""
 
-        // Remove old extra widgets & dungeon section buttons
+        // Remove old extra widgets & sub-bar buttons
         extraWidgets.forEach { removeWidget(it.first) }
         extraWidgets.clear()
         dungeonSectionButtons.forEach { removeWidget(it) }
         dungeonSectionButtons.clear()
+        pathfindingSectionButtons.forEach { removeWidget(it) }
+        pathfindingSectionButtons.clear()
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
         listeningForQuietModeKey = false
@@ -241,6 +282,29 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             }
         }
 
+        // ── Pathfinding Section Buttons ──────────────────────────────────────
+        if (tab == Tab.PATHFINDING) {
+            val sectionY = py + HEADER_H + TAB_BAR_H + 4
+            val sectionW = (PANEL_W - 24) / PathfindingSection.entries.size
+            PathfindingSection.entries.forEachIndexed { i, section ->
+                val btn = ModernButton(
+                    px + 12 + i * sectionW,
+                    sectionY,
+                    sectionW - 4,
+                    DUNGEON_BAR_H - 4,
+                    Component.literal(section.label)
+                ) {
+                    if (activePathfindingSection != section) {
+                        activePathfindingSection = section
+                        scrollOffset = 0
+                        rebuildTab(Tab.PATHFINDING)
+                    }
+                }
+                addRenderableWidget(btn)
+                pathfindingSectionButtons.add(btn)
+            }
+        }
+
         currentItems = applyCollapse(buildItemsForTab(tab, px))
 
         var relY = 0
@@ -248,6 +312,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             if (item is WidgetRow) {
                 extraWidgets.add(Pair(item.widget, relY))
                 addWidget(item.widget)
+            } else if (item is MultiWidgetRow) {
+                for (w in item.widgets) {
+                    extraWidgets.add(Pair(w, relY))
+                    addWidget(w)
+                }
             }
             relY += item.height + ROW_GAP
         }
@@ -344,6 +413,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         extraWidgets.clear()
         dungeonSectionButtons.forEach { removeWidget(it) }
         dungeonSectionButtons.clear()
+        pathfindingSectionButtons.forEach { removeWidget(it) }
+        pathfindingSectionButtons.clear()
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
         listeningForQuietModeKey = false
@@ -606,6 +677,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 ToggleRow("Automate Starts With", "Solves 'What starts with: X'",
                     { Config.autoTermStartsWith }, { Config.autoTermStartsWith = it }),
             )
+            Tab.PATHFINDING -> buildPathfindingItems(px)
             Tab.HITBOXES -> listOf(
                 SectionHeader("Secret Hitbox Toggles"),
                 ToggleRow("Secret Hitboxes", "Enlarged clickboxes for dungeon secrets",
@@ -860,6 +932,205 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
     }
 
+    private fun buildPathfindingItems(px: Int): List<ContentItem> {
+        val fullX = px + 16
+        val fullW = PANEL_W - 32
+        val subX = px + 28
+        val subW = PANEL_W - 44
+
+        val items = mutableListOf<ContentItem>()
+
+        when (activePathfindingSection) {
+            PathfindingSection.USER_PRESETS -> {
+                items.add(SectionHeader("Pathfinding System"))
+                items.add(ToggleRow("Pathfinding System", "Enable global pathfinding routing and execution",
+                    { Config.pathfindingEnabled }, { Config.pathfindingEnabled = it }))
+                items.add(ToggleRow("  ↳ Route Visualizer", "Renders 3D waypoints and path lines in world",
+                    { Config.pathfindingDebugRender }, { Config.pathfindingDebugRender = it }))
+
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("+ Create New Route Preset"), 0xFF10B981.toInt()) {
+                    activePathfindingSection = PathfindingSection.CREATE_PRESET
+                    createDropdownOpen = false
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+
+                val presets = PathPresetManager.getPresets()
+                items.add(SectionHeader("Saved User Presets (${presets.size})"))
+                if (presets.isEmpty()) {
+                    items.add(NoteRow("No presets found. Click 'Create Preset' above or import a preset."))
+                } else {
+                    for (preset in presets) {
+                        val cat = preset.routeCategory()
+                        val isActive = Config.activePathfindingPresetId == preset.id
+
+                        items.add(SectionHeader("${cat.displayName} ✦ ${preset.name}"))
+                        items.add(NoteRow("Category: ${preset.category}  •  Subcategory: ${preset.subcategory}  •  Points: ${preset.points.size}"))
+
+                        val btnW = (subW - 8) / 3
+                        val selectBtnText = if (isActive) "Active ✓" else "Select Route"
+                        val selectBtnAccent = if (isActive) 0xFF10B981.toInt() else cat.color
+                        val btnSelect = ModernButton(subX, 0, btnW, 22, Component.literal(selectBtnText), selectBtnAccent) {
+                            Config.activePathfindingPresetId = if (isActive) "" else preset.id
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                        val btnExport = ModernButton(subX + btnW + 4, 0, btnW, 22, Component.literal("Export JSON"), 0xFF38BDF8.toInt()) {
+                            val json = PathPresetManager.exportToJson(preset)
+                            PathPresetManager.copyToClipboard(json)
+                            minecraft.player?.sendSystemMessage(Component.literal("§a[AsthoonLite] §fCopied preset §e\"${preset.name}\" §fto clipboard!"))
+                            exportFeedbackMsg = "Copied \"${preset.name}\" to clipboard!"
+                        }
+                        val btnDelete = ModernButton(subX + (btnW + 4) * 2, 0, btnW, 22, Component.literal("Delete"), 0xFFEF4444.toInt()) {
+                            PathPresetManager.deletePreset(preset.id)
+                            if (Config.activePathfindingPresetId == preset.id) Config.activePathfindingPresetId = ""
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                        items.add(MultiWidgetRow(listOf(btnSelect, btnExport, btnDelete), 22))
+                    }
+                }
+            }
+
+            PathfindingSection.CREATE_PRESET -> {
+                items.add(SectionHeader("1. Select Route Category"))
+
+                val catW = (subW - 12) / 4
+                val catButtons = RouteCategory.entries.mapIndexed { idx, cat ->
+                    val isSelected = createCategory == cat
+                    val label = if (isSelected) "● ${cat.displayName}" else cat.displayName
+                    ModernButton(subX + idx * (catW + 4), 0, catW, 24, Component.literal(label), cat.color) {
+                        createCategory = cat
+                        createSubcategory = cat.getSubcategories().firstOrNull()?.name ?: ""
+                        createDropdownOpen = false
+                        createPresetName = "${cat.displayName} ${createSubcategory} Route".trim()
+                        rebuildTab(Tab.PATHFINDING)
+                    }
+                }
+                items.add(MultiWidgetRow(catButtons, 24))
+
+                items.add(SectionHeader("2. Select Subcategory (${createCategory.displayName})"))
+                val subs = createCategory.getSubcategories()
+                if (subs.isEmpty()) {
+                    items.add(NoteRow("Dungeons category currently has no subcategories (blank)."))
+                } else {
+                    val currentSubColor = subs.firstOrNull { it.name.equals(createSubcategory, ignoreCase = true) }?.color ?: createCategory.color
+                    val dropdownLabel = if (createDropdownOpen) "▲ Subcategory: $createSubcategory (Click to close)" else "▼ Subcategory: $createSubcategory (Click to choose)"
+                    items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal(dropdownLabel), currentSubColor) {
+                        createDropdownOpen = !createDropdownOpen
+                        rebuildTab(Tab.PATHFINDING)
+                    }))
+
+                    if (createDropdownOpen) {
+                        if (createCategory == RouteCategory.M7) {
+                            val pW = (subW - 16) / 5
+                            val pButtons = subs.mapIndexed { idx, sub ->
+                                val isSel = createSubcategory.equals(sub.name, ignoreCase = true)
+                                val text = if (isSel) "● ${sub.name}" else sub.name
+                                ModernButton(subX + idx * (pW + 4), 0, pW, 22, Component.literal(text), sub.color) {
+                                    createSubcategory = sub.name
+                                    createDropdownOpen = false
+                                    createPresetName = "M7 ${sub.name} Route"
+                                    rebuildTab(Tab.PATHFINDING)
+                                }
+                            }
+                            items.add(MultiWidgetRow(pButtons, 22))
+                        } else {
+                            for (sub in subs) {
+                                val isSel = createSubcategory.equals(sub.name, ignoreCase = true)
+                                val text = if (isSel) "● ${sub.name} (Selected)" else "✦ ${sub.name}"
+                                items.add(WidgetRow(ModernButton(subX + 12, 0, subW - 12, 22, Component.literal(text), sub.color) {
+                                    createSubcategory = sub.name
+                                    createDropdownOpen = false
+                                    createPresetName = "${createCategory.displayName} ${sub.name} Route"
+                                    rebuildTab(Tab.PATHFINDING)
+                                }))
+                            }
+                        }
+                    }
+                }
+
+                items.add(SectionHeader("3. Preset Information"))
+                val nameBox = EditBox(font, subX, 0, subW, 20, Component.literal("Preset Name"))
+                if (createPresetName.isBlank()) {
+                    createPresetName = "${createCategory.displayName} ${createSubcategory} Route".trim()
+                }
+                nameBox.value = createPresetName
+                nameBox.setResponder { createPresetName = it }
+                items.add(WidgetRow(nameBox))
+                items.add(NoteRow("Category: §e${createCategory.displayName} §7• Subcategory: §6${if (createSubcategory.isBlank()) "None" else createSubcategory}"))
+
+                items.add(SectionHeader("4. Save & Finalize"))
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 26, Component.literal("✦ Save Preset to User Presets"), 0xFF10B981.toInt()) {
+                    val finalName = createPresetName.ifBlank { "${createCategory.displayName} Route" }
+                    val newPreset = PathPreset(
+                        name = finalName,
+                        category = createCategory.displayName,
+                        subcategory = createSubcategory,
+                        description = "Custom route for ${createCategory.displayName} ($createSubcategory)"
+                    )
+                    PathPresetManager.addPreset(newPreset)
+                    Config.activePathfindingPresetId = newPreset.id
+                    minecraft.player?.sendSystemMessage(Component.literal("§a[AsthoonLite] §fCreated and saved preset §e\"$finalName\" §fto User Presets!"))
+                    activePathfindingSection = PathfindingSection.USER_PRESETS
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+            }
+
+            PathfindingSection.EXPORT_PRESET -> {
+                items.add(SectionHeader("Export Presets"))
+                items.add(NoteRow("Export your presets to system clipboard or to disk."))
+
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("✦ Copy All Presets to Clipboard"), 0xFF38BDF8.toInt()) {
+                    val json = PathPresetManager.exportToJson()
+                    PathPresetManager.copyToClipboard(json)
+                    exportFeedbackMsg = "Successfully copied all presets to clipboard!"
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("✦ Save Presets to File (presets.json)"), 0xFF10B981.toInt()) {
+                    PathPresetManager.savePresets()
+                    exportFeedbackMsg = "Successfully saved presets to .minecraft/asthoonlite/pathfinding/presets.json!"
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+
+                if (exportFeedbackMsg.isNotBlank()) {
+                    items.add(NoteRow("§a✔ $exportFeedbackMsg"))
+                }
+
+                items.add(SectionHeader("Presets JSON Preview"))
+                val preview = PathPresetManager.exportToJson().lines().take(8).joinToString(" ")
+                items.add(NoteRow(preview.take(80) + "..."))
+            }
+
+            PathfindingSection.IMPORT_PRESET -> {
+                items.add(SectionHeader("Import Presets"))
+                items.add(NoteRow("Import presets from clipboard or reload presets.json."))
+
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("✦ Import from Clipboard"), 0xFF38BDF8.toInt()) {
+                    val text = PathPresetManager.readFromClipboard()
+                    val count = PathPresetManager.importFromJson(text)
+                    importFeedbackMsg = if (count > 0) "Successfully imported $count preset(s)!" else "No valid preset JSON found in clipboard."
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("✦ Reload from presets.json File"), 0xFFF59E0B.toInt()) {
+                    PathPresetManager.loadPresets()
+                    importFeedbackMsg = "Reloaded presets from presets.json disk file!"
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+
+                if (importFeedbackMsg.isNotBlank()) {
+                    items.add(NoteRow("§a✔ $importFeedbackMsg"))
+                }
+
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("View User Presets"), 0xFF10B981.toInt()) {
+                    activePathfindingSection = PathfindingSection.USER_PRESETS
+                    rebuildTab(Tab.PATHFINDING)
+                }))
+            }
+        }
+
+        return items
+    }
+
     /**
      * The Click Order row: one button that cycles None → Random → Human →
      * Skizo → None. The label is rewritten on press rather than the row being
@@ -985,6 +1256,23 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         // First allow child widgets (buttons, sliders) to handle clicks
         if (super.mouseClicked(event, doubleClick)) return true
 
+        // Check for scrollbar click & drag initiation
+        val maxScroll = maxScroll()
+        if (maxScroll > 0) {
+            val px = px()
+            val trackX = px + PANEL_W - 8
+            val top = contentTop()
+            val bottom = contentBottom()
+            val mx = event.x().toInt()
+            val my = event.y().toInt()
+            if (mx in (trackX - 6)..(trackX + 8) && my in top..bottom) {
+                isDraggingScrollbar = true
+                scrollDragStartY = event.y()
+                scrollDragStartOffset = scrollOffset
+                return true
+            }
+        }
+
         // Check if user clicked anywhere on a feature card row
         if (event.button() == 0) {
             val mx = event.x().toInt()
@@ -1038,14 +1326,32 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, scrollX: Double, scrollY: Double): Boolean {
         val px = px()
-        val top = contentTop()
-        val bottom = contentBottom()
-        if (mouseX >= px && mouseX <= px + PANEL_W && mouseY >= top && mouseY <= bottom) {
+        val py = py()
+        val pH = panelH()
+        if (mouseX >= px && mouseX <= px + PANEL_W && mouseY >= py && mouseY <= py + pH) {
             scrollOffset = (scrollOffset - (scrollY * 28).toInt()).coerceIn(0, maxScroll())
             updateWidgetPositions()
             return true
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)
+    }
+
+    override fun mouseDragged(event: MouseButtonEvent, dragX: Double, dragY: Double): Boolean {
+        if (isDraggingScrollbar && maxScroll() > 0) {
+            val top = contentTop()
+            val bottom = contentBottom()
+            val trackH = (bottom - top).coerceAtLeast(1)
+            val deltaY = event.y() - scrollDragStartY
+            scrollOffset = (scrollDragStartOffset + (deltaY / trackH * maxScroll()).toInt()).coerceIn(0, maxScroll())
+            updateWidgetPositions()
+            return true
+        }
+        return super.mouseDragged(event, dragX, dragY)
+    }
+
+    override fun mouseReleased(event: MouseButtonEvent): Boolean {
+        isDraggingScrollbar = false
+        return super.mouseReleased(event)
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
@@ -1088,11 +1394,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
 
         // ── Tab Bar Active Underline ─────────────────────────────────────────
         if (searchQuery.isEmpty()) {
-            val tabW = (PANEL_W - 16) / Tab.entries.size
             val activeIdx = Tab.entries.indexOf(activeTab)
-            if (activeIdx >= 0) {
-                val barX = px + 8 + activeIdx * tabW
-                context.fill(barX, py + HEADER_H + TAB_BAR_H - 2, barX + tabW, py + HEADER_H + TAB_BAR_H, COL_ACCENT)
+            val activeBtn = tabButtons.getOrNull(activeIdx)
+            if (activeBtn != null) {
+                context.fill(activeBtn.x, py + HEADER_H + TAB_BAR_H - 2, activeBtn.x + activeBtn.width, py + HEADER_H + TAB_BAR_H, COL_ACCENT)
             }
         }
 
@@ -1100,6 +1405,17 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         if (searchQuery.isEmpty() && activeTab == Tab.DUNGEON) {
             val secW = (PANEL_W - 24) / DungeonSection.entries.size
             val activeSecIdx = DungeonSection.entries.indexOf(activeDungeonSection)
+            if (activeSecIdx >= 0) {
+                val secX = px + 12 + activeSecIdx * secW
+                val secY = py + HEADER_H + TAB_BAR_H + 4
+                context.fill(secX, secY + DUNGEON_BAR_H - 6, secX + secW - 4, secY + DUNGEON_BAR_H - 4, COL_ACCENT)
+            }
+        }
+
+        // ── Pathfinding Subcategory Indicator ────────────────────────────────
+        if (searchQuery.isEmpty() && activeTab == Tab.PATHFINDING) {
+            val secW = (PANEL_W - 24) / PathfindingSection.entries.size
+            val activeSecIdx = PathfindingSection.entries.indexOf(activePathfindingSection)
             if (activeSecIdx >= 0) {
                 val secX = px + 12 + activeSecIdx * secW
                 val secY = py + HEADER_H + TAB_BAR_H + 4
@@ -1136,6 +1452,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     }
                     is WidgetRow -> {
                         item.widget.extractRenderState(context, mouseX, mouseY, delta)
+                    }
+                    is MultiWidgetRow -> {
+                        for (w in item.widgets) {
+                            w.extractRenderState(context, mouseX, mouseY, delta)
+                        }
                     }
                     is NoteRow -> {
                         context.text(font, item.text, px + 20, itemY + 3, COL_TEXT_SUB)

@@ -8,6 +8,7 @@ import net.minecraft.client.Minecraft
 import net.minecraft.network.chat.Component
 
 import com.asthoonlite.utils.InputCapture
+import com.asthoonlite.pathfinding.PathfindCapture
 
 object AslCommand {
 
@@ -42,7 +43,24 @@ object AslCommand {
                         )
                         .then(
                             ClientCommands.literal("capture")
-                                .executes { _ ->
+                                .then(
+                                    ClientCommands.literal("1")
+                                        .executes { _ ->
+                                            InputCapture.toggle()
+                                            1
+                                        }
+                                )
+                                .then(
+                                    ClientCommands.literal("2")
+                                        .executes { _ ->
+                                            PathfindCapture.toggle()
+                                            1
+                                        }
+                                )
+                                .executes { ctx ->
+                                    ctx.source.sendFeedback(
+                                        Component.literal("§a[AsthoonLite] §fCapture modes: §e/asl capture 1 §7(Input/Terminal) §f• §e/asl capture 2 §7(Pathfinding & Movement)")
+                                    )
                                     InputCapture.toggle()
                                     1
                                 }
