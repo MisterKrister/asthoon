@@ -241,12 +241,13 @@ internal fun simonDeviceRegressionChecks() {
         com.asthoonlite.pathfinding.RouteNodeType.WALK,
         com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
         com.asthoonlite.pathfinding.RouteNodeType.JUMP,
+        com.asthoonlite.pathfinding.RouteNodeType.CROUCH,
         com.asthoonlite.pathfinding.RouteNodeType.TERMINAL,
         com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS,
         com.asthoonlite.pathfinding.RouteNodeType.ARROWS_ALIGN,
         com.asthoonlite.pathfinding.RouteNodeType.TIMEOUT,
         com.asthoonlite.pathfinding.RouteNodeType.INTERACT
-    )) { "M7 routes must allow WALK, BONZO_STAFF, JUMP, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, and INTERACT (no AOTV / Etherwarp)" }
+    )) { "M7 routes must allow WALK, BONZO_STAFF, JUMP, CROUCH, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, and INTERACT (no AOTV / Etherwarp)" }
 
     // 4. Node swapping and drag-and-drop reordering
     val preset = com.asthoonlite.pathfinding.PathPreset(
@@ -337,6 +338,7 @@ internal fun simonDeviceRegressionChecks() {
     // 11. Expanded RouteNodeType checks for M7
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF)) { "M7 must allow BONZO_STAFF" }
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.JUMP)) { "M7 must allow JUMP" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.CROUCH)) { "M7 must allow CROUCH" }
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.TERMINAL)) { "M7 must allow TERMINAL" }
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS)) { "M7 must allow SIMON_SAYS" }
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.ARROWS_ALIGN)) { "M7 must allow ARROWS_ALIGN" }
@@ -430,6 +432,29 @@ internal fun simonDeviceRegressionChecks() {
     check(shouldAdvanceViaGenericArrival(RouteNodeType.WALK, 1.8, 2.2)) {
         "WALK node must advance via generic arrival check"
     }
+    check(shouldAdvanceViaGenericArrival(RouteNodeType.CROUCH, 1.8, 2.2)) {
+        "CROUCH node must advance via generic arrival check"
+    }
+
+    // 20. Speed-adaptive Bonzo pitch calculation (low speed / accelerating vs full sprint)
+    fun computeBonzoPitch(currentBpsH: Double, targetPitch: Float): Float {
+        return if (currentBpsH >= 14.0) {
+            targetPitch
+        } else if (currentBpsH < 6.0) {
+            80.0f
+        } else {
+            val t = ((currentBpsH - 6.0) / 8.0).toFloat().coerceIn(0.0f, 1.0f)
+            80.0f * (1.0f - t) + targetPitch * t
+        }
+    }
+    // At standstill / early acceleration (e.g. 0 to 4 bps): pitch must be steep (~80°) to detonate under feet
+    check(computeBonzoPitch(0.0, 32.55f) == 80.0f) { "Bonzo from standstill must aim steep (80°) directly under feet" }
+    check(computeBonzoPitch(4.0, 32.55f) == 80.0f) { "Bonzo starting acceleration must aim steep (80°)" }
+    // At full sprint (>= 14 bps): pitch matches target pitch (e.g. 32.55°) to launch with maximum forward angle
+    check(computeBonzoPitch(16.0, 32.55f) == 32.55f) { "Bonzo at full sprint must use configured/shallow target pitch" }
+    // In-between (e.g. 10 bps): smoothly interpolated
+    val midPitch = computeBonzoPitch(10.0, 32.55f)
+    check(midPitch in 33.0f..79.0f) { "Bonzo at intermediate speed must interpolate pitch smoothly" }
 }
 
 

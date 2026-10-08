@@ -62,6 +62,7 @@ enum class RouteNodeType(
     WALK("Walk", 0xFF10B981.toInt(), "Traverse on foot towards waypoint"),
     BONZO_STAFF("Bonzo Staff", 0xFFEC4899.toInt(), "Fires Bonzo's Staff explosive recoil to launch forward"),
     JUMP("Jump", 0xFFF59E0B.toInt(), "Jumps while moving towards waypoint"),
+    CROUCH("Crouch", 0xFF6366F1.toInt(), "Crouches/sneaks while traversing or holding waypoint"),
     TERMINAL("Terminal", 0xFF06B6D4.toInt(), "Aims camera at terminal and opens with triggerbot"),
     SIMON_SAYS("Simon Says", 0xFF8B5CF6.toInt(), "Stands at waypoint until Simon Says device completes"),
     ARROWS_ALIGN("Arrows Align", 0xFF3B82F6.toInt(), "Stands at waypoint until Arrows Align completes"),
@@ -73,7 +74,7 @@ enum class RouteNodeType(
             entries.firstOrNull { it.name.equals(name, ignoreCase = true) || it.displayName.equals(name, ignoreCase = true) } ?: WALK
 
         fun allowedForCategory(category: RouteCategory): List<RouteNodeType> = when (category) {
-            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, JUMP, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, INTERACT)
+            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, JUMP, CROUCH, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, INTERACT)
             else -> entries
         }
     }

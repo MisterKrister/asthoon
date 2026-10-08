@@ -287,9 +287,18 @@ object PathExecutor {
         // 3. Handle approaching / arriving at a JUMP node
         if (nodeType == RouteNodeType.JUMP) {
             val jumpArrivalDist = if (isHighSpeed) 2.2 else 1.5
-            if (distH <= jumpArrivalDist && distY < 2.0 && player.onGround()) {
+            val bpsH = player.deltaMovement.horizontalDistance() * 20.0
+            val toTargetDx = target.x - player.x
+            val toTargetDz = target.z - player.z
+            val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
+            val isAtLedge = isLedgeOrGapAhead(level, player, targetYaw)
+            val hasSpeed = bpsH >= 10.0
+            val canExecuteJump = (distH <= jumpArrivalDist && distY < 2.0 && player.onGround()) &&
+                                 (isAtLedge || hasSpeed || distH <= 0.8)
+            if (canExecuteJump) {
                 jumpTicksRemaining = 3
                 mc.options.keyJump.setDown(true)
+                player.setSprinting(true)
                 currentNodeIndex++
                 resetSpecialNodeState()
                 if (currentNodeIndex >= points.size) {
@@ -443,7 +452,8 @@ object PathExecutor {
             player.xRot += deltaPitch * 0.42f
         }
 
-        // 6. Movement Controls with Look-Node & Pre-Aim Strafe Compensation
+        // 6. Movement Controls with Look-Node, Crouch & Pre-Aim Strafe Compensation
+        val isCrouchNode = (nodeType == RouteNodeType.CROUCH)
         val isPreAimingBonzo = (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 1.8)
         if ((target.hasLookNode || isPreAimingBonzo) && distH > 0.8) {
             val moveYaw = (-Math.toDegrees(atan2(target.x - player.x, target.z - player.z))).toFloat()
@@ -455,13 +465,34 @@ object PathExecutor {
             mc.options.keyDown.setDown(forward < -0.2)
             mc.options.keyLeft.setDown(strafe < -0.2)
             mc.options.keyRight.setDown(strafe > 0.2)
-            mc.options.keySprint.setDown(forward > 0.4)
+
+            if (isCrouchNode) {
+                mc.options.keyShift.setDown(true)
+                mc.options.keySprint.setDown(false)
+            } else {
+                mc.options.keyShift.setDown(false)
+                val wantsSprint = forward > 0.4
+                mc.options.keySprint.setDown(wantsSprint)
+                if (wantsSprint && !player.isSprinting) {
+                    player.setSprinting(true)
+                }
+            }
         } else {
             mc.options.keyUp.setDown(true)
             mc.options.keyDown.setDown(false)
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
-            mc.options.keySprint.setDown(true)
+
+            if (isCrouchNode) {
+                mc.options.keyShift.setDown(true)
+                mc.options.keySprint.setDown(false)
+            } else {
+                mc.options.keyShift.setDown(false)
+                mc.options.keySprint.setDown(true)
+                if (!player.isSprinting) {
+                    player.setSprinting(true)
+                }
+            }
         }
 
         // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection on WALK nodes
@@ -480,6 +511,9 @@ object PathExecutor {
 
         if (jumpTicksRemaining > 0) {
             mc.options.keyJump.setDown(true)
+            if (!isCrouchNode) {
+                player.setSprinting(true)
+            }
             jumpTicksRemaining--
         } else {
             mc.options.keyJump.setDown(false)
@@ -616,11 +650,26 @@ object PathExecutor {
         val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
         bonzoLaunchYaw = launchYaw
 
-        // Pitch: prioritize node's saved pitch if configured, else smart elevation-aware pitch
-        val launchPitch = if (currentNode.pitch in 15.0f..75.0f) {
+        // Calculate current forward momentum to determine optimal pitch.
+        // At full speed (>= 14 bps), a shallow pitch (e.g. 32° or node pitch) launches forward cleanly
+        // because player momentum carries them past the impact point before detonation.
+        // When just starting to accelerate (< 14 bps), projectile must hit directly under/behind feet
+        // (steep pitch 78°–82°) so the blast does NOT land in front of the player and knock them backwards.
+        val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
+        val targetPitch = if (currentNode.pitch in 15.0f..75.0f) {
             currentNode.pitch
         } else {
             if (destination.y > player.y + 2.0) 32.0f else 55.0f
+        }
+
+        val launchPitch = if (currentBpsH >= 14.0) {
+            targetPitch
+        } else if (currentBpsH < 6.0) {
+            80.0f
+        } else {
+            // Smoothly interpolate between 80° (standstill/accelerating) and targetPitch (full sprint)
+            val t = ((currentBpsH - 6.0) / 8.0).toFloat().coerceIn(0.0f, 1.0f)
+            80.0f * (1.0f - t) + targetPitch * t
         }
 
         // Snap body orientation and pitch firmly towards destination
@@ -632,6 +681,7 @@ object PathExecutor {
         mc.options.keyUp.setDown(true)
         mc.options.keyDown.setDown(false)
         mc.options.keySprint.setDown(true)
+        player.setSprinting(true)
 
         // Single jump pulse on fire
         jumpTicksRemaining = 3
@@ -657,6 +707,7 @@ object PathExecutor {
                 mc.options.keyUp.setDown(true)
                 mc.options.keyDown.setDown(false)
                 mc.options.keySprint.setDown(true)
+                player.setSprinting(true)
 
                 // Manage jump pulse cleanly so player never bunny hops on landing
                 if (jumpTicksRemaining > 0) {
