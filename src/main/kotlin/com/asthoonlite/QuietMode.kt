@@ -3,6 +3,7 @@ package com.asthoonlite
 import com.asthoonlite.config.Config
 import com.asthoonlite.gui.AsthoonLiteScreen
 import com.asthoonlite.pet.PetHudEditorScreen
+import com.asthoonlite.dungeon.DungeonMapEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.minecraft.client.Minecraft
@@ -27,8 +28,7 @@ import net.minecraft.client.Minecraft
  *    `dungeon/TerminalCursor`.
  *  - the solver chat lines, which are what every other mod prints too.
  *
- * The external overlay window is also untouched: a window capture never sees
- * a different window, so there is nothing there to suppress.
+ * The external dungeon map follows the same flag and hides while suppressed.
  *
  * That leaves the settings screens, which cannot gate on [suppressing]
  * (a settings menu that draws nothing is useless). They are closed on the
@@ -103,7 +103,7 @@ object QuietMode {
     private fun dismissModScreens() {
         val mc = Minecraft.getInstance()
         val screen = mc.screen
-        if (screen is AsthoonLiteScreen || screen is PetHudEditorScreen) screen.onClose()
+        if (screen is AsthoonLiteScreen || screen is PetHudEditorScreen || screen is DungeonMapEditorScreen) screen.onClose()
     }
 
     /** The single way the flag changes, so every path logs the same way.

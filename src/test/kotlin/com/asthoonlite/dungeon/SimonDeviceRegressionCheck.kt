@@ -1,8 +1,18 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.pathfinding.PathExecutor
+import com.asthoonlite.pathfinding.PathfindCapture
 import com.asthoonlite.pathfinding.PathPoint
 import com.asthoonlite.pathfinding.RouteNodeType
+import com.asthoonlite.pathfinding.GoldorRouteShortcut
+import com.asthoonlite.config.Config
+import com.google.gson.Gson
+import com.google.gson.JsonParser
+import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
+import net.minecraft.world.phys.BlockHitResult
+import net.minecraft.world.phys.Vec3
+import java.util.Locale
 
 internal fun simonDeviceRegressionChecks() {
     val run = SimonDeviceLifecycle()
@@ -422,20 +432,10 @@ internal fun simonDeviceRegressionChecks() {
     }
 
     // 19. Waypoint arrival transition exclusions and jump pulse
-    fun shouldAdvanceViaGenericArrival(nodeType: RouteNodeType, distH: Double, threshold: Double): Boolean {
-        return nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP && distH < threshold
-    }
-    check(!shouldAdvanceViaGenericArrival(RouteNodeType.BONZO_STAFF, 1.8, 2.2)) {
-        "BONZO_STAFF node must never be skipped by generic arrival check"
-    }
-    check(!shouldAdvanceViaGenericArrival(RouteNodeType.JUMP, 1.8, 2.2)) {
-        "JUMP node must never be skipped by generic arrival check"
-    }
-    check(shouldAdvanceViaGenericArrival(RouteNodeType.WALK, 1.8, 2.2)) {
-        "WALK node must advance via generic arrival check"
-    }
-    check(shouldAdvanceViaGenericArrival(RouteNodeType.CROUCH, 1.8, 2.2)) {
-        "CROUCH node must advance via generic arrival check"
+    for (nodeType in RouteNodeType.entries) {
+        check(PathExecutor.advancesOnArrival(nodeType) == (nodeType in setOf(RouteNodeType.WALK, RouteNodeType.CROUCH))) {
+            "Only walk and crouch nodes may advance on proximity; $nodeType must execute its action"
+        }
     }
 
     // 20. Bonzo ground impact pitch calculation
@@ -460,72 +460,98 @@ internal fun simonDeviceRegressionChecks() {
     // Once player steps onto platform at Y=118.8, distH 0.9: arrival triggers cleanly
     check(canArriveElevatedNode(118.8, 119.0, 0.9)) { "Player arriving at top platform must trigger arrival" }
 
-    // 22. In-air overshoot brake detection & stationary destination braking
-    fun shouldInAirBrake(
-        isStationaryDest: Boolean,
-        distToTargetH: Double,
-        vy: Double,
-        currentBpsH: Double,
-        playerY: Double,
-        targetY: Double
-    ): Boolean {
-        if (isStationaryDest && distToTargetH < 3.8) return true
-        if (vy >= 0.1 || distToTargetH >= 6.0 || currentBpsH <= 5.0) return false
-        val height = (playerY - targetY).coerceAtLeast(0.2)
-        val fallSpeed = Math.abs(vy).coerceAtLeast(0.18)
-        val ticksToLand = (height / fallSpeed).coerceIn(1.0, 12.0)
-        val predictedDist = (currentBpsH / 20.0) * ticksToLand
-        return (predictedDist - distToTargetH) > 0.8
-    }
-    // High velocity approaching Simon Says in mid-air: must brake hard to prevent flying past platform
-    check(shouldInAirBrake(isStationaryDest = true, distToTargetH = 3.2, vy = 0.05, currentBpsH = 18.0, playerY = 120.0, targetY = 120.0)) {
-        "Airborne approach towards stationary destination must engage air brake"
-    }
-    // High velocity (18 bps) close to target (2.0m) while descending: must brake to prevent overshoot
-    check(shouldInAirBrake(isStationaryDest = false, distToTargetH = 2.0, vy = -0.3, currentBpsH = 18.0, playerY = 120.5, targetY = 119.0)) {
-        "High-velocity airborne descent overshooting target must engage air brake"
-    }
-    // Normal trajectory falling short (need distance): must NOT brake
-    check(!shouldInAirBrake(isStationaryDest = false, distToTargetH = 5.0, vy = -0.3, currentBpsH = 12.0, playerY = 120.5, targetY = 119.0)) {
-        "Airborne descent needing distance must not engage air brake"
-    }
-
-    // 23. WASD Movement Key Vectoring (look-node decoupled vs normal straight pathing)
-    fun computeWasd(hasLookNode: Boolean, isAirborne: Boolean, angleDiffDeg: Double): List<Boolean> {
-        if (isAirborne) return listOf(true, false, false, false) // in-air: straight forward flight only
-        val rad = Math.toRadians(angleDiffDeg)
-        val forward = Math.cos(rad)
-        val strafe = -Math.sin(rad)
-        return if (hasLookNode) {
-            val w = forward > 0.25
-            val s = forward < -0.25
-            val a = strafe > 0.25
-            val d = strafe < -0.25
-            listOf(w, s, a, d)
-        } else {
-            val isSharpTurn = Math.abs(angleDiffDeg) > 50.0
-            val w = forward > 0.1 || !isSharpTurn
-            val s = forward < -0.5
-            val a = isSharpTurn && strafe > 0.5
-            val d = isSharpTurn && strafe < -0.5
-            listOf(w, s, a, d)
+    // 22. Real capture: all three lava bounces stall outside node #5's platform.
+    // At tick 159 the old 3.8-block brake presses S before reaching platform height.
+    val landingTarget = Vec3(107.5, 120.0, 93.5)
+    val stalledSamples = listOf(
+        Vec3(103.9110, 119.0738, 94.1133) to 0.0987,
+        Vec3(104.0791, 122.0848, 94.0986) to 0.0063,
+        Vec3(103.9625, 108.2000, 94.1435) to 0.0096,
+        Vec3(103.7802, 108.2000, 94.1766) to 0.0096
+    )
+    for ((position, forwardSpeed) in stalledSamples) {
+        val offset = Vec3(landingTarget.x - position.x, 0.0, landingTarget.z - position.z)
+        val motion = PathExecutor.stationaryMovement(offset, offset.normalize().scale(forwardSpeed), position.y - landingTarget.y)
+        check(PathExecutor.isApproachingNode(offset, motion, position.y - landingTarget.y)) {
+            "Lava recovery must keep moving toward the platform at $position"
         }
     }
-    // Normal pathing with minor camera deviation (-35°): W only, NO sideways crab-walking!
-    check(computeWasd(hasLookNode = false, isAirborne = false, -35.0) == listOf(true, false, false, false)) {
-        "Minor angle deviation during normal pathing must not engage strafe keys"
+    val closeOffset = Vec3(0.0, 0.0, 0.8)
+    check(PathExecutor.stationaryMovement(closeOffset, Vec3(0.0, 0.0, 0.25), -2.0).z > 0.0) { "Do not brake below a ledge" }
+    check(PathExecutor.stationaryMovement(closeOffset, Vec3(0.0, 0.0, 0.25), 2.0).z < 0.0) { "Brake over the platform" }
+    for (slowSpeed in listOf(0.02, -0.02)) {
+        check(PathExecutor.stationaryMovement(closeOffset, Vec3(0.0, 0.0, slowSpeed), 2.0) == Vec3.ZERO) {
+            "Small drift must coast instead of causing alternating W/S"
+        }
     }
-    // Normal pathing on sharp corner (60°): W + D assists turn
-    check(computeWasd(hasLookNode = false, isAirborne = false, 60.0) == listOf(true, false, false, true)) {
-        "Sharp corner on normal pathing must engage strafe assist"
+    check(PathExecutor.stationaryMovement(closeOffset, Vec3(0.0, 0.0, -0.25), 2.0).z > 0.0) { "Counter reverse drift toward the platform" }
+    check(!PathExecutor.hasLandedAtNode(0.5, 0.1, false)) { "Being near the final node in flight is not a landing" }
+    check(!PathExecutor.hasLandedAtNode(3.5, 0.0, true)) { "A nearby ground surface is not the destination" }
+    check(!PathExecutor.hasLandedAtNode(0.5, 2.0, true)) { "Ground below the destination must not complete the route" }
+    check(PathExecutor.hasLandedAtNode(0.5, 0.5, true)) { "A grounded landing within half a block completes the route" }
+
+    // Latest capture: tick 123 jumps again at the approach platform, then tick 128 loses sideways braking.
+    val simonTarget = Vec3(108.5, 120.0, 93.5)
+    val approachOffset = Vec3(simonTarget.x - 107.7736, 0.0, simonTarget.z - 89.8845)
+    val approachVelocity = Vec3(0.2400, -0.0784, 0.5368)
+    val approachMotion = PathExecutor.stationaryMovement(approachOffset, approachVelocity, 0.0)
+    check(approachMotion.dot(approachVelocity) < 0.0) { "High momentum must brake before overshooting Simon" }
+    check(!PathExecutor.isApproachingNode(approachOffset, approachMotion, 0.0)) { "Braking after touchdown must not start another jump" }
+    check(PathExecutor.isApproachingNode(approachOffset, PathExecutor.stationaryMovement(approachOffset, Vec3.ZERO, 0.0), 0.0)) {
+        "A controlled approach must still cross the gap to Simon"
     }
-    // Airborne jump flight: ALWAYS straight forward, zero sideways drift
-    check(computeWasd(hasLookNode = false, isAirborne = true, -45.0) == listOf(true, false, false, false)) {
-        "Airborne flight must never engage strafe keys"
+    check(!PathExecutor.isApproachingNode(closeOffset, Vec3.ZERO, 0.0)) { "Holding the node must not jump repeatedly" }
+
+    val overshootOffset = Vec3(simonTarget.x - 108.8897, 0.0, simonTarget.z - 94.0596)
+    val overshootVelocity = Vec3(0.1141, 0.0030, 0.5380)
+    val brake = PathExecutor.stationaryMovement(overshootOffset, overshootVelocity, 1.2492)
+    for (yaw in listOf(-97.44f, 0f, 90f, 180f, 270f)) {
+        val (forward, strafe) = PathExecutor.movementInput(brake, yaw)
+        fun pressed(value: Double): Double = if (value > 0.25) 1.0 else if (value < -0.25) -1.0 else 0.0
+        val radians = Math.toRadians(yaw.toDouble())
+        val worldInput = Vec3(-Math.sin(radians) * pressed(forward) + Math.cos(radians) * pressed(strafe), 0.0,
+            Math.cos(radians) * pressed(forward) + Math.sin(radians) * pressed(strafe))
+        check(worldInput.dot(overshootVelocity) < 0.0) { "Braking must cancel world momentum even when yaw is $yaw" }
     }
-    // Decoupled look node: full WASD vectoring
-    check(computeWasd(hasLookNode = true, isAirborne = false, -45.0) == listOf(true, false, true, false)) {
-        "Look-node decoupled pathing must support full WASD strafing"
+    val (coastForward, coastStrafe) = PathExecutor.movementInput(Vec3.ZERO, -97.44f)
+    check(Math.abs(coastForward) + Math.abs(coastStrafe) < 1.0e-9) { "Coasting must release all WASD keys" }
+    check(!PathExecutor.isSettledAtNode(0.7, 1.25, false, 0.55)) { "Flying over Simon must not start its solver" }
+    check(!PathExecutor.isSettledAtNode(0.7, 0.0, true, 0.55)) { "Touchdown with launch momentum must brake before aiming at Simon" }
+    check(!PathExecutor.isSettledAtNode(0.7, 8.0, true, 0.0)) { "Ground below the platform must not start Simon" }
+    check(PathExecutor.isSettledAtNode(0.7, 0.0, true, 0.02)) { "A stopped landing may hand off to Simon" }
+    check(PathExecutor.canUseSimonSolver(false, null, false)) { "Standalone Simon automation must remain available" }
+    for (nodeType in RouteNodeType.entries) {
+        check(!PathExecutor.canUseSimonSolver(true, nodeType, false)) { "An approaching route must retain camera ownership" }
+        check(PathExecutor.canUseSimonSolver(true, nodeType, true) == (nodeType == RouteNodeType.SIMON_SAYS)) {
+            "The Simon solver may take over only at its settled route node"
+        }
+    }
+
+    // 23. Latest capture: tick 479 carries sideways momentum into the wall at Z=84.7.
+    val flightOffset = Vec3(107.5 - 105.5775, 0.0, 89.5 - 80.9923)
+    val flightVelocity = Vec3(0.6215, 0.0754, 0.8222)
+    val flightHeading = flightOffset.normalize()
+    val horizontalFlightVelocity = Vec3(flightVelocity.x, 0.0, flightVelocity.z)
+    val sidewaysFlightVelocity = horizontalFlightVelocity.subtract(flightHeading.scale(horizontalFlightVelocity.dot(flightHeading)))
+    val flightMotion = PathExecutor.airborneMovement(flightOffset, flightVelocity)
+    check(flightMotion.dot(flightHeading) > 0.0 && flightMotion.dot(sidewaysFlightVelocity) < 0.0) {
+        "Airborne steering must cancel sideways drift while preserving progress toward the waypoint"
+    }
+    check(PathExecutor.movementInput(flightMotion, -23.16f).second < -0.25) { "The captured flight needs right strafe to cancel positive X drift" }
+    check(PathExecutor.airborneMovement(Vec3(0.0, 0.0, 4.0), Vec3(0.0, 1.0, 0.8)).z > 0.0) {
+        "Aligned airborne momentum must keep moving forward"
+    }
+
+    // The lava recovery at ticks 205-208 is near the node, but still outside the platform's floor.
+    for ((position, velocity) in listOf(
+        Vec3(106.1217, 121.9145, 94.3344) to Vec3(0.1759, -0.5727, -0.1066),
+        Vec3(106.5867, 119.9968, 94.0528) to Vec3(0.1173, -0.7696, -0.0711)
+    )) {
+        val offset = Vec3(landingTarget.x - position.x, 0.0, landingTarget.z - position.z)
+        val motion = PathExecutor.stationaryMovement(offset, velocity, position.y - landingTarget.y, landingSupport = false)
+        check(motion.dot(offset) > 0.0 && PathExecutor.isApproachingNode(offset, motion, position.y - landingTarget.y, landingSupport = false)) {
+            "A lava bounce must reach solid landing support before braking at $position"
+        }
     }
 
     // 24. Auto-gap jump towards distant platform across chasm
@@ -541,27 +567,79 @@ internal fun simonDeviceRegressionChecks() {
         "Ledge jump must not trigger when already arrived on platform"
     }
 
-    // 25. Bonzo Staff launch platform arrival & sprint momentum gating
-    fun canLaunchBonzo(onGround: Boolean, distH: Double, currentBpsH: Double, isAtLaunchLedge: Boolean): Boolean {
-        val isArrived = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-        val hasSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
-        return onGround && isArrived && hasSpeed
+    // 25. Verify forward runway speed, rather than total speed or proximity to a ledge.
+    check(PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.0, -0.0784, 0.6))) { "12 bps of aligned runway speed may launch" }
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.0, 0.0, 0.25))) { "Ledge proximity must not allow a slow launch" }
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.5, 0.0, 0.6))) { "High sideways velocity must not launch" }
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(107.5 - 99.3672, 0.0, 89.5 - 72.8124), Vec3(0.4537, -0.0784, 0.3235))) {
+        "The recorded diagonal second launch must align and accelerate first"
     }
-    // Airborne descending from jump onto pillar (onGround = false): must NEVER fire mid-air!
-    check(!canLaunchBonzo(onGround = false, distH = 1.2, currentBpsH = 0.0, isAtLaunchLedge = false)) {
-        "Airborne descent onto Bonzo pillar must not fire prematurely"
+    check(PathExecutor.hasBonzoRunwayVelocity(Vec3(93.5 - 98.471, 0.0, 66.5 - 49.3798), Vec3(-0.2446, -0.0784, 0.6636))) {
+        "The recorded aligned first launch must remain available"
     }
-    // Just touched down on pillar with 0 speed (not accelerated yet): must NOT fire yet!
-    check(!canLaunchBonzo(onGround = true, distH = 1.4, currentBpsH = 2.0, isAtLaunchLedge = false)) {
-        "Slow speed touchdown on Bonzo pillar must not fire before accelerating"
+
+    // The 837-tick capture lands on the short second platform at tick 544. Waiting
+    // for 12 bps moves the shot past its floor at tick 545, into the lava below.
+    val shortRunwayOffset = Vec3(101.0 - 101.3721, 0.0, 94.0 - 72.9418)
+    val shortRunwayVelocity = Vec3(-0.0146, -0.0784, 0.4415)
+    check(PathExecutor.hasBonzoRunwayVelocity(shortRunwayOffset, shortRunwayVelocity, downwardFollowup = true)) {
+        "A later downward launch must use the available 8.83 bps before leaving the short platform"
     }
-    // Sprinting across pillar at full speed (12 bps): FIRES WITH FULL MOMENTUM!
-    check(canLaunchBonzo(onGround = true, distH = 1.2, currentBpsH = 12.0, isAtLaunchLedge = false)) {
-        "Sprint momentum on Bonzo pillar must trigger full-power launch"
+    check(!PathExecutor.hasBonzoRunwayVelocity(shortRunwayOffset, shortRunwayVelocity)) {
+        "The first launch must still require 12 bps"
     }
-    // Reached launch ledge of pillar: fires before falling off!
-    check(canLaunchBonzo(onGround = true, distH = 1.8, currentBpsH = 5.0, isAtLaunchLedge = true)) {
-        "Reaching launch ledge of Bonzo pillar must trigger launch"
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.0, 0.0, 0.39), downwardFollowup = true)) {
+        "Even short downward launches require 8 bps of forward speed"
+    }
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.5, 0.0, 0.6), downwardFollowup = true)) {
+        "Short platforms must retain the lateral alignment check"
+    }
+    val platformHit = BlockHitResult(Vec3(101.3721, 113.0, 73.257), Direction.UP, BlockPos(101, 112, 73), false)
+    val lavaFloorHit = BlockHitResult(Vec3(101.324, 106.0, 75.257), Direction.UP, BlockPos(101, 105, 75), false)
+    check(PathExecutor.isBonzoGroundImpact(113.0, platformHit)) { "A launch ray hitting the platform floor may fire" }
+    check(!PathExecutor.isBonzoGroundImpact(113.0, lavaFloorHit)) { "The captured ray into the lava floor must not fire" }
+    check(!PathExecutor.isBonzoGroundImpact(113.0, platformHit.withDirection(Direction.NORTH))) { "A wall hit cannot replace the launch floor" }
+    check(!PathExecutor.isBonzoGroundImpact(113.0, BlockHitResult.miss(platformHit.location, Direction.UP, platformHit.blockPos))) {
+        "A missed ray near the platform must not permit a shot"
+    }
+    check(PathExecutor.canReserveBonzoJump(0.0625, true)) { "Reserve the launch jump on the platform floor" }
+    check(!PathExecutor.canReserveBonzoJump(-0.5, true) && !PathExecutor.canReserveBonzoJump(0.0, false)) {
+        "Climbing a half-block approach or crossing a floor gap must retain automatic jumps"
+    }
+
+    // At ticks 52-56 the four-tick hold reaches the next ledge with jump still
+    // pressed. Drive the production pulse helper through a step, release and ledge.
+    var remainingJumpTicks = 0
+    var jumpWasDown = false
+    val jumpInputs = listOf(true, false, true, true, true).map { requested ->
+        remainingJumpTicks = PathExecutor.nextAutoJumpPulse(requested, remainingJumpTicks, jumpWasDown)
+        jumpWasDown = remainingJumpTicks > 0
+        if (jumpWasDown) remainingJumpTicks--
+        jumpWasDown
+    }
+    check(jumpInputs == listOf(true, false, true, false, true)) {
+        "Automatic jumps must release after one tick so the next ledge can jump without vanilla's ten-tick cooldown"
+    }
+    check(PathExecutor.nextAutoJumpPulse(true, 0, true) == 0 && PathExecutor.nextAutoJumpPulse(false, 0, false) == 0) {
+        "Only a requested jump after a released input tick starts a new pulse"
+    }
+
+    val legacyRouteConfig = Gson().fromJson("""{"pathfindingEnabled":true,"activePathfindingPresetId":"existing-route"}""", Config.Data::class.java)
+    check(legacyRouteConfig.goldorRouteKey == -1 && legacyRouteConfig.lastPathfindingPresetId == "" && legacyRouteConfig.activePathfindingPresetId == "existing-route") {
+        "Legacy configs must retain the active route with the Goldor shortcut unbound"
+    }
+    val rememberedRoute = Config.Data(goldorRouteKey = 82, lastPathfindingPresetId = "played-route", activePathfindingPresetId = "")
+    val restoredRoute = Gson().fromJson(Gson().toJson(rememberedRoute), Config.Data::class.java)
+    check(restoredRoute.goldorRouteKey == 82 && restoredRoute.lastPathfindingPresetId == "played-route" && restoredRoute.activePathfindingPresetId == "") {
+        "The keybind and last played route must survive stopping and config reload"
+    }
+    check(GoldorRouteShortcut.settledTicksAfterTeleport(false, true, 0.0, false, 0) == 0) { "Do not replay before server teleport confirmation" }
+    check(GoldorRouteShortcut.settledTicksAfterTeleport(true, false, 0.0, false, 1) == 0) { "Do not replay in midair after teleporting" }
+    check(GoldorRouteShortcut.settledTicksAfterTeleport(true, true, 0.3, false, 1) == 0) { "Wait for teleport momentum to settle" }
+    check(GoldorRouteShortcut.settledTicksAfterTeleport(true, true, 0.0, true, 1) == 0) { "Do not replay while a menu is open" }
+    val firstSettledTick = GoldorRouteShortcut.settledTicksAfterTeleport(true, true, 0.0, false, 0)
+    check(firstSettledTick == 1 && GoldorRouteShortcut.settledTicksAfterTeleport(true, true, 0.0, false, firstSettledTick) == 2) {
+        "Replay only after two settled ticks following the teleport"
     }
 
     // 26. Camera rotation critically damped spring & wrap handling
@@ -581,6 +659,20 @@ internal fun simonDeviceRegressionChecks() {
     check(lookFar.x == 0.0 && lookFar.z == 0.0) { "Lookahead when far must point to target" }
     val lookNear = PathExecutor.waypointLookahead(lp1, lp2, distH = 2.0, arrival = 1.2)
     check(lookNear.x > 0.0 && lookNear.z > 0.0) { "Lookahead when near must blend towards next waypoint" }
+
+    // JSON numbers must remain parseable on the Swedish locale used by the capture.
+    val previousLocale = Locale.getDefault()
+    try {
+        Locale.setDefault(Locale.forLanguageTag("sv-SE"))
+        val x = PathfindCapture.formatNumber(103.911, 4)
+        val vy = PathfindCapture.formatNumber(-0.0784, 4)
+        val yaw = PathfindCapture.formatNumber(-98.97f, 2)
+        check(x == "103.9110" && vy == "-0.0784" && yaw == "-98.97")
+        val record = JsonParser.parseString("""{"x":$x,"vel":[0.0000,$vy,0.8307],"yaw":$yaw}""").asJsonObject
+        check(record["x"].asDouble == 103.911 && record["vel"].asJsonArray[1].asDouble == -0.0784)
+    } finally {
+        Locale.setDefault(previousLocale)
+    }
 }
 
 

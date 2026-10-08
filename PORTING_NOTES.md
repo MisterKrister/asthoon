@@ -1,5 +1,53 @@
 # Porting status → Minecraft 26.1.2
 
+## 2026-10-08 — map styles, aligned overlay, terminal rendering
+
+This update builds on the current scanner, room graph, categories and canvas;
+it does not introduce another map engine. The older notes below describe
+earlier releases, including APIs and scope that have since changed.
+
+Reference checkouts (ignored under `reference/`):
+
+- Devonian `26.2`, commit `d740958bdddbcbf8817fa86ec7e63821f5d94a94`.
+  Adapted `DungeonMap` / `DungeonMapBaseRenderer` component transforms,
+  rectangular and L-room joins, state colours, text alignment and checkmark art.
+  Existing `BoxStarMob` category detection remains; Box mode uses the entity's
+  complete AABB through the shared renderer. GPL-3.0 notice and license ship
+  under `META-INF/licenses/Devonian.txt`.
+- NoammAddons `26.1.2`, commit `6d0c95a5e994e9acc1d043c7eb2cdac916809a31`.
+  Adapted `MapRenderer`'s 11x11 tile/connector/intersection pass, palette,
+  checkmarks and marker art; `UniqueRoom` label placement; `DungeonListener`
+  tab-row class detection and skin lookup; `MapUpdater` living-party order
+  and icon yaw. CC0 license ships under `META-INF/licenses/NoammAddons.txt`.
+  The exact earlier source drops were not present locally; the available
+  `Examples/devonian` checkout was version 1.32.9, so the requested branches
+  were used with the revisions above.
+
+One style setting controls both the explored HUD and the advanced external
+map. `dungeonMapFullGrid` now enables the external layer; legacy destination
+fields stay serialized. The editor saves the entire clamped map rectangle.
+GLFW returns the content-area origin already, so decoration insets must not
+be added twice. Placement converts screen coordinates and DPI on the EDT;
+native Wayland or a refused position logs once and falls back to top-left.
+
+Terminal rendering now runs at the outer Screen extraction entry point,
+before container-specific render cancellations. In the reference sources,
+Noamm's invwalk cancels this outer method while Devonian owns an earlier
+container hook; the former could prevent the old AsthoonLite draw hook from
+running at all. Title, slot-count and quiet-mode gates are unchanged. Fabric's
+GameRenderer wrapper still calls extraction events once, including the existing
+input clock and pointer; only the background callback is dispatched by the
+replacement. The Normal cursor draws an arrow instead of repeatedly warping the
+OS pointer; solver resets keep it hidden until the terminal closes. Osu
+motion, timing, art and trail paths are retained.
+
+`javap` verified the 26.1.2 screen entry point, mouse event methods and the
+`icon-N` map decoration keys. Regression checks cover config compatibility,
+both style layouts/palettes, L-room centres, screen bounds, desktop/DPI
+conversion, displayed player classes, full AABBs, cursor lifetime and sprite
+record/replay. A live Hypixel/Wayland client was not available in this Windows
+workspace; those interaction checks still need an in-game run.
+
 ## v1.3 — Star Mob ESP mob-type colors + Dungeon Map full-grid mode
 
 Built from real, working source: NoammAddons-1.2.4, devonian-1.28.9-26.2,

@@ -1,0 +1,16 @@
+Map renderer and artwork provenance
+
+Devonian: https://github.com/Synnerz/devonian
+Branch 26.2, revision d740958bdddbcbf8817fa86ec7e63821f5d94a94
+DungeonMapStyles adapts DungeonMapBaseRenderer geometry and room information.
+textures/map/devonian contains the original illegalmap checkmark artwork.
+Licensed under GPL-3.0; see the bundled license in Devonian.txt.
+
+NoammAddons: https://github.com/Noamm9/NoammAddons
+Branch 26.1.2, revision 6d0c95a5e994e9acc1d043c7eb2cdac916809a31
+DungeonMapStyles adapts MapRenderer and UniqueRoom. DungeonContext and map
+icon binding adapt DungeonListener and MapUpdater. textures/map/noamm
+contains the original checkmarks and marker artwork.
+CC0 1.0 Universal; see NoammAddons.txt.
+
+The ports use AsthoonLite's existing room graph and rendering backends.

@@ -156,6 +156,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var listeningForInventoryAutoClickerKey = false
     private lateinit var btnQuietModeKey: ModernButton
     private var listeningForQuietModeKey = false
+    private lateinit var btnGoldorRouteKey: ModernButton
+    private var listeningForGoldorRouteKey = false
     private lateinit var searchBox: EditBox
     private var searchQuery = ""
     private var scrollOffset = 0
@@ -298,6 +300,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
         listeningForQuietModeKey = false
+        listeningForGoldorRouteKey = false
 
         val px = px()
         val py = py()
@@ -461,6 +464,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
         listeningForQuietModeKey = false
+        listeningForGoldorRouteKey = false
 
         val px = px()
         val all = getSearchableEntries(px)
@@ -527,17 +531,23 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Map Display"),
                 ToggleRow("Dungeon Map", "On-screen dungeon map HUD",
                     { Config.dungeonMapEnabled }, { Config.dungeonMapEnabled = it }),
+                WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("Map Style: " + if (Config.dungeonMapStyle == 1) "Noamm" else "Devonian")) {
+                    Config.dungeonMapStyle = if (Config.dungeonMapStyle == 1) 0 else 1
+                    init()
+                }),
+                ToggleRow("Edit Map Position", "Drag the map in game; saves on drop",
+                    { Config.dungeonMapEditMode }, {
+                        Config.dungeonMapEditMode = it
+                        if (it) minecraft.setScreen(com.asthoonlite.dungeon.DungeonMapEditorScreen())
+                    }),
                 ToggleRow("  ↳ Always Show", "Show map without holding map item",
                     { Config.dungeonMapAlwaysShow }, { Config.dungeonMapAlwaysShow = it }),
-                ToggleRow("  ↳ Full Map / Unopened", "Show unopened rooms from map packet",
+                ToggleRow("  ↳ Full Map Overlay", "Cover the HUD map with an external map showing unopened rooms",
                     { Config.dungeonMapFullGrid }, { Config.dungeonMapFullGrid = it }),
                 ToggleRow("  ↳ Legit Base", "Draw only what the held map item shows: explored rooms, cleared-room checkmarks, no names or counters",
                     { Config.dungeonMapLegitBase }, { Config.dungeonMapLegitBase = it }),
                 ToggleRow("  ↳ Hide Map in Boss", "Automatically hide map during boss fights",
                     { Config.dungeonMapHideInBoss }, { Config.dungeonMapHideInBoss = it }),
-                ToggleRow("  ↳ External Overlay Window",
-                    "Draw the map in its own always-on-top window, outside the game window, so a window capture never sees it",
-                    { Config.dungeonMapExternalWindow }, { Config.dungeonMapExternalWindow = it }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 1, 6, Config.dungeonMapScale.toInt(), "Map Scale: ", "x") {
                     Config.dungeonMapScale = it.toFloat()
                     Config.save()
@@ -556,7 +566,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 5, 30, (Config.dungeonMapPlayerHeadScale * 10).toInt(), "Player Head Scale: ", "0.1x") {
                     Config.dungeonMapPlayerHeadScale = it / 10.0f
                 }),
-                ToggleRow("    ↳ Arrow for Self", "Render directional arrow instead of head for self",
+                ToggleRow("    ↳ Direction for Self", "Show a direction marker on your head",
                     { Config.dungeonMapMarkerSelf }, { Config.dungeonMapMarkerSelf = it }),
                 WidgetRow(IntSlider(subX + 12, 0, subW - 12, 24, 5, 30, (Config.dungeonMapMarkerScale * 10).toInt(), "Marker Arrow Scale: ", "0.1x") {
                     Config.dungeonMapMarkerScale = it / 10.0f
@@ -785,6 +795,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     SectionHeader("Starred Mob ESP"),
                     ToggleRow("Starred Mob ESP", "Highlights all starred mobs and minibosses",
                         { Config.starMobEspEnabled }, { Config.starMobEspEnabled = it }),
+                    WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("Star Mob Mode: " + if (Config.starMobRenderMode == 1) "Box" else "Fill")) {
+                        Config.starMobRenderMode = if (Config.starMobRenderMode == 1) 0 else 1
+                        init()
+                    }),
                     ToggleRow("  ↳ Through Walls", "Show starred mob boxes through blocks",
                         { Config.starMobEspThroughWalls }, { Config.starMobEspThroughWalls = it }),
                     ToggleRow("  ↳ Color By Mob Type", "Color-code starred mob categories",
@@ -996,6 +1010,17 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.pathfindingEnabled }, { Config.pathfindingEnabled = it }))
                 items.add(ToggleRow("  ↳ Route Visualizer", "Renders 3D waypoints and path lines in world",
                     { Config.pathfindingDebugRender }, { Config.pathfindingDebugRender = it }))
+                items.add(WidgetRow(run {
+                    btnGoldorRouteKey = ModernButton(subX, 0, subW, 24, Component.literal(goldorRouteKeyLabel())) {
+                        listeningForGoldorRouteKey = true
+                        listeningForQuietModeKey = false
+                        listeningForAutoClickerKey = false
+                        listeningForInventoryAutoClickerKey = false
+                        btnGoldorRouteKey.message = Component.literal("Press a key (ESC = NONE)")
+                    }
+                    btnGoldorRouteKey
+                }))
+                items.add(NoteRow("Runs /tpto goldor, then starts the last played route after landing."))
 
                 items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("+ Create New Route Preset"), 0xFF10B981.toInt()) {
                     activePathfindingSection = PathfindingSection.CREATE_PRESET
@@ -1727,7 +1752,21 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return "Quiet Mode Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
     }
 
+    private fun goldorRouteKeyLabel(): String {
+        val key = Config.goldorRouteKey
+        if (listeningForGoldorRouteKey) return "Press a key (ESC = NONE)"
+        if (key < 0) return "Goldor + Last Route Keybind: NONE"
+        if (key in 0..7) return "Goldor + Last Route Keybind: MOUSE $key"
+        return "Goldor + Last Route Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
+    }
+
     override fun keyPressed(event: KeyEvent): Boolean {
+        if (listeningForGoldorRouteKey) {
+            Config.goldorRouteKey = if (event.key() == GLFW.GLFW_KEY_ESCAPE) InputConstants.UNKNOWN.value else event.key()
+            listeningForGoldorRouteKey = false
+            btnGoldorRouteKey.message = Component.literal(goldorRouteKeyLabel())
+            return true
+        }
         if (listeningForQuietModeKey) {
             val keyCode = event.key()
             Config.quietModeKey = if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
@@ -1793,6 +1832,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     }
 
     override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        if (listeningForGoldorRouteKey && event.button() != 0) {
+            Config.goldorRouteKey = event.button()
+            listeningForGoldorRouteKey = false
+            btnGoldorRouteKey.message = Component.literal(goldorRouteKeyLabel())
+            return true
+        }
         if (listeningForQuietModeKey && event.button() != 0) {
             Config.quietModeKey = event.button()
             listeningForQuietModeKey = false

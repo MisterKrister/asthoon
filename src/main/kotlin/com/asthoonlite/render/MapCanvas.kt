@@ -43,6 +43,8 @@ interface MapCanvas {
 
     /** A player's face box: top-left (x, y), [size] square, [borderArgb] frame. */
     fun face(label: String, skin: PlayerSkin?, x: Int, y: Int, size: Int, borderArgb: Int)
+    /** Bundled map art, with its native texture dimensions. */
+    fun image(path: String, x: Int, y: Int, size: Int, textureSize: Int, tint: Int = -1)
 }
 
 // ── Recorded form ──────────────────────────────────────────────────────────
@@ -79,6 +81,9 @@ sealed interface MapOp {
     ) : MapOp {
         override fun apply(t: MapCanvas) = t.face(label, skin, x, y, size, borderArgb)
     }
+    data class Image(val path: String, val x: Int, val y: Int, val size: Int, val textureSize: Int, val tint: Int) : MapOp {
+        override fun apply(t: MapCanvas) = t.image(path, x, y, size, textureSize, tint)
+    }
 }
 
 /** Replays a recorded frame into any other canvas. */
@@ -99,6 +104,9 @@ class RecordMapCanvas : MapCanvas {
     override fun marker(isSelf: Boolean, w: Int, h: Int, markerScale: Float, tint: Int) { ops.add(MapOp.Marker(isSelf, w, h, markerScale, tint)) }
     override fun face(label: String, skin: PlayerSkin?, x: Int, y: Int, size: Int, borderArgb: Int) {
         ops.add(MapOp.Face(label, skin, x, y, size, borderArgb))
+    }
+    override fun image(path: String, x: Int, y: Int, size: Int, textureSize: Int, tint: Int) {
+        ops.add(MapOp.Image(path, x, y, size, textureSize, tint))
     }
 }
 
@@ -154,6 +162,10 @@ class HudMapCanvas(private val context: GuiGraphicsExtractor) : MapCanvas {
             drawFaceFallback(this, label, x, y, size)
         }
     }
+    override fun image(path: String, x: Int, y: Int, size: Int, textureSize: Int, tint: Int) {
+        context.blit(RenderPipelines.GUI_TEXTURED, Identifier.fromNamespaceAndPath("asthoonlite", path),
+            x, y, 0f, 0f, size, size, textureSize, textureSize, textureSize, textureSize, tint)
+    }
 }
 
 // ── Shared primitives (backend-agnostic) ───────────────────────────────────
@@ -167,7 +179,7 @@ class HudMapCanvas(private val context: GuiGraphicsExtractor) : MapCanvas {
  * atlas path was given — no independent tuning constants.
  */
 fun drawArrow(target: MapCanvas, isSelf: Boolean, markerScale: Float, color: Int) {
-    val arrowColor = if (isSelf) 0xFF00FF00.toInt() else color
+    val arrowColor = color
     val arrow = (markerScale * 4.0).coerceIn(2.0, 5.0)
     for (row in -arrow.toInt()..arrow.toInt()) {
         val half = ((row + arrow) * 0.45).toInt() + 1

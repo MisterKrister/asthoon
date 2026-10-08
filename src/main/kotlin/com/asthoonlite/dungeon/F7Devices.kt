@@ -2,6 +2,7 @@ package com.asthoonlite.dungeon
 
 import com.asthoonlite.AsthoonLite
 import com.asthoonlite.config.Config
+import com.asthoonlite.pathfinding.PathExecutor
 import com.asthoonlite.utils.InputCapture
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
@@ -218,7 +219,7 @@ object F7Devices {
         aimDuration(angleDist, slow, fastMode = false)
 
     private fun updateCameraAim(player: net.minecraft.client.player.LocalPlayer, now: Long) {
-        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) {
+        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0 || !PathExecutor.canUseSimonSolver()) {
             cancelSimonAim()
             return
         }
@@ -318,7 +319,13 @@ object F7Devices {
             }
             AimState.IDLE -> {}
         }
+        if (PathExecutor.isActive) {
+            player.yRotO = player.yRot
+            player.xRotO = player.xRot
+        }
     }
+
+    fun isSimonAiming(): Boolean = Config.autoSimonSaysEnabled && !simonLifecycle.completed && aimState != AimState.IDLE
 
     private fun startAim(player: net.minecraft.client.player.LocalPlayer, pos: BlockPos, slow: Boolean = false) {
         val offY = if (slow) Random.nextDouble(-0.16, 0.16) else Random.nextDouble(-0.085, 0.085)
@@ -495,7 +502,7 @@ object F7Devices {
     }
 
     private fun tickSimon(mc: Minecraft, level: net.minecraft.client.multiplayer.ClientLevel, player: net.minecraft.client.player.LocalPlayer) {
-        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) {
+        if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0 || !PathExecutor.canUseSimonSolver()) {
             cancelSimonAim()
             return
         }

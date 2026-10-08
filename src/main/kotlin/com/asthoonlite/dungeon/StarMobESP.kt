@@ -18,6 +18,8 @@ import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.decoration.ArmorStand
 import net.minecraft.world.entity.monster.EnderMan
 import net.minecraft.world.entity.player.Player
+import net.minecraft.world.phys.AABB
+import net.minecraft.world.phys.Vec3
 import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -46,6 +48,7 @@ object StarMobESP {
     }
 
     private val starMobs = LinkedHashMap<Int, MobCategory>()
+    private val extraBats = HashSet<Int>()
     private val playerMobMap = ConcurrentHashMap<UUID, MobCategory>()
     private var lastStandId: Int = 0
     private var fallbackScanTicks: Int = 0
@@ -94,6 +97,7 @@ object StarMobESP {
         if (!starMobs.containsKey(targetId)) {
             starMobs[targetId] = cat
         }
+        extraBats.remove(targetId)
     }
 
     private fun tick() {
@@ -102,6 +106,7 @@ object StarMobESP {
         if (!Config.starMobEspEnabled || !DungeonContext.inDungeon || level == null) {
             if (starMobs.isNotEmpty()) {
                 starMobs.clear()
+                extraBats.clear()
             }
             return
         }
@@ -128,6 +133,7 @@ object StarMobESP {
                     val cat = categorize(normalized)
                     starMobs[mob.id] = cat
                 }
+                if (mob != null) extraBats.remove(mob.id)
             }
 
             // Bats (Starred / secret bats)
@@ -136,6 +142,7 @@ object StarMobESP {
                     if (!bat.isInvisible && !bat.isPassenger && bat.health > 0f && !starMobs.containsKey(bat.id)) {
                         if (!isRoomCleared(bat.position())) {
                             starMobs[bat.id] = MobCategory.REGULAR
+                            extraBats.add(bat.id)
                         }
                     }
                 }
@@ -272,6 +279,7 @@ object StarMobESP {
         val phase = Config.starMobEspThroughWalls
 
         for ((id, category) in starMobs) {
+            if (Config.starMobRenderMode == 1 && id in extraBats) continue
             val entity = level.getEntity(id) ?: continue
             if (entity.isRemoved || (entity is LivingEntity && (entity.isDeadOrDying || entity.health <= 0f))) continue
             val pos = entity.position()
@@ -286,27 +294,32 @@ object StarMobESP {
             val r = ((color shr 16) and 0xFF) / 255f
             val g = ((color shr 8) and 0xFF) / 255f
             val b = (color and 0xFF) / 255f
-            val halfW = 0.4
-            val minX = pos.x - halfW
-            val maxX = pos.x + halfW
-            val minY = pos.y
-            val maxY = pos.y + height
-            val minZ = pos.z - halfW
-            val maxZ = pos.z + halfW
+            val bounds = renderBounds(Config.starMobRenderMode, entity.boundingBox, pos, height)
+            val minX = bounds.minX
+            val maxX = bounds.maxX
+            val minY = bounds.minY
+            val maxY = bounds.maxY
+            val minZ = bounds.minZ
+            val maxZ = bounds.maxZ
 
             val fillA = Config.starMobFillAlpha.toFloat()
             val thickness = (Config.starMobLineWidth * 0.007).coerceIn(0.01, 0.08)
 
-            if (fillA > 0f) {
+            if (Config.starMobRenderMode != 1 && fillA > 0f) {
                 WorldBoxRenderer.queueFilled(minX, minY, minZ, maxX, maxY, maxZ, r, g, b, fillA, throughWalls = phase)
             }
             WorldBoxRenderer.queueOutline(minX, minY, minZ, maxX, maxY, maxZ, r, g, b, 0.95f, thickness = thickness, throughWalls = phase)
         }
     }
 
+    internal fun renderBounds(mode: Int, hitbox: AABB, pos: Vec3, height: Double): AABB =
+        if (mode == 1) hitbox else AABB(pos.x - 0.4, pos.y, pos.z - 0.4, pos.x + 0.4, pos.y + height, pos.z + 0.4)
+
     fun resetRun(reason: String = "manual") {
         starMobs.clear()
+        extraBats.clear()
         playerMobMap.clear()
         lastStandId = 0
+        fallbackScanTicks = 0
     }
 }

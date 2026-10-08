@@ -671,6 +671,7 @@ fun main() {
         source.marker(true, 8, 12, 1.5f, 0xFFFFFFFF.toInt())
         source.pop()
         source.face("Steve", null, 10, 10, 9, 0xFF00FF00.toInt())
+        source.image("textures/map/noamm/green_check.png", 20, 20, 10, 100)
         source.push()
         source.translate(90f, 90f)
         source.marker(false, 6, 9, 0.9f, 0xFFFF0000.toInt())
@@ -699,6 +700,7 @@ fun main() {
             override fun text(text: String, x: Int, y: Int, argb: Int, centered: Boolean) {}
             override fun marker(isSelf: Boolean, w: Int, h: Int, markerScale: Float, tint: Int) {}
             override fun face(label: String, skin: net.minecraft.world.entity.player.PlayerSkin?, x: Int, y: Int, size: Int, borderArgb: Int) {}
+            override fun image(path: String, x: Int, y: Int, size: Int, textureSize: Int, tint: Int) {}
         }
         replay(source.ops, probe)
         check(depth == 0) { "map frame left the transform stack $depth deep (expected 0)" }
@@ -908,6 +910,7 @@ fun main() {
         terminalPracticeRegressionChecks()
         terminalCaptureRegressionChecks()
         simonDeviceRegressionChecks()
+        mapStyleRegressionChecks()
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)

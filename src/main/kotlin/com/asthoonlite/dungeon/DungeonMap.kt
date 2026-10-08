@@ -3,535 +3,163 @@ package com.asthoonlite.dungeon
 import com.asthoonlite.AsthoonLite
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
-import com.asthoonlite.dungeon.api.*
-import com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes
-import com.asthoonlite.dungeon.api.mapEnums.DoorTypes
-import com.asthoonlite.dungeon.api.mapEnums.RoomTypes
+import com.asthoonlite.dungeon.api.cornerStart
+import com.asthoonlite.dungeon.api.halfRoomSize
+import com.asthoonlite.dungeon.api.roomDoorCombinedSize
 import com.asthoonlite.dungeon.map.DungeonMapScanner
 import com.asthoonlite.dungeon.map.DungeonScanner
 import com.asthoonlite.overlay.MapOverlayWindow
 import com.asthoonlite.render.HudMapCanvas
 import com.asthoonlite.render.MapCanvas
 import com.asthoonlite.render.RecordMapCanvas
-import com.asthoonlite.render.mapBaseSpans
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry
 import net.minecraft.client.DeltaTracker
 import net.minecraft.client.Minecraft
-import net.minecraft.client.gui.GuiGraphicsExtractor
+import net.minecraft.client.player.LocalPlayer
 import net.minecraft.core.component.DataComponents
 import net.minecraft.resources.Identifier
-import kotlin.math.cos
-import kotlin.math.sin
+import net.minecraft.world.entity.player.PlayerSkin
 
 object DungeonMap : HudElement {
-    private const val BASE_SIZE = 100f
-    private const val GRID_SIZE = 6
-    private val MARKER_ATLAS = Identifier.fromNamespaceAndPath(AsthoonLite.MOD_ID, "textures/map/marker_atlas.png")
+    data class Rect(val x: Int, val y: Int, val size: Int) {
+        fun contains(px: Double, py: Double) = px >= x && py >= y && px < x + size && py < y + size
+    }
+
+    internal fun clampRect(x: Int, y: Int, size: Int, width: Int, height: Int): Rect {
+        val fitted = size.coerceIn(1, minOf(width, height).coerceAtLeast(1))
+        return Rect(x.coerceIn(0, (width - fitted).coerceAtLeast(0)),
+            y.coerceIn(0, (height - fitted).coerceAtLeast(0)), fitted)
+    }
+
+    fun screenRect(width: Int, height: Int) = clampRect(Config.dungeonMapX, Config.dungeonMapY,
+        (100 * Config.dungeonMapScale.coerceIn(1f, 6f)).toInt(), width, height)
 
     fun register() {
-        HudElementRegistry.addLast(
-            Identifier.fromNamespaceAndPath(AsthoonLite.MOD_ID, "dungeon_map"),
-            this
-        )
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(AsthoonLite.MOD_ID, "dungeon_map"), this)
     }
 
     fun resetRun() {
         DungeonScanner.reset()
         DungeonMapScanner.reset()
+        MapOverlayWindow.hide()
     }
 
-    /**
-     * Two destinations, one layout:
-     *
-     *  - external window on  -> record the frame, hand it to the overlay
-     *    window, and draw nothing in game. Quiet mode does not apply here;
-     *    the whole point is that the map survives while the game looks stock.
-     *  - external window off -> draw straight into the HUD, subject to quiet
-     *    mode like everything else in the game window.
-     */
-    override fun extractRenderState(context: GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
-        val external = Config.dungeonMapExternalWindow
-        // Toggling the window off must take it down on the next frame, not at
-        // the next dungeon entry. No-op (one volatile read) when it is shut.
-        if (!external) MapOverlayWindow.hide()
-        if (!external && QuietMode.suppressing()) return
-
+    override fun extractRenderState(context: net.minecraft.client.gui.GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
         val mc = Minecraft.getInstance()
         val player = mc.player
-        val earlyReturnReason = when {
-            !Config.dungeonMapEnabled -> "Config.dungeonMapEnabled is false"
-            !DungeonContext.inDungeon -> "DungeonContext.inDungeon is false"
-            Config.dungeonMapHideInBoss && DungeonContext.inBoss -> "inBoss is true and dungeonMapHideInBoss is true"
-            player == null -> "mc.player is null"
-            // "Always Show" off = the map only exists while the player is
-            // actually holding a map item, same as the real thing.
-            !Config.dungeonMapAlwaysShow && !isHoldingMap(player) -> "not holding a map item and dungeonMapAlwaysShow is false"
-            else -> null
-        }
-
-        if (earlyReturnReason != null || player == null) {
-            // Nothing to show: do not leave a stale frame up in the window.
+        if (QuietMode.suppressing() || !Config.dungeonMapEnabled || !DungeonContext.inDungeon || player == null ||
+            Config.dungeonMapHideInBoss && DungeonContext.inBoss ||
+            !Config.dungeonMapAlwaysShow && !isHoldingMap(player)) {
             MapOverlayWindow.hide()
             return
         }
-
-        val scale = Config.dungeonMapScale.coerceIn(1f, 6f)
-        val mapW = (BASE_SIZE * scale).toInt()
-        val mapH = (BASE_SIZE * scale).toInt()
-        // The external window owns its own inset; the in-game map uses the
-        // configured HUD position.
-        val startX = if (external) MapOverlayWindow.PAD else Config.dungeonMapX
-        val startY = if (external) MapOverlayWindow.PAD else Config.dungeonMapY
-
-        if (external) {
+        val rect = screenRect(mc.window.guiScaledWidth, mc.window.guiScaledHeight)
+        drawMap(HudMapCanvas(context), mc, rect, advanced = false)
+        if (Config.dungeonMapFullGrid && !Config.dungeonMapEditMode) {
             val record = RecordMapCanvas()
-            drawMap(record, mc, player, scale, mapW, mapH, startX, startY)
-            MapOverlayWindow.publish(record.ops, mapW, mapH)
-            return
-        }
-
-        drawMap(HudMapCanvas(context), mc, player, scale, mapW, mapH, startX, startY)
+            drawMap(record, mc, Rect(0, 0, rect.size), advanced = true)
+            MapOverlayWindow.publish(record.ops.toList(), rect.size,
+                MapOverlayWindow.placement(mc.window, rect.x, rect.y, rect.size))
+        } else MapOverlayWindow.hide()
     }
 
-    /** Every drawing call below goes through [canvas]; nothing knows the target. */
-    private fun drawMap(
-        canvas: MapCanvas,
-        mc: Minecraft,
-        player: net.minecraft.client.player.LocalPlayer,
-        scale: Float,
-        mapW: Int,
-        mapH: Int,
-        startX: Int,
-        startY: Int
-    ) {
+    /** The editor uses the same canvas and geometry, even outside a dungeon. */
+    fun preview(canvas: MapCanvas, width: Int, height: Int) {
+        MapOverlayWindow.hide()
+        drawMap(canvas, Minecraft.getInstance(), screenRect(width, height), advanced = false)
+    }
+
+    private fun drawMap(canvas: MapCanvas, mc: Minecraft, rect: Rect, advanced: Boolean) {
+        val style = DungeonMapStyles.style(Config.dungeonMapStyle)
+        val layout = DungeonMapStyles.layout(style, rect.size, DungeonContext.floor,
+            DungeonMapScanner.roomSize, DungeonMapScanner.mapOffsetX.takeIf { it >= 0 } ?: 5,
+            DungeonMapScanner.mapOffsetZ.takeIf { it >= 0 } ?: 5)
         canvas.push()
-        canvas.translate(startX.toFloat(), startY.toFloat())
-
-        // Modern background panel with clean border
-        canvas.fill(-2, -2, mapW + 2, mapH + 2, 0x99000000.toInt())
-        canvas.fill(0, 0, mapW, mapH, 0xDD0D1F35.toInt())
-
-        val cellGap = 3f * (scale / 2f).coerceAtLeast(1f)
-        val cellW = (mapW - cellGap * (GRID_SIZE + 1)) / GRID_SIZE
-        val cellH = (mapH - cellGap * (GRID_SIZE + 1)) / GRID_SIZE
-
-        fun cellX(gx: Float): Float = cellGap + gx * (cellW + cellGap)
-        fun cellY(gz: Float): Float = cellGap + gz * (cellH + cellGap)
-        fun cellX(gx: Int): Float = cellX(gx.toFloat())
-        fun cellY(gz: Int): Float = cellY(gz.toFloat())
-
-        fun toScreenX(gx: Float): Float = cellX(gx) + cellW * 0.5f
-        fun toScreenY(gz: Float): Float = cellY(gz) + cellH * 0.5f
-
-        // Every map toggle below used to be declared in the GUI and read by
-        // nobody — the renderer just drew everything unconditionally. These
-        // are the flags that actually gate it now, declared up front because
-        // the room pass, the door pass and the label pass all read them.
-        //
-        // Legit base = show only what the held map item itself can show:
-        // rooms you have walked into, and the checkmark Hypixel prints when a
-        // room is cleared. No unopened-grid preview, no names, no counters.
-        val legit = Config.dungeonMapLegitBase
-        val fullGrid = Config.dungeonMapFullGrid && !legit
-        val showRoomNames = Config.dungeonMapShowNames && !legit
-        val showSecrets = Config.dungeonMapShowSecrets && !legit
-        val showCheckmarks = Config.dungeonMapShowCheckmarks
-
-        // Legit base: the panel becomes the map item's own image. Hypixel bakes
-        // rooms, doors and checkmarks straight into the colour array, so the
-        // redrawn grid, door pass and label pass below would be painting the
-        // same information a second time, less accurately. Only the player
-        // markers are drawn on top of it.
-        //
-        // Source rect and destination rect are the exact endpoints the marker
-        // transform rescales between (see MapBase.mapBaseSpans), so a head sits
-        // on the same pixel of the image as the decoration it came from.
-        val mapGap = DungeonMapScanner.roomGap
-        val baseColors = DungeonMapScanner.mapColors
-        val baseSpans =
-            if (legit && baseColors != null && mapGap > 0) {
-                mapBaseSpans(
-                    baseColors,
-                    DungeonMapScanner.mapOffsetX,
-                    DungeonMapScanner.mapOffsetZ,
-                    mapGap * GRID_SIZE,
-                    cellGap.toInt(),
-                    cellGap.toInt(),
-                    mapW - cellGap.toInt()
-                )
-            } else {
-                emptyList()
-            }
-        for (span in baseSpans) {
-            canvas.fill(span.x0, span.y0, span.x1, span.y1, span.argb)
+        canvas.translate(rect.x.toFloat(), rect.y.toFloat())
+        // Border stays inside the rectangle, so the external frame covers the entire HUD frame.
+        canvas.fill(0, 0, rect.size, rect.size, 0xFF090B10.toInt())
+        canvas.fill(1, 1, rect.size - 1, rect.size - 1, 0xFF0D1F35.toInt())
+        val labels = advanced || !Config.dungeonMapLegitBase
+        DungeonMapStyles.draw(canvas, style, layout, DungeonScanner.rooms.toList(), DungeonScanner.doors.toList(), advanced,
+            DungeonMapStyles.Labels(Config.dungeonMapShowNames && labels, Config.dungeonMapShowSecrets && labels,
+                Config.dungeonMapShowCheckmarks, Config.dungeonMapDontRenderCommonNames,
+                Config.dungeonMapDontRenderYellowName, Config.dungeonMapDontRenderFairyCheckmark))
+        mc.player?.let { drawPlayers(canvas, mc, it, layout, rect.size, style) }
+        if (Config.dungeonMapEditMode) {
+            val color = 0xFF55FFFF.toInt()
+            canvas.fill(0, 0, rect.size, 2, color)
+            canvas.fill(0, rect.size - 2, rect.size, rect.size, color)
+            canvas.fill(0, 0, 2, rect.size, color)
+            canvas.fill(rect.size - 2, 0, rect.size, rect.size, color)
+            canvas.fill(3, 3, 11, 5, color)
+            canvas.fill(3, 7, 11, 9, color)
         }
-        // Only suppress the overlay when the image actually decoded; a legit
-        // toggle with no map packet yet still falls back to the drawn grid.
-        val overlaySuppressed = legit && baseSpans.isNotEmpty()
+        canvas.pop()
+    }
 
-        if (!overlaySuppressed) {
-
-            // 1. Draw Rooms
-            val floor = DungeonContext.floor
-            val maxW = if (floor != FloorType.None) floor.roomsW else GRID_SIZE
-            val maxH = if (floor != FloorType.None) floor.roomsH else GRID_SIZE
-
-            for (gz in 0 until GRID_SIZE) {
-                for (gx in 0 until GRID_SIZE) {
-                    if (gx >= maxW || gz >= maxH) continue
-
-                    val idx = gz * 6 + gx
-                    val room = DungeonScanner.rooms.getOrNull(idx)
-
-                    val x0 = cellX(gx)
-                    val y0 = cellY(gz)
-
-                    if (room == null) {
-                        continue
-                    }
-
-                    // Skip phantom/bedrock rooms detected outside the active dungeon
-                    if (room.type == RoomTypes.UNKNOWN && !room.explored && room.doors.isEmpty() && room.name == null) {
-                        continue
-                    }
-
-                    if (!room.explored && !fullGrid) {
-                        continue
-                    }
-
-                    val color = if (room.explored) {
-                        colorForRoom(room.type)
-                    } else {
-                        if (room.type != RoomTypes.UNKNOWN) dim(colorForRoom(room.type), 0.65f)
-                        else 0xDD414141.toInt()
-                    }
-
-                    canvas.fill(x0.toInt(), y0.toInt(), (x0 + cellW).toInt(), (y0 + cellH).toInt(), color)
-
-                    // Join components of same room (both explored and unopened when full grid is on)
-                    if (gx + 1 < maxW) {
-                        val right = DungeonScanner.rooms.getOrNull(gz * 6 + gx + 1)
-                        if (right === room && (room.explored || fullGrid)) {
-                            val jx0 = x0 + cellW
-                            val jy0 = y0
-                            canvas.fill(jx0.toInt(), jy0.toInt(), (jx0 + cellGap + 1).toInt(), (jy0 + cellH).toInt(), color)
-                        }
-                    }
-                    if (gz + 1 < maxH) {
-                        val down = DungeonScanner.rooms.getOrNull((gz + 1) * 6 + gx)
-                        if (down === room && (room.explored || fullGrid)) {
-                            val jx0 = x0
-                            val jy0 = y0 + cellH
-                            canvas.fill(jx0.toInt(), jy0.toInt(), (jx0 + cellW).toInt(), (jy0 + cellGap + 1).toInt(), color)
-                        }
-                    }
-                }
-            }
-
-            // 2. Draw Doors
-            for (door in DungeonScanner.doors) {
-                if (door == null) continue
-                val r1 = door.roomComp1
-                val r2 = door.roomComp2
-                if (floor != FloorType.None) {
-                    if (r1.x >= maxW || r1.z >= maxH || r2.x >= maxW || r2.z >= maxH) continue
-                }
-                val isHorizontal = r1.z == r2.z
-
-                val r1Room = DungeonScanner.rooms.getOrNull(r1.z * 6 + r1.x)
-                val r2Room = DungeonScanner.rooms.getOrNull(r2.z * 6 + r2.x)
-
-                // Never draw doors between components of the same room (e.g. 2x2, 1x2, L-room)
-                if (r1Room != null && r2Room != null && r1Room === r2Room) continue
-
-                // When full grid is OFF: show door if AT LEAST ONE connected room is explored
-                // so you can see where to go from the doors in the room you're currently in
-                if (!fullGrid && (r1Room?.explored != true && r2Room?.explored != true)) continue
-
-                // Only draw confirmed doors (opened normal doors, wither doors, blood doors, entrance doors)
-                // Do NOT draw fake unconfirmed doors on solid walls
-                val color = when (door.type) {
-                    DoorTypes.WITHER -> 0xFF000000.toInt()
-                    DoorTypes.BLOOD -> 0xFFFF2222.toInt()
-                    DoorTypes.ENTRANCE -> 0xFF148500.toInt()
-                    DoorTypes.NORMAL -> if (door.opened) 0xFF5C340E.toInt() else continue
-                }
-
-                if (isHorizontal) {
-                    val minX = minOf(r1.x, r2.x)
-                    val gz = r1.z
-                    val dx0 = cellX(minX) + cellW
-                    val dy0 = cellY(gz) + cellH * 0.35f
-                    val dx1 = dx0 + cellGap
-                    val dy1 = dy0 + cellH * 0.3f
-                    canvas.fill(dx0.toInt(), dy0.toInt(), dx1.toInt(), dy1.toInt(), color)
-                } else {
-                    val minZ = minOf(r1.z, r2.z)
-                    val gx = r1.x
-                    val dx0 = cellX(gx) + cellW * 0.35f
-                    val dy0 = cellY(minZ) + cellH
-                    val dx1 = dx0 + cellW * 0.3f
-                    val dy1 = dy0 + cellGap
-                    canvas.fill(dx0.toInt(), dy0.toInt(), dx1.toInt(), dy1.toInt(), color)
-                }
-            }
-
-            // 3. Draw Room Text / Checkmarks / Secrets
-            val visitedRooms = HashSet<DungeonRoom>()
-            for (room in DungeonScanner.rooms) {
-                if (room == null || !visitedRooms.add(room)) continue
-                if (!room.explored && !fullGrid) continue
-                if (room.comps.isEmpty()) continue
-
-                val avgGx = room.comps.map { it.cx / 2f }.average().toFloat()
-                val avgGz = room.comps.map { it.cz / 2f }.average().toFloat()
-                val cx = cellX(avgGx) + cellW * 0.5f
-                val cy = cellY(avgGz) + cellH * 0.5f
-
-                val textScale = (cellW / 36f).coerceIn(0.55f, 1.0f)
-                val fontH = mc.font.lineHeight * textScale
-
-                // A checkmark that is switched off falls through to the name
-                // branch below instead of leaving the cell empty.
-                val hasCheck = room.checkmark == CheckmarkTypes.GREEN ||
-                    room.checkmark == CheckmarkTypes.WHITE ||
-                    room.checkmark == CheckmarkTypes.FAILED
-                val fairyCheckHidden = Config.dungeonMapDontRenderFairyCheckmark &&
-                    room.type == RoomTypes.FAIRY
-                val activeCheck =
-                    if (hasCheck && showCheckmarks && !fairyCheckHidden) room.checkmark else null
-
-                when (activeCheck) {
-                    CheckmarkTypes.GREEN -> {
-                        // Done: green check ✔
-                        canvas.push()
-                        canvas.translate(cx, cy - fontH * 0.5f)
-                        canvas.scale(textScale * 1.25f, textScale * 1.25f)
-                        canvas.text("✔", 0, 0, 0xFF55FF55.toInt(), centered = true)
-                        canvas.pop()
-                    }
-                    CheckmarkTypes.WHITE -> {
-                        // Cleared: secret count in white (or white checkmark if 0 secrets)
-                        val secStr = when {
-                            !showSecrets -> "✔"
-                            room.totalSecrets > 0 -> {
-                                val completed = if (room.secretsCompleted >= 0) room.secretsCompleted else 0
-                                "$completed/${room.totalSecrets}"
-                            }
-                            else -> "✔"
-                        }
-                        canvas.push()
-                        canvas.translate(cx, cy - fontH * 0.5f)
-                        canvas.scale(textScale, textScale)
-                        canvas.text(secStr, 0, 0, 0xFFFFFFFF.toInt(), centered = true)
-                        canvas.pop()
-                    }
-                    CheckmarkTypes.FAILED -> {
-                        // Failed: red cross ✖
-                        canvas.push()
-                        canvas.translate(cx, cy - fontH * 0.5f)
-                        canvas.scale(textScale * 1.25f, textScale * 1.25f)
-                        canvas.text("✖", 0, 0, 0xFFFF5555.toInt(), centered = true)
-                        canvas.pop()
-                    }
-                    else -> {
-                        // Uncleared: display proper room name in white
-                        val rawName = room.name
-                        val hideName = !showRoomNames ||
-                            room.type == RoomTypes.ENTRANCE ||
-                            (Config.dungeonMapDontRenderCommonNames && room.type == RoomTypes.NORMAL) ||
-                            (Config.dungeonMapDontRenderYellowName && room.type == RoomTypes.YELLOW)
-                        if (rawName != null && !hideName) {
-                            val words = rawName.replace("\u200B", "- ").split(" ").filter { it.isNotBlank() }
-                            val nameStartY = cy - (words.size * (fontH + 0.5f)) / 2f
-                            words.forEachIndexed { lineIdx, word ->
-                                val wy = nameStartY + lineIdx * (fontH + 0.5f)
-                                canvas.push()
-                                canvas.translate(cx, wy)
-                                canvas.scale(textScale, textScale)
-                                canvas.text(word, 0, 0, 0xFFFFFFFF.toInt(), centered = true)
-                                canvas.pop()
-                            }
-                        }
-                    }
-                }
-            }
-
-        }
-        // 4. Draw Teammate & Self Player Icons
-        val selfGx = ((player.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize).toFloat().coerceIn(0f, 5f)
-        val selfGz = ((player.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize).toFloat().coerceIn(0f, 5f)
-        val selfPx = toScreenX(selfGx)
-        val selfPz = toScreenY(selfGz)
-
-        val showNames = Config.dungeonMapPlayerNames && (!Config.dungeonMapNamesOnlyLeap || isHoldingLeap(player))
-
-        // Self icon
-        val selfColor = DungeonContext.classColor(player.gameProfile.name)
-        if (Config.dungeonMapMarkerSelf || !Config.dungeonMapPlayerHeads) {
-            drawPlayerArrow(canvas, selfPx, selfPz, player.yRot.toDouble(), scale, selfColor, isSelf = true)
-        } else {
-            drawPlayerHead(canvas, player.skin, selfPx, selfPz, player.yRot.toDouble(), scale, selfColor, player.gameProfile.name)
-        }
-
-        val renderedNames = HashSet<String>()
-        renderedNames.add(player.gameProfile.name.lowercase())
-
-        // 1. Live world teammates (render distance)
-        val worldPlayers = mc.level?.players() ?: emptyList()
-        val teammates = DungeonContext.getTeammateNames()
-        for (mate in worldPlayers) {
-            val mateName = mate.gameProfile.name
-            if (mateName.equals(player.gameProfile.name, ignoreCase = true) || mate.isSpectator) continue
-            if (mate.uuid.version() == 2 || StarMobESP.categorizePlayer(mateName) != null) continue
-            if (teammates.isNotEmpty() && !teammates.any { it.equals(mateName, ignoreCase = true) }) continue
-            renderedNames.add(mateName.lowercase())
-
-            val gx = ((mate.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize).toFloat()
-            val gz = ((mate.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize).toFloat()
-            if (gx < -0.5f || gx > 5.5f || gz < -0.5f || gz > 5.5f) continue
-            val tx = toScreenX(gx)
-            val tz = toScreenY(gz)
-            val yawDeg = mate.yRot.toDouble()
-            val skin = mate.skin
-            val mateColor = DungeonContext.classColor(mateName)
-
+    private fun drawPlayers(c: MapCanvas, mc: Minecraft, self: LocalPlayer, l: DungeonMapStyles.Layout, size: Int, style: Int) {
+        val scale = size / 100f
+        val showNames = Config.dungeonMapPlayerNames && (!Config.dungeonMapNamesOnlyLeap || isHoldingLeap(self))
+        fun player(name: String, gx: Float, gz: Float, yaw: Double, skin: PlayerSkin?, own: Boolean) {
+            if (gx !in -0.5f..5.5f || gz !in -0.5f..5.5f) return
+            val color = DungeonContext.classColor(name)
+            val headSize = ((if (style == 1) 12 * size / 128f else 9 * scale / 1.66f) * Config.dungeonMapPlayerHeadScale)
+                .toInt().coerceIn(6, 24)
+            val inset = if (Config.dungeonMapPlayerHeads) headSize / 2 + 3f else 8f
+            val x = l.centerX(gx).coerceIn(inset.coerceAtMost(size / 2f), (size - inset).coerceAtLeast(size / 2f))
+            val y = l.centerY(gz).coerceIn(inset.coerceAtMost(size / 2f), (size - inset).coerceAtLeast(size / 2f))
+            c.push()
+            c.translate(x, y)
+            c.rotate(Math.toRadians(yaw + 180).toFloat())
             if (Config.dungeonMapPlayerHeads) {
-                drawPlayerHead(canvas, skin, tx, tz, yawDeg, scale, mateColor, mateName)
+                // Noamm renderPlayer: rotate face and class border together, including self.
+                c.face(name, skin, -headSize / 2, -headSize / 2, headSize, color)
             } else {
-                drawPlayerArrow(canvas, tx, tz, yawDeg, scale * 0.8f, mateColor, isSelf = false)
+                val markerScale = scale * Config.dungeonMapMarkerScale * if (own) 0.30f else 0.40f
+                if (style == 0) c.marker(own, (8 * markerScale).toInt().coerceIn(5, 10),
+                    (12 * markerScale).toInt().coerceIn(7, 14), markerScale, color)
+                else {
+                    val edge = (12 * size / 128f * Config.dungeonMapMarkerScale).toInt().coerceAtLeast(5)
+                    c.image("textures/map/noamm/marker.png", -edge / 2, -edge / 2, edge, 7, color)
+                }
             }
-
-            if (showNames) {
-                val shortName = mateName.take(4)
-                canvas.text(shortName, tx.toInt(), (tz + 7).toInt(), 0xFFFFFFFF.toInt(), centered = true)
+            c.pop()
+            if (own && Config.dungeonMapMarkerSelf && Config.dungeonMapPlayerHeads) {
+                c.push()
+                c.translate(x, y)
+                c.rotate(Math.toRadians(yaw + 180).toFloat())
+                c.fill(-1, -headSize / 2 - 4, 2, -headSize / 2 - 2, color)
+                c.pop()
             }
+            if (showNames) c.text(name.take(4), x.toInt().coerceIn(12, (size - 12).coerceAtLeast(12)),
+                (y + headSize / 2 + 3).toInt().coerceAtMost(size - 9), color, true)
         }
-
-        // 2. Distant teammates from map packet
+        fun gx(x: Double) = ((x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize).toFloat()
+        fun gz(z: Double) = ((z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize).toFloat()
+        val names = HashSet<String>()
+        val selfName = self.gameProfile.name
+        player(selfName, gx(self.x), gz(self.z), self.yRot.toDouble(), self.skin, true)
+        names.add(selfName.lowercase())
+        val party = DungeonContext.getTeammateNames()
+        for (mate in mc.level?.players().orEmpty()) {
+            val name = mate.gameProfile.name
+            if (!party.any { it.equals(name, true) } || mate.isSpectator || mate.uuid.version() == 2) continue
+            DungeonContext.rememberSkin(name, mate.skin)
+            player(name, gx(mate.x), gz(mate.z), mate.yRot.toDouble(), mate.skin, false)
+            names.add(name.lowercase())
+        }
         for (icon in DungeonMapScanner.playerIcons) {
-            val iconName = icon.name
-            if (iconName != null && renderedNames.contains(iconName.lowercase())) continue
-
-            val iconGx = icon.x.toFloat()
-            val iconGz = icon.z.toFloat()
-            if (kotlin.math.hypot(iconGx - selfGx, iconGz - selfGz) < 0.4f) continue
-
-            val tx = toScreenX(iconGx)
-            val tz = toScreenY(iconGz)
-            val yawDeg = Math.toDegrees(icon.rot)
-            val skin = getPlayerSkin(iconName)
-            val mateColor = DungeonContext.classColor(iconName)
-
-            if (Config.dungeonMapPlayerHeads && skin != null) {
-                drawPlayerHead(canvas, skin, tx, tz, yawDeg, scale, mateColor, iconName ?: "?")
-            } else {
-                drawPlayerArrow(canvas, tx, tz, yawDeg, scale * 0.8f, mateColor, isSelf = false)
-            }
-
-            if (showNames && iconName != null) {
-                val shortName = iconName.take(4)
-                canvas.text(shortName, tx.toInt(), (tz + 7).toInt(), 0xFFFFFFFF.toInt(), centered = true)
-            }
+            val name = icon.name ?: if (Config.dungeonMapAllDecorations) "?" else continue
+            if (!names.add(name.lowercase())) continue
+            val skin = mc.connection?.getPlayerInfo(name)?.skin ?: DungeonContext.playerSkin(name)
+            player(name, icon.x.toFloat(), icon.z.toFloat(), Math.toDegrees(icon.rot), skin, false)
         }
-
-        canvas.pop()
     }
 
-    private fun getPlayerSkin(name: String?): net.minecraft.world.entity.player.PlayerSkin? {
-        if (name.isNullOrBlank()) return null
-        val mc = Minecraft.getInstance()
-        val info = mc.connection?.onlinePlayers?.firstOrNull { it.profile.name.equals(name, true) }
-        return info?.skin
-    }
+    private fun isHoldingLeap(player: LocalPlayer) = player.mainHandItem.hoverName.string.contains("Spirit Leap", true) ||
+        player.offhandItem.hoverName.string.contains("Spirit Leap", true)
 
-    private fun isHoldingLeap(player: net.minecraft.world.entity.player.Player): Boolean {
-        val mainName = player.mainHandItem.hoverName.string
-        val offName = player.offhandItem.hoverName.string
-        return mainName.contains("Spirit Leap", true) || offName.contains("Spirit Leap", true)
-    }
-
-    private fun drawPlayerHead(
-        canvas: MapCanvas,
-        skin: net.minecraft.world.entity.player.PlayerSkin?,
-        x: Float, z: Float,
-        yawDeg: Double,
-        scale: Float,
-        borderColor: Int,
-        label: String
-    ) {
-        val headSize = (9 * (scale / 1.66f) * Config.dungeonMapPlayerHeadScale).toInt().coerceIn(8, 24)
-        val half = headSize / 2
-        val hx = (x - half).toInt()
-        val hz = (z - half).toInt()
-
-        // Border + face: one call, so both backends draw the same frame.
-        canvas.face(label, skin, hx, hz, headSize, borderColor)
-
-        val yaw = Math.toRadians(yawDeg)
-        val dx = (-sin(yaw) * (half + 2)).toInt()
-        val dz = (cos(yaw) * (half + 2)).toInt()
-        canvas.fill((x + dx - 1).toInt(), (z + dz - 1).toInt(), (x + dx + 1).toInt(), (z + dz + 1).toInt(), 0xFFFFFFFF.toInt())
-    }
-
-    private fun abbreviateName(name: String): String = when {
-        name.length <= 6 -> name
-        name.equals("Three Weirdos", true) -> "Weirdos"
-        name.equals("Higher Lower", true) || name.equals("Higher Blaze", true) -> "Blaze"
-        name.equals("Water Board", true) -> "Water"
-        name.equals("Ice Path", true) || name.equals("Ice Fill", true) -> "Ice"
-        name.equals("Creeper Beams", true) -> "Beams"
-        name.equals("Teleport Maze", true) -> "Maze"
-        else -> name.take(5)
-    }
-
-    private fun drawPlayerArrow(
-        canvas: MapCanvas,
-        x: Float, z: Float,
-        yawDeg: Double,
-        scale: Float,
-        color: Int,
-        isSelf: Boolean
-    ) {
-        val markerScale = scale * Config.dungeonMapMarkerScale * (if (isSelf) 0.30f else 0.40f)
-        val w = (8 * markerScale).toInt().coerceIn(5, 10)
-        val h = (12 * markerScale).toInt().coerceIn(7, 14)
-
-        canvas.push()
-        canvas.translate(x, z)
-        canvas.rotate(Math.toRadians(yawDeg + 180.0).toFloat())
-
-        val tint = if (isSelf) 0xFFFFFFFF.toInt() else color
-        // The atlas sprite, or whatever the backend substitutes for it.
-        canvas.marker(isSelf, w, h, markerScale, tint)
-
-        canvas.pop()
-    }
-
-    private fun colorForRoom(type: RoomTypes): Int = when (type) {
-        RoomTypes.ENTRANCE -> 0xFF148500.toInt()
-        RoomTypes.NORMAL   -> 0xFF6B3A11.toInt()
-        RoomTypes.FAIRY    -> 0xFFE000FF.toInt()
-        RoomTypes.BLOOD    -> 0xFFFF2222.toInt()
-        RoomTypes.PUZZLE   -> 0xFF750085.toInt()
-        RoomTypes.TRAP     -> 0xFFD87F33.toInt()
-        RoomTypes.YELLOW   -> 0xFFFEDF00.toInt()
-        RoomTypes.RARE     -> 0xFFECEFF1.toInt()
-        RoomTypes.UNKNOWN  -> 0xFF414141.toInt()
-    }
-
-    private fun dim(argb: Int, factor: Float): Int {
-        val r = (((argb ushr 16) and 0xFF) * factor).toInt().coerceIn(0, 255)
-        val g = (((argb ushr 8) and 0xFF) * factor).toInt().coerceIn(0, 255)
-        val b = ((argb and 0xFF) * factor).toInt().coerceIn(0, 255)
-        return (0xEE shl 24) or (r shl 16) or (g shl 8) or b
-    }
-
-    private fun isHoldingMap(player: net.minecraft.world.entity.player.Player): Boolean {
-        val main = player.mainHandItem
-        if (main.get(DataComponents.MAP_ID) != null) return true
-        val off = player.offhandItem
-        return off.get(DataComponents.MAP_ID) != null
-    }
+    private fun isHoldingMap(player: LocalPlayer) = player.mainHandItem.get(DataComponents.MAP_ID) != null ||
+        player.offhandItem.get(DataComponents.MAP_ID) != null
 }

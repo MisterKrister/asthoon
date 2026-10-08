@@ -92,7 +92,6 @@ object AsthoonLite : ClientModInitializer {
         com.asthoonlite.dungeon.TerminalCursor.register()
         // Prints one line per terminal-shaped screen naming the gate that
         // kept the custom grid closed, so a screen that draws nothing says why.
-        com.asthoonlite.dungeon.TermGui.register()
         // Name and progress of the terminal the clicker is on — the visual
         // that describes the run instead of the solution.
         com.asthoonlite.dungeon.TerminalProgressHud.register()
@@ -132,6 +131,7 @@ object AsthoonLite : ClientModInitializer {
         com.asthoonlite.pathfinding.RouteEditor.register()
         com.asthoonlite.pathfinding.PathfindingRenderer.register()
         com.asthoonlite.pathfinding.PathExecutor.register()
+        com.asthoonlite.pathfinding.GoldorRouteShortcut.register()
 
         ClientTickEvents.END_CLIENT_TICK.register {
             DungeonServerTick.tick()
