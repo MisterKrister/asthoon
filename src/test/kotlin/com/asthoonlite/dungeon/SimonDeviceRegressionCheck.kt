@@ -10,6 +10,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonParser
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
+import net.minecraft.util.Mth
 import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.world.phys.Vec3
 import java.util.Locale
@@ -678,6 +679,26 @@ internal fun simonDeviceRegressionChecks() {
     } finally {
         Locale.setDefault(previousLocale)
     }
+    // 28. Bonzo staff straight and angled redirection launch kinematics
+    val straightLaunch = PathExecutor.calculateBonzoLaunchParams(0f, Vec3(0.0, 70.0, 0.0), Vec3(0.0, 70.0, 10.0))
+    check(!straightLaunch.isRedirection) { "Straight launch must not be marked as redirection" }
+    check(straightLaunch.shotYaw == 0f) { "Straight launch shotYaw must match destination yaw" }
+    check(straightLaunch.shotPitch == 79f) { "Straight launch default pitch must be 79°" }
+    check(straightLaunch.jumpOnFire) { "Straight launch must jump on fire" }
+
+    val params90Right = PathExecutor.calculateBonzoLaunchParams(180f, Vec3(50.0, 114.0, 50.0), Vec3(70.0, 114.0, 50.0))
+    check(params90Right.isRedirection) { "90° turn must be marked as redirection" }
+    check(Math.abs(Mth.wrapDegrees(params90Right.shotYaw - 196.5f)) < 0.01f) { "90° right shotYaw must be 196.5°" }
+    check(Math.abs(params90Right.shotPitch - 54.5f) < 0.01f) { "90° turn pitch must be 54.5°" }
+    check(!params90Right.jumpOnFire) { "Redirection launch must not jump on fire" }
+    check(Math.abs(params90Right.targetBps - 7.7) < 0.01) { "90° redirection sweet spot speed must be 7.7 bps" }
+
+    val params90Left = PathExecutor.calculateBonzoLaunchParams(180f, Vec3(50.0, 114.0, 50.0), Vec3(30.0, 114.0, 50.0))
+    check(params90Left.isRedirection) { "Left turn must be marked as redirection" }
+    check(Math.abs(Mth.wrapDegrees(params90Left.shotYaw - 163.5f)) < 0.01f) { "90° left shotYaw must be 163.5°" }
+    check(Math.abs(params90Left.shotPitch - 54.5f) < 0.01f) { "Left turn pitch must be 54.5°" }
+    check(!params90Left.jumpOnFire) { "Left turn must not jump on fire" }
+    check(Math.abs(params90Left.targetBps - 7.7) < 0.01) { "Left turn sweet spot speed must be 7.7 bps" }
 }
 
 
