@@ -125,19 +125,29 @@ object PathfindingRenderer {
                 a = 0.65f
             }
 
-            // Waypoint cube: 0.5 x 0.5 x 0.5 centered at (pt.x, pt.y, pt.z)
-            val half = 0.25
-            val x1 = pt.x - half
-            val y1 = pt.y
-            val z1 = pt.z - half
-            val x2 = pt.x + half
-            val y2 = pt.y + 0.5
-            val z2 = pt.z + half
+            if (nodeType == RouteNodeType.BREAK) {
+                // Full block outline: 1.0 x 1.0 x 1.0 enclosing the target block to break
+                val bx = kotlin.math.floor(pt.x)
+                val by = kotlin.math.floor(pt.y)
+                val bz = kotlin.math.floor(pt.z)
+                WorldBoxRenderer.queueFilled(bx, by, bz, bx + 1.0, by + 1.0, bz + 1.0, r, g, b, a * 0.45f, throughWalls = true)
+                WorldBoxRenderer.queueOutline(bx, by, bz, bx + 1.0, by + 1.0, bz + 1.0, r, g, b, 0.95f, thickness = 0.04, throughWalls = true)
+            } else {
+                // Waypoint cube: 0.5 x 0.5 x 0.5 centered at (pt.x, pt.y, pt.z)
+                val half = 0.25
+                val x1 = pt.x - half
+                val y1 = pt.y
+                val z1 = pt.z - half
+                val x2 = pt.x + half
+                val y2 = pt.y + 0.5
+                val z2 = pt.z + half
 
-            WorldBoxRenderer.queueFilled(x1, y1, z1, x2, y2, z2, r, g, b, a, throughWalls = true)
-            WorldBoxRenderer.queueOutline(x1, y1, z1, x2, y2, z2, r, g, b, 0.90f, thickness = 0.03, throughWalls = true)
+                WorldBoxRenderer.queueFilled(x1, y1, z1, x2, y2, z2, r, g, b, a, throughWalls = true)
+                WorldBoxRenderer.queueOutline(x1, y1, z1, x2, y2, z2, r, g, b, 0.90f, thickness = 0.03, throughWalls = true)
+            }
 
-            // In-world label: #1 [WALK] or #1 [TIMEOUT 2.0s]
+            // In-world label: #1 [WALK] or #1 [BREAK] or #1 [TIMEOUT 2.0s]
+            val labelY = if (nodeType == RouteNodeType.BREAK) kotlin.math.floor(pt.y) + 1.15 else pt.y + 0.70
             val label = if (nodeType == RouteNodeType.TIMEOUT) {
                 "#${i + 1} [${nodeType.displayName} ${pt.timeoutSeconds}s]"
             } else {
@@ -145,7 +155,7 @@ object PathfindingRenderer {
             }
             WorldTextRenderer.queueText(
                 label,
-                pt.x, pt.y + 0.70, pt.z,
+                pt.x, labelY, pt.z,
                 scale = 0.85f,
                 color = badgeCol,
                 throughWalls = true
@@ -186,9 +196,11 @@ object PathfindingRenderer {
             // Tracer line to the next node
             if (i < points.size - 1) {
                 val nextPt = points[i + 1]
+                val fromY = if (nodeType == RouteNodeType.BREAK) kotlin.math.floor(pt.y) + 0.5 else pt.y + 0.25
+                val toY = if (nextPt.nodeType() == RouteNodeType.BREAK) kotlin.math.floor(nextPt.y) + 0.5 else nextPt.y + 0.25
                 WorldBoxRenderer.queueLine(
-                    pt.x, pt.y + 0.25, pt.z,
-                    nextPt.x, nextPt.y + 0.25, nextPt.z,
+                    pt.x, fromY, pt.z,
+                    nextPt.x, toY, nextPt.z,
                     lineR, lineG, lineB, 0.85f,
                     thickness = 0.045,
                     throughWalls = true

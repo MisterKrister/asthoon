@@ -67,14 +67,15 @@ enum class RouteNodeType(
     SIMON_SAYS("Simon Says", 0xFF8B5CF6.toInt(), "Stands at waypoint until Simon Says device completes"),
     ARROWS_ALIGN("Arrows Align", 0xFF3B82F6.toInt(), "Stands at waypoint until Arrows Align completes"),
     TIMEOUT("Timeout", 0xFFF97316.toInt(), "Waits configured seconds standing still"),
-    INTERACT("Interact", 0xFF38BDF8.toInt(), "Clicks or triggers lever, button, or device");
+    INTERACT("Interact", 0xFF38BDF8.toInt(), "Clicks or triggers lever, button, or device"),
+    BREAK("Break", 0xFFE11D48.toInt(), "Equips Dungeon Breaker and breaks target block while running");
 
     companion object {
         fun fromString(name: String): RouteNodeType =
             entries.firstOrNull { it.name.equals(name, ignoreCase = true) || it.displayName.equals(name, ignoreCase = true) } ?: WALK
 
         fun allowedForCategory(category: RouteCategory): List<RouteNodeType> = when (category) {
-            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, JUMP, CROUCH, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, INTERACT)
+            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, JUMP, CROUCH, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, INTERACT, BREAK)
             else -> entries
         }
     }

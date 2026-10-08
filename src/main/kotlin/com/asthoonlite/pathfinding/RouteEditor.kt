@@ -106,10 +106,11 @@ object RouteEditor {
                     val pos = targetedBlock
                     val preset = activePreset
                     if (pos != null && preset != null) {
-                        // Place node centered on top of targeted block
+                        // Place node centered on targeted block (or top for traversal nodes)
+                        val ny = if (defaultNodeType == RouteNodeType.BREAK) pos.y.toDouble() else pos.y + 1.0
                         val node = PathPoint(
                             x = pos.x + 0.5,
-                            y = pos.y + 1.0,
+                            y = ny,
                             z = pos.z + 0.5,
                             yaw = player.yRot,
                             pitch = player.xRot,
@@ -118,8 +119,9 @@ object RouteEditor {
                         preset.points.add(node)
                         PathPresetManager.savePresets()
 
+                        val msgY = if (defaultNodeType == RouteNodeType.BREAK) pos.y else pos.y + 1
                         player.sendSystemMessage(
-                            Component.literal("§a[AsthoonLite] §fAdded node §e#${preset.points.size} §7[§d${defaultNodeType.displayName}§7] at §b(${pos.x}, ${pos.y + 1}, ${pos.z})")
+                            Component.literal("§a[AsthoonLite] §fAdded node §e#${preset.points.size} §7[§d${defaultNodeType.displayName}§7] at §b(${pos.x}, $msgY, ${pos.z})")
                         )
                         level.playLocalSound(
                             player.x, player.y, player.z,

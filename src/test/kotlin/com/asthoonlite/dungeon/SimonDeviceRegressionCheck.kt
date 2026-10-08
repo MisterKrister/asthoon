@@ -259,8 +259,9 @@ internal fun simonDeviceRegressionChecks() {
         com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS,
         com.asthoonlite.pathfinding.RouteNodeType.ARROWS_ALIGN,
         com.asthoonlite.pathfinding.RouteNodeType.TIMEOUT,
-        com.asthoonlite.pathfinding.RouteNodeType.INTERACT
-    )) { "M7 routes must allow WALK, BONZO_STAFF, JUMP, CROUCH, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, and INTERACT (no AOTV / Etherwarp)" }
+        com.asthoonlite.pathfinding.RouteNodeType.INTERACT,
+        com.asthoonlite.pathfinding.RouteNodeType.BREAK
+    )) { "M7 routes must allow WALK, BONZO_STAFF, JUMP, CROUCH, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, INTERACT, and BREAK (no AOTV / Etherwarp)" }
 
     // 4. Node swapping and drag-and-drop reordering
     val preset = com.asthoonlite.pathfinding.PathPreset(
@@ -356,6 +357,7 @@ internal fun simonDeviceRegressionChecks() {
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS)) { "M7 must allow SIMON_SAYS" }
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.ARROWS_ALIGN)) { "M7 must allow ARROWS_ALIGN" }
     check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.TIMEOUT)) { "M7 must allow TIMEOUT" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.BREAK)) { "M7 must allow BREAK" }
 
     // 12. PathPoint Look Node and Timeout JSON backward-compatibility check
     val oldPointJson = """{"x":10.5,"y":64.0,"z":-20.5,"action":"WALK"}"""
@@ -699,6 +701,16 @@ internal fun simonDeviceRegressionChecks() {
     check(Math.abs(params90Left.shotPitch - 54.5f) < 0.01f) { "Left turn pitch must be 54.5°" }
     check(!params90Left.jumpOnFire) { "Left turn must not jump on fire" }
     check(Math.abs(params90Left.targetBps - 7.7) < 0.01) { "Left turn sweet spot speed must be 7.7 bps" }
+
+    // 29. BREAK node block outline bounds and completion check
+    check(PathExecutor.isBreakNodeComplete(isAir = true)) { "Break node must complete when target block is air" }
+    check(!PathExecutor.isBreakNodeComplete(isAir = false)) { "Break node must not complete when target block is solid" }
+    val breakPt = com.asthoonlite.pathfinding.PathPoint(10.5, 71.0, 20.5, action = "BREAK")
+    val minBx = kotlin.math.floor(breakPt.x)
+    val minBy = kotlin.math.floor(breakPt.y)
+    val minBz = kotlin.math.floor(breakPt.z)
+    check(minBx == 10.0 && minBy == 71.0 && minBz == 20.0) { "Break node must encompass full 1.0 block coordinates" }
+    check(breakPt.nodeType() == com.asthoonlite.pathfinding.RouteNodeType.BREAK) { "PathPoint must resolve action BREAK to RouteNodeType.BREAK" }
 }
 
 

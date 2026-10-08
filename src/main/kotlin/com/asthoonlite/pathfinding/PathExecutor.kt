@@ -16,6 +16,7 @@ import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
 import net.minecraft.util.Mth
 import net.minecraft.world.InteractionHand
+import net.minecraft.world.item.ItemStack
 import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.entity.decoration.ArmorStand
 import net.minecraft.world.entity.decoration.ItemFrame
@@ -160,6 +161,11 @@ object PathExecutor {
         cameraYawVelocity = 0f
         cameraPitchVelocity = 0f
         aimedThisTick = false
+        try {
+            val mc = Minecraft.getInstance()
+            mc.options.keyAttack.setDown(false)
+            mc.gameMode?.stopDestroyBlock()
+        } catch (_: Exception) {}
     }
 
     private fun releaseAllMovementKeys() {
@@ -172,6 +178,8 @@ object PathExecutor {
             mc.options.keyJump.setDown(false)
             mc.options.keyShift.setDown(false)
             mc.options.keySprint.setDown(false)
+            mc.options.keyAttack.setDown(false)
+            mc.gameMode?.stopDestroyBlock()
         } catch (_: Exception) {}
     }
 
@@ -482,7 +490,11 @@ object PathExecutor {
         val isClimbingToNode = target.y > player.y + 0.4
         val arrivalThreshold = if (isClimbingToNode) 1.5 else if (isHighSpeed) 2.5 else 1.5
 
-        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+        val isBreakNode = nodeType == RouteNodeType.BREAK
+        val breakBlockPos = if (isBreakNode) BlockPos.containing(target.x, target.y, target.z) else null
+        val isBreakBlockSolid = breakBlockPos != null && !level.getBlockState(breakBlockPos).isAir
+
+        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && (nodeType == RouteNodeType.WALK || (isBreakNode && !isBreakBlockSolid))) {
             ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
         } else {
             0.0
@@ -501,6 +513,8 @@ object PathExecutor {
 
         if (target.hasLookNode && (!isDeviceNode || isSettled)) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
+        } else if (isBreakNode && breakBlockPos != null && isBreakBlockSolid) {
+            aimTowardsVec(player, Vec3.atCenterOf(breakBlockPos))
         } else if (nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5) {
             // Smoothly pre-aim launch yaw and pitch as player approaches Bonzo node
             val approachHeading = if (player.deltaMovement.horizontalDistance() > 0.08) {
@@ -685,6 +699,32 @@ object PathExecutor {
             return
         }
 
+        // 7b. Break Node Handling: break target block with Dungeon Breaker while running
+        if (nodeType == RouteNodeType.BREAK) {
+            val bPos = BlockPos.containing(target.x, target.y, target.z)
+            val state = level.getBlockState(bPos)
+            if (!state.isAir) {
+                selectDungeonBreaker()
+                val center = Vec3.atCenterOf(bPos)
+                val eye = player.eyePosition
+                if (eye.distanceTo(center) <= 4.8) {
+                    val hitResult = mc.hitResult
+                    val dir = if (hitResult is BlockHitResult && hitResult.blockPos == bPos) {
+                        hitResult.direction
+                    } else {
+                        Direction.getApproximateNearest(eye.subtract(center))
+                    }
+                    player.swing(InteractionHand.MAIN_HAND)
+                    mc.gameMode?.startDestroyBlock(bPos, dir)
+                    mc.gameMode?.continueDestroyBlock(bPos, dir)
+                    mc.options.keyAttack.setDown(true)
+                }
+            } else {
+                mc.options.keyAttack.setDown(false)
+                mc.gameMode?.stopDestroyBlock()
+            }
+        }
+
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
         val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.6 else distY < 2.5
         val isPrecedingAirborne = points.getOrNull(currentNodeIndex - 1)?.nodeType() in setOf(RouteNodeType.BONZO_STAFF, RouteNodeType.JUMP)
@@ -696,10 +736,15 @@ object PathExecutor {
         )
         val requiresTouchdown = isPrecedingAirborne || isNextStationary
 
-        if (advancesOnArrival(nodeType) &&
+        val canAdvanceBreak = isBreakNode && !isBreakBlockSolid
+        if ((advancesOnArrival(nodeType) || canAdvanceBreak) &&
             distH < arrivalThreshold && canArriveElevation &&
             (!requiresTouchdown || player.onGround()) &&
             (!isStationaryDest || isSettled)) {
+            if (isBreakNode) {
+                mc.options.keyAttack.setDown(false)
+                mc.gameMode?.stopDestroyBlock()
+            }
             currentNodeIndex++
             resetSpecialNodeState()
             if (currentNodeIndex >= points.size) {
@@ -848,6 +893,7 @@ object PathExecutor {
         val preset = activePreset ?: return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
+        val level = mc.level ?: return
         val points = preset.points
         if (currentNodeIndex !in points.indices) return
 
@@ -880,6 +926,17 @@ object PathExecutor {
             bonzoState == BonzoState.POST_FIRE_PROPEL -> {
                 goalYaw = bonzoLaunchYaw
                 goalPitch = 10.0f
+                isFastAim = true
+            }
+            nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir -> {
+                val bPos = BlockPos.containing(target.x, target.y, target.z)
+                val bCenter = Vec3.atCenterOf(bPos)
+                val bdx = bCenter.x - currentX
+                val bdy = bCenter.y - currentEyeY
+                val bdz = bCenter.z - currentZ
+                val bdistH = sqrt(bdx * bdx + bdz * bdz)
+                goalYaw = (-Math.toDegrees(atan2(bdx, bdz))).toFloat()
+                goalPitch = (-Math.toDegrees(atan2(bdy, bdistH))).toFloat().coerceIn(-89f, 89f)
                 isFastAim = true
             }
             nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5 -> {
@@ -936,7 +993,9 @@ object PathExecutor {
                 isFastAim = false
             }
             else -> {
-                val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+                val isBreakNode = nodeType == RouteNodeType.BREAK
+                val breakAir = isBreakNode && level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir
+                val lookaheadBlend = if (distH < 2.8 && nextTarget != null && (nodeType == RouteNodeType.WALK || breakAir)) {
                     val t = ((2.8 - distH) / 2.8).coerceIn(0.0, 1.0)
                     t * t * (3.0 - 2.0 * t) * 0.40
                 } else {
@@ -1245,6 +1304,48 @@ object PathExecutor {
         }
         return false
     }
+
+    internal fun isDungeonBreakerItem(item: ItemStack): Boolean {
+        if (item.isEmpty) return false
+        val name = item.hoverName.string
+        if (name.contains("Breaker", ignoreCase = true)) return true
+        if (name.contains("Stonks", ignoreCase = true)) return true
+        if (item.item.descriptionId.contains("pickaxe", ignoreCase = true)) return true
+        if (name.contains("Pickaxe", ignoreCase = true)) return true
+        return false
+    }
+
+    internal fun selectDungeonBreaker(): Boolean {
+        val player = Minecraft.getInstance().player ?: return false
+        val inventory = player.inventory
+
+        // Check held item first
+        if (isDungeonBreakerItem(inventory.selectedItem)) {
+            return true
+        }
+
+        // 1. Search hotbar for an item specifically named "Breaker"
+        for (slot in 0..8) {
+            val item = inventory.getItem(slot)
+            if (item.hoverName.string.contains("Breaker", ignoreCase = true)) {
+                inventory.selectedSlot = slot
+                return true
+            }
+        }
+
+        // 2. Fallback: search hotbar for Stonks or any pickaxe
+        for (slot in 0..8) {
+            val item = inventory.getItem(slot)
+            if (isDungeonBreakerItem(item)) {
+                inventory.selectedSlot = slot
+                return true
+            }
+        }
+
+        return false
+    }
+
+    internal fun isBreakNodeComplete(isAir: Boolean): Boolean = isAir
 
     private fun finishRoute(preset: PathPreset) {
         val mc = Minecraft.getInstance()
