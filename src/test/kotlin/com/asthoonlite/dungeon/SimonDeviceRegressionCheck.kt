@@ -1,6 +1,14 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.pathfinding.RouteNodeType
+import com.asthoonlite.pathfinding.PathExecutor
+import net.minecraft.core.BlockPos
+import net.minecraft.world.level.BlockGetter
+import net.minecraft.world.level.EmptyBlockGetter
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.material.FluidState
+import net.minecraft.world.phys.Vec3
 
 internal fun simonDeviceRegressionChecks() {
     val run = SimonDeviceLifecycle()
@@ -273,17 +281,14 @@ internal fun simonDeviceRegressionChecks() {
         "moveNode must insert dragged node at destination index"
     }
 
-    // 5. Speed-aware Bonzo Staff pause threshold
-    fun bonzoRequiresPause(speedAttribute: Double): Boolean {
-        val skyblockSpeed = speedAttribute * 1000.0
-        return skyblockSpeed > 400.0
-    }
-
-    check(bonzoRequiresPause(0.5500)) { "550 speed (0.55) must pause forward key before Bonzo Staff firing" }
-    check(bonzoRequiresPause(0.7150)) { "715 speed (0.715) must pause forward key before Bonzo Staff firing" }
-    check(!bonzoRequiresPause(0.4000)) { "400 speed (0.40) must traverse without pausing forward key" }
-    check(!bonzoRequiresPause(0.3500)) { "350 speed (0.35) must traverse without pausing forward key" }
-    check(!bonzoRequiresPause(0.1000)) { "100 base speed (0.10) must traverse without pausing forward key" }
+    // 5. Use measured forward sprint momentum, including the reported first-shot velocity.
+    check(PathExecutor.hasForwardSprintMomentum(Vec3(-0.2096, -0.0784, 0.6945), 15.55f, true))
+    check(PathExecutor.hasForwardSprintMomentum(Vec3(0.0, 0.0, 0.6), 0f, true))
+    check(!PathExecutor.hasForwardSprintMomentum(Vec3(0.0, 0.0, 0.599), 0f, true)) { "less than 12 bps must not launch" }
+    check(!PathExecutor.hasForwardSprintMomentum(Vec3(0.8, 0.0, 0.0), 0f, true)) { "sideways speed is not forward momentum" }
+    check(!PathExecutor.hasForwardSprintMomentum(Vec3(0.0, 0.0, -0.8), 0f, true)) { "backward speed must not launch" }
+    check(!PathExecutor.hasForwardSprintMomentum(Vec3(0.3, 0.0, 0.8), 0f, true)) { "runway heading must align with velocity" }
+    check(!PathExecutor.hasForwardSprintMomentum(Vec3(0.0, 0.0, 0.8), 0f, false)) { "sprint must be active before launch" }
 
     // 6. 1-based index insertion into route
     fun insertNodeAtNumber(preset: com.asthoonlite.pathfinding.PathPreset, number: Int, point: com.asthoonlite.pathfinding.PathPoint) {
@@ -367,15 +372,39 @@ internal fun simonDeviceRegressionChecks() {
     }
     check(restoredLookPoint.timeoutSeconds == 2.5) { "Timeout seconds must round-trip cleanly" }
 
-    // 14. Bonzo Staff pitch and server delay constants
-    val bonzoMinPitch = 25.0f
-    val bonzoMaxPitch = 65.0f
-    val bonzoPostFireTicks = 6
-    check(bonzoMinPitch in 20.0f..35.0f && bonzoMaxPitch in 55.0f..75.0f) {
-        "Bonzo launch pitch must hit floor ahead/behind player at 25°-65° without stalling into feet at 83°"
+    // 14. Critically damped launch aim settles over several ticks without a snap or sway.
+    var pitch = 0f
+    var pitchVelocity = 0f
+    repeat(3) {
+        val (nextPitch, velocity) = PathExecutor.dampRotation(pitch, 60f, pitchVelocity, 1.6, 30f)
+        check(nextPitch > pitch && nextPitch < 60f && nextPitch - pitch <= 30f)
+        pitch = nextPitch
+        pitchVelocity = velocity
     }
-    check(bonzoPostFireTicks >= 5) {
-        "Bonzo post-fire delay must be at least 5-6 ticks to absorb floor explosion propulsion"
+    check(kotlin.math.abs(60f - pitch) <= 3f) { "launch pitch must settle in three ticks" }
+    repeat(40) {
+        val (nextPitch, velocity) = PathExecutor.dampRotation(pitch, 60f, pitchVelocity, 0.8, 12f)
+        check(nextPitch >= pitch && nextPitch <= 60f) { "settled camera must not oscillate" }
+        pitch = nextPitch
+        pitchVelocity = velocity
+    }
+    check(kotlin.math.abs(60f - pitch) < 0.001f)
+    val (wrappedYaw, _) = PathExecutor.dampRotation(179f, -179f, 0f, 0.8, 12f, wrap = true)
+    check(wrappedYaw > 179f && wrappedYaw < 181f) { "yaw must take the short path across 180 degrees" }
+    check(PathExecutor.dampRotation(60f, 60f, 0f, 0.8, 12f) == (60f to 0f)) { "fixed aim must have no artificial sway" }
+    val corner = com.asthoonlite.pathfinding.PathPoint(10.0, 60.0, 0.0)
+    val afterCorner = com.asthoonlite.pathfinding.PathPoint(10.0, 62.0, 10.0)
+    val following = com.asthoonlite.pathfinding.PathPoint(20.0, 62.0, 10.0)
+    for (arrival in listOf(1.2, 2.2)) {
+        val before = PathExecutor.waypointLookahead(corner, afterCorner, arrival + 0.001, arrival)
+        val atCorner = PathExecutor.waypointLookahead(corner, afterCorner, arrival, arrival)
+        val after = PathExecutor.waypointLookahead(afterCorner, following, 10.0, arrival)
+        check(before.distanceTo(atCorner) < 0.001 && atCorner.distanceTo(after) < 0.001) {
+            "camera lookahead must reach the next waypoint before the node index changes"
+        }
+    }
+    check(PathExecutor.waypointLookahead(nodeB, nodeC, 0.0, 2.2) == Vec3(nodeB.x, nodeB.y + 1.2, nodeB.z)) {
+        "lookahead must not skip a Bonzo action"
     }
 
     // 15. RouteEditor Node View mode check
@@ -409,13 +438,13 @@ internal fun simonDeviceRegressionChecks() {
     }
 
     // 18. Smart auto-jump gap and ledge detection
-    fun shouldAutoJump(isLedge: Boolean, onGround: Boolean, distH: Double, isCollision: Boolean): Boolean {
-        return isCollision || (onGround && isLedge && distH > 1.2)
-    }
-    check(shouldAutoJump(isLedge = true, onGround = true, distH = 8.6, isCollision = false)) {
+    check(PathExecutor.gapProbeDistance(Vec3.ZERO) == 1.0)
+    check(PathExecutor.gapProbeDistance(Vec3(0.0, 0.0, 0.6)) == 1.5) { "12 bps needs two movement ticks of runway plus player width" }
+    check(PathExecutor.gapProbeDistance(Vec3(0.0, 0.0, 1.0)) == 2.2) { "high-speed probes must remain bounded" }
+    check(PathExecutor.shouldJumpGap(true, true, 8.6, false, false, true)) {
         "Approaching a gap or ledge on a walk node must trigger auto-jump"
     }
-    check(!shouldAutoJump(isLedge = false, onGround = true, distH = 8.6, isCollision = false)) {
+    check(!PathExecutor.shouldJumpGap(true, false, 8.6, false, false, true)) {
         "Continuous flat ground must not trigger auto-jump"
     }
 
@@ -436,15 +465,13 @@ internal fun simonDeviceRegressionChecks() {
         "CROUCH node must advance via generic arrival check"
     }
 
-    // 20. Bonzo ground impact pitch calculation
-    fun computeBonzoLaunchPitch(configuredPitch: Float): Float {
-        return if (configuredPitch in 75.0f..88.0f) configuredPitch else 79.0f
-    }
-    // Forward / shallow view angles (e.g. 32.55° or 40° looking at next platform): must be overridden to steep 79°
-    check(computeBonzoLaunchPitch(32.55f) == 79.0f) { "Forward pitch must default to steep ground pitch (79°)" }
-    check(computeBonzoLaunchPitch(0.0f) == 79.0f) { "Horizontal pitch must default to steep ground pitch (79°)" }
-    // User specifically configured steep pitch (e.g. 82°): honored
-    check(computeBonzoLaunchPitch(82.0f) == 82.0f) { "Configured steep pitch must be honored" }
+    // 20. Preserve recorded forward launch angles and clamp legacy steep shots.
+    check(PathExecutor.bonzoLaunchPitch(55f) == 55f)
+    check(PathExecutor.bonzoLaunchPitch(32.55f) == 45f)
+    check(PathExecutor.bonzoLaunchPitch(79f) == 65f)
+    check(PathExecutor.bonzoLaunchPitch(82f) == 65f)
+    check(PathExecutor.bonzoLaunchPitch(0f) == 60f)
+    check(PathExecutor.bonzoLaunchPitch(Float.NaN) == 60f)
 
     // 21. Stair-climb elevation arrival gating
     fun canArriveElevatedNode(playerY: Double, targetY: Double, distH: Double): Boolean {
@@ -459,34 +486,21 @@ internal fun simonDeviceRegressionChecks() {
     check(canArriveElevatedNode(118.8, 119.0, 0.9)) { "Player arriving at top platform must trigger arrival" }
 
     // 22. In-air overshoot brake detection & stationary destination braking
-    fun shouldInAirBrake(
-        isStationaryDest: Boolean,
-        distToTargetH: Double,
-        vy: Double,
-        currentBpsH: Double,
-        playerY: Double,
-        targetY: Double
-    ): Boolean {
-        if (isStationaryDest && distToTargetH < 3.8) return true
-        if (vy >= 0.1 || distToTargetH >= 6.0 || currentBpsH <= 5.0) return false
-        val height = (playerY - targetY).coerceAtLeast(0.2)
-        val fallSpeed = Math.abs(vy).coerceAtLeast(0.18)
-        val ticksToLand = (height / fallSpeed).coerceIn(1.0, 12.0)
-        val predictedDist = (currentBpsH / 20.0) * ticksToLand
-        return (predictedDist - distToTargetH) > 0.8
-    }
     // High velocity approaching Simon Says in mid-air: must brake hard to prevent flying past platform
-    check(shouldInAirBrake(isStationaryDest = true, distToTargetH = 3.2, vy = 0.05, currentBpsH = 18.0, playerY = 120.0, targetY = 120.0)) {
+    check(PathExecutor.shouldInAirBrake(true, 3.2, 0.05, 18.0, 120.0, 120.0)) {
         "Airborne approach towards stationary destination must engage air brake"
     }
     // High velocity (18 bps) close to target (2.0m) while descending: must brake to prevent overshoot
-    check(shouldInAirBrake(isStationaryDest = false, distToTargetH = 2.0, vy = -0.3, currentBpsH = 18.0, playerY = 120.5, targetY = 119.0)) {
+    check(PathExecutor.shouldInAirBrake(false, 2.0, -0.3, 18.0, 120.5, 119.0)) {
         "High-velocity airborne descent overshooting target must engage air brake"
     }
     // Normal trajectory falling short (need distance): must NOT brake
-    check(!shouldInAirBrake(isStationaryDest = false, distToTargetH = 5.0, vy = -0.3, currentBpsH = 12.0, playerY = 120.5, targetY = 119.0)) {
+    check(!PathExecutor.shouldInAirBrake(false, 5.0, -0.3, 12.0, 120.5, 119.0)) {
         "Airborne descent needing distance must not engage air brake"
     }
+    check(!PathExecutor.shouldInAirBrake(false, 1.0, -0.02, 18.0, 118.5, 119.0)) { "do not brake below the landing platform" }
+    check(!PathExecutor.shouldInAirBrake(true, 3.2, 0.05, 18.0, 118.5, 119.0)) { "stationary landing must also retain momentum below the platform" }
+    check(!PathExecutor.shouldInAirBrake(false, 2.0, -0.3, -18.0, 120.5, 119.0)) { "do not brake while travelling away from the target" }
 
     // 23. WASD Movement Key Vectoring (look-node decoupled vs normal straight pathing)
     fun computeWasd(hasLookNode: Boolean, isAirborne: Boolean, angleDiffDeg: Double): List<Boolean> {
@@ -527,39 +541,69 @@ internal fun simonDeviceRegressionChecks() {
     }
 
     // 24. Auto-gap jump towards distant platform across chasm
-    fun canAutoGapJump(onGround: Boolean, isLedge: Boolean, distH: Double, isCrouch: Boolean): Boolean {
-        return onGround && isLedge && distH > 1.4 && !isCrouch
-    }
     // Approaching chasm ledge to distant platform (8.9m, e.g. Node 2 to Node 3): MUST JUMP!
-    check(canAutoGapJump(onGround = true, isLedge = true, distH = 8.9, isCrouch = false)) {
+    check(PathExecutor.shouldJumpGap(true, true, 8.9, false, false, true)) {
         "Ledge jump to distant platform across chasm must trigger"
     }
     // Already arrived on platform (distH <= 1.4): must NOT jump
-    check(!canAutoGapJump(onGround = true, isLedge = true, distH = 1.0, isCrouch = false)) {
+    check(!PathExecutor.shouldJumpGap(true, true, 1.0, false, false, true)) {
         "Ledge jump must not trigger when already arrived on platform"
     }
+    check(!PathExecutor.shouldJumpGap(true, true, 8.9, false, false, false)) { "gap jumps require aligned sprint momentum" }
+    check(!PathExecutor.shouldJumpGap(true, true, 8.9, false, true, true)) { "auto-jump must not pre-empt a prepared Bonzo shot" }
+    check(!PathExecutor.shouldJumpGap(true, true, 8.9, true, false, true))
+    check(!PathExecutor.shouldJumpGap(false, true, 8.9, false, false, true))
 
     // 25. Bonzo Staff launch platform arrival & sprint momentum gating
-    fun canLaunchBonzo(onGround: Boolean, distH: Double, currentBpsH: Double, isAtLaunchLedge: Boolean): Boolean {
-        val isArrived = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-        val hasSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
-        return onGround && isArrived && hasSpeed
-    }
     // Airborne descending from jump onto pillar (onGround = false): must NEVER fire mid-air!
-    check(!canLaunchBonzo(onGround = false, distH = 1.2, currentBpsH = 0.0, isAtLaunchLedge = false)) {
+    check(!PathExecutor.bonzoLaunchReady(false, 1.2, false, true, true, true)) {
         "Airborne descent onto Bonzo pillar must not fire prematurely"
     }
     // Just touched down on pillar with 0 speed (not accelerated yet): must NOT fire yet!
-    check(!canLaunchBonzo(onGround = true, distH = 1.4, currentBpsH = 2.0, isAtLaunchLedge = false)) {
+    check(!PathExecutor.bonzoLaunchReady(true, 1.4, false, false, true, true)) {
         "Slow speed touchdown on Bonzo pillar must not fire before accelerating"
     }
     // Sprinting across pillar at full speed (12 bps): FIRES WITH FULL MOMENTUM!
-    check(canLaunchBonzo(onGround = true, distH = 1.2, currentBpsH = 12.0, isAtLaunchLedge = false)) {
+    check(PathExecutor.bonzoLaunchReady(true, 1.2, false, true, true, true)) {
         "Sprint momentum on Bonzo pillar must trigger full-power launch"
     }
-    // Reached launch ledge of pillar: fires before falling off!
-    check(canLaunchBonzo(onGround = true, distH = 1.8, currentBpsH = 5.0, isAtLaunchLedge = true)) {
-        "Reaching launch ledge of Bonzo pillar must trigger launch"
+    // A ledge never substitutes for missing momentum or a valid projectile impact.
+    check(!PathExecutor.bonzoLaunchReady(true, 1.8, true, false, true, true)) {
+        "reaching a ledge below 12 bps must not fire"
+    }
+    check(PathExecutor.bonzoLaunchReady(true, 1.8, true, true, true, true))
+    check(!PathExecutor.bonzoLaunchReady(true, 1.2, false, true, false, true)) { "wait until launch aim settles" }
+    check(!PathExecutor.bonzoLaunchReady(true, 1.2, false, true, true, false)) { "never fire into a missing floor" }
+    check(!PathExecutor.bonzoLaunchReady(true, 2.3, true, true, true, true)) { "do not launch before reaching the platform" }
+
+    // Check actual collision rays on the reported launch platform geometry.
+    var platformBlock = Blocks.STONE
+    val missingRows = mutableSetOf<Int>()
+    val platform = object : BlockGetter by EmptyBlockGetter.INSTANCE {
+        override fun getBlockState(pos: BlockPos): BlockState =
+            if (pos.y == 114 && pos.z !in missingRows) platformBlock.defaultBlockState() else Blocks.AIR.defaultBlockState()
+        override fun getFluidState(pos: BlockPos): FluidState = getBlockState(pos).fluidState
+    }
+    val launchPos = Vec3(98.4332, 115.0625, 50.5706)
+    val launchNode = Vec3(97.5, 115.0, 50.5)
+    check(PathExecutor.hasPlatformRunway(platform, launchPos, launchNode))
+    val eye = launchPos.add(0.0, 1.62, 0.0)
+    val pitchRadians = Math.toRadians(PathExecutor.bonzoLaunchPitch(0f).toDouble())
+    val yawRadians = Math.toRadians(15.55)
+    val look = Vec3(-kotlin.math.sin(yawRadians) * kotlin.math.cos(pitchRadians), -kotlin.math.sin(pitchRadians),
+        kotlin.math.cos(yawRadians) * kotlin.math.cos(pitchRadians))
+    check(PathExecutor.hasPlatformFloor(platform, eye, eye.add(look.scale(4.0)), launchPos.y)) {
+        "a forward ground shot must still hit the solid platform"
+    }
+    missingRows.add(51)
+    check(!PathExecutor.hasPlatformFloor(platform, eye, eye.add(look.scale(4.0)), launchPos.y)) { "do not shoot off the platform" }
+    check(!PathExecutor.hasPlatformRunway(platform, launchPos, Vec3(98.0, 115.0, 53.0))) {
+        "a Bonzo platform across a gap must be approached with a jump before pre-aiming"
+    }
+    missingRows.clear()
+    for (hazard in listOf(Blocks.LAVA, Blocks.WATER, Blocks.BROWN_MUSHROOM)) {
+        platformBlock = hazard
+        check(!PathExecutor.hasPlatformRunway(platform, launchPos, launchNode)) { "fluids and non-solid blocks are not a runway" }
     }
 }
 
