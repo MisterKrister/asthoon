@@ -75,6 +75,7 @@ object PathExecutor {
     private var bonzoTicksRemaining = 0
     private var bonzoTargetNextIndex = 0
     private var bonzoLaunchYaw = 0f
+    private var jumpTicksRemaining = 0
 
     // Specialized node states
     private var terminalScreenWasOpen = false
@@ -103,6 +104,7 @@ object PathExecutor {
         bonzoState = BonzoState.IDLE
         bonzoTicksRemaining = 0
         bonzoLaunchYaw = 0f
+        jumpTicksRemaining = 0
         tickCount = 0L
         resetSpecialNodeState()
         lastHandledNodeIndex = -1
@@ -121,6 +123,7 @@ object PathExecutor {
         bonzoState = BonzoState.IDLE
         bonzoTicksRemaining = 0
         bonzoLaunchYaw = 0f
+        jumpTicksRemaining = 0
         resetSpecialNodeState()
         lastHandledNodeIndex = -1
 
@@ -269,14 +272,31 @@ object PathExecutor {
 
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
-            val triggerDist = if (isHighSpeed) 1.8 else 1.2
-            val canLaunch = (distH <= triggerDist && distY <= 1.5) &&
-                            (player.onGround() || player.fallDistance < 0.25)
+            val triggerDist = if (isHighSpeed) 2.2 else 1.5
+            val isAtNodeElev = player.y >= target.y - 0.6 && player.y <= target.y + 1.5
+            val canLaunch = !player.isInLava && !player.isInWater &&
+                            distH <= triggerDist && isAtNodeElev &&
+                            (player.onGround() || player.deltaMovement.y <= 0.05)
             if (canLaunch) {
                 initiateBonzoLaunch(points, isHighSpeed)
                 return
             }
             // Otherwise, continue walking towards the Bonzo trigger zone
+        }
+
+        // 3. Handle approaching / arriving at a JUMP node
+        if (nodeType == RouteNodeType.JUMP) {
+            val jumpArrivalDist = if (isHighSpeed) 2.2 else 1.5
+            if (distH <= jumpArrivalDist && distY < 2.0 && player.onGround()) {
+                jumpTicksRemaining = 3
+                mc.options.keyJump.setDown(true)
+                currentNodeIndex++
+                resetSpecialNodeState()
+                if (currentNodeIndex >= points.size) {
+                    finishRoute(preset)
+                    return
+                }
+            }
         }
 
         // 3. Specialized Stationary Nodes: Simon Says, Arrows Align, Timeout
@@ -444,16 +464,24 @@ object PathExecutor {
             mc.options.keySprint.setDown(true)
         }
 
-        // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection, or Jump nodes
-        val isLedge = isLedgeOrGapAhead(level, player, player.yRot)
-        val shouldAutoJump = nodeType == RouteNodeType.JUMP ||
-                             player.horizontalCollision ||
-                             (target.y > player.y + 0.35 && distH < 3.0) ||
-                             (player.onGround() && isLedge && distH > 1.2)
+        // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection on WALK nodes
+        val toTargetDx = target.x - player.x
+        val toTargetDz = target.z - player.z
+        val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
+        val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK) &&
+                             player.onGround() && isLedge && distH > 1.2
+        val isObstacleCollision = player.horizontalCollision && player.onGround()
+        val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
-        if (shouldAutoJump) {
+        if ((canAutoGapJump || isObstacleCollision || isElevationStep) && jumpTicksRemaining <= 0) {
+            jumpTicksRemaining = 3
+        }
+
+        if (jumpTicksRemaining > 0) {
             mc.options.keyJump.setDown(true)
-        } else if (player.onGround() && !isLedge) {
+            jumpTicksRemaining--
+        } else {
             mc.options.keyJump.setDown(false)
         }
 
@@ -474,7 +502,7 @@ object PathExecutor {
 
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
         val arrivalThreshold = if (isHighSpeed) 2.2 else 1.2
-        if (distH < arrivalThreshold && distY < 2.2) {
+        if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP && distH < arrivalThreshold && distY < 2.2) {
             currentNodeIndex++
             resetSpecialNodeState()
             if (currentNodeIndex >= points.size) {
@@ -542,26 +570,28 @@ object PathExecutor {
     }
 
     private fun isLedgeOrGapAhead(level: Level, player: LocalPlayer, moveYaw: Float): Boolean {
+        if (!player.onGround() || player.isInLava || player.isInWater) return false
+
         val rad = Math.toRadians(-moveYaw.toDouble())
         val nx = sin(rad)
         val nz = cos(rad)
 
-        val footY = floor(player.y).toInt()
+        val floorY = floor(player.y - 0.1).toInt()
         val isHazardOrAir: (net.minecraft.world.level.block.state.BlockState) -> Boolean = { state ->
             state.isAir || state.`is`(Blocks.LAVA) || state.`is`(Blocks.WATER)
         }
 
-        // Probe 0.9, 1.4, and 1.9 blocks ahead in movement direction
-        for (dist in listOf(0.9, 1.4, 1.9)) {
+        // Probe 1.0 and 1.6 blocks ahead along movement line
+        for (dist in listOf(1.0, 1.6)) {
             val probeX = player.x + nx * dist
             val probeZ = player.z + nz * dist
-            val probeBlockPos = BlockPos(floor(probeX).toInt(), footY, floor(probeZ).toInt())
+            val probeBlockPos = BlockPos(floor(probeX).toInt(), floorY, floor(probeZ).toInt())
 
-            val stateAtFeet = level.getBlockState(probeBlockPos)
-            val stateBelow = level.getBlockState(probeBlockPos.below())
+            val stateAtFloor = level.getBlockState(probeBlockPos)
+            val stateBelowFloor = level.getBlockState(probeBlockPos.below())
 
-            // If feet level AND 1 block below are air/lava/hazard, there is a drop/gap ahead!
-            if (isHazardOrAir(stateAtFeet) && isHazardOrAir(stateBelow)) {
+            // If floor level AND 1 block below are air/lava/hazard, there is a drop/gap ahead!
+            if (isHazardOrAir(stateAtFloor) && isHazardOrAir(stateBelowFloor)) {
                 return true
             }
         }
@@ -603,6 +633,10 @@ object PathExecutor {
         mc.options.keyDown.setDown(false)
         mc.options.keySprint.setDown(true)
 
+        // Single jump pulse on fire
+        jumpTicksRemaining = 3
+        mc.options.keyJump.setDown(true)
+
         // Fire immediately so projectile hits the platform floor ahead/under player in time
         player.swing(InteractionHand.MAIN_HAND)
         mc.gameMode?.useItem(player, InteractionHand.MAIN_HAND)
@@ -619,11 +653,18 @@ object PathExecutor {
 
         when (bonzoState) {
             BonzoState.POST_FIRE_PROPEL -> {
-                // Engage forward (W), Jump, and Sprint directly in direction of destination
+                // Engage forward (W) and Sprint directly in direction of destination
                 mc.options.keyUp.setDown(true)
                 mc.options.keyDown.setDown(false)
-                mc.options.keyJump.setDown(true)
                 mc.options.keySprint.setDown(true)
+
+                // Manage jump pulse cleanly so player never bunny hops on landing
+                if (jumpTicksRemaining > 0) {
+                    mc.options.keyJump.setDown(true)
+                    jumpTicksRemaining--
+                } else {
+                    mc.options.keyJump.setDown(false)
+                }
 
                 // Hold body and pitch firmly in launch orientation
                 player.yRot = bonzoLaunchYaw
@@ -637,6 +678,8 @@ object PathExecutor {
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {
                     bonzoState = BonzoState.IDLE
+                    mc.options.keyJump.setDown(false)
+                    jumpTicksRemaining = 0
                     // Immediately transition to the destination waypoint
                     if (bonzoTargetNextIndex < points.size) {
                         currentNodeIndex = bonzoTargetNextIndex

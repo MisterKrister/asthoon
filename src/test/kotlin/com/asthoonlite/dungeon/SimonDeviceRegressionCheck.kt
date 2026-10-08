@@ -1,5 +1,7 @@
 package com.asthoonlite.dungeon
 
+import com.asthoonlite.pathfinding.RouteNodeType
+
 internal fun simonDeviceRegressionChecks() {
     val run = SimonDeviceLifecycle()
     check(!run.completeFromMessage("Player completed a device! (1/7)", "Player", true))
@@ -413,6 +415,20 @@ internal fun simonDeviceRegressionChecks() {
     }
     check(!shouldAutoJump(isLedge = false, onGround = true, distH = 8.6, isCollision = false)) {
         "Continuous flat ground must not trigger auto-jump"
+    }
+
+    // 19. Waypoint arrival transition exclusions and jump pulse
+    fun shouldAdvanceViaGenericArrival(nodeType: RouteNodeType, distH: Double, threshold: Double): Boolean {
+        return nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP && distH < threshold
+    }
+    check(!shouldAdvanceViaGenericArrival(RouteNodeType.BONZO_STAFF, 1.8, 2.2)) {
+        "BONZO_STAFF node must never be skipped by generic arrival check"
+    }
+    check(!shouldAdvanceViaGenericArrival(RouteNodeType.JUMP, 1.8, 2.2)) {
+        "JUMP node must never be skipped by generic arrival check"
+    }
+    check(shouldAdvanceViaGenericArrival(RouteNodeType.WALK, 1.8, 2.2)) {
+        "WALK node must advance via generic arrival check"
     }
 }
 
