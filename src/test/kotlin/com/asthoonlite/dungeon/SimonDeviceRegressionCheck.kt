@@ -184,5 +184,44 @@ internal fun simonDeviceRegressionChecks() {
     val dot60 = (dir60X * lookDirX + dir60Z * lookDirZ).coerceIn(-1.0, 1.0)
     val angle60 = Math.toDegrees(kotlin.math.acos(dot60))
     check(kotlin.math.abs(angle60 - 60.0) < 1e-4 && angle60 > halfFov) { "60° direction must be outside 90° FOV" }
+
+    // ── Triggerbot Same-Target Cooldown Regression Checks ─────────────────
+    fun triggerbotCooldownMs(seconds: Double): Long =
+        (seconds * 1000.0).toLong().coerceAtLeast(200L)
+
+    check(triggerbotCooldownMs(10.0) == 10000L) { "Default 10s triggerbot cooldown must be 10000ms" }
+    check(triggerbotCooldownMs(1.0) == 1000L) { "1.0s triggerbot cooldown must be 1000ms" }
+    check(triggerbotCooldownMs(30.0) == 30000L) { "30.0s triggerbot cooldown must be 30000ms" }
+    check(triggerbotCooldownMs(0.05) == 200L) { "Triggerbot cooldown must be clamped to at least 200ms" }
+
+    // Simulate same-target cooldown tracking
+    val targetPos = net.minecraft.core.BlockPos(5, 10, 15)
+    val trackedClicks = mutableMapOf<net.minecraft.core.BlockPos, Long>()
+    val cooldown = triggerbotCooldownMs(10.0)
+    val clickTime = 50000L
+    trackedClicks[targetPos] = clickTime
+
+    fun canInteract(pos: net.minecraft.core.BlockPos, now: Long): Boolean {
+        val last = trackedClicks[pos] ?: 0L
+        return (now - last) >= cooldown
+    }
+
+    // Within cooldown: blocked
+    check(!canInteract(targetPos, clickTime + 500L)) { "Same target must be blocked immediately after click" }
+    check(!canInteract(targetPos, clickTime + 5000L)) { "Same target must be blocked midway through 10s cooldown" }
+    check(!canInteract(targetPos, clickTime + 9999L)) { "Same target must be blocked just before cooldown expires" }
+
+    // At and after cooldown: allowed to interact again
+    check(canInteract(targetPos, clickTime + 10000L)) { "Same target must be allowed exactly when 10s cooldown expires" }
+    check(canInteract(targetPos, clickTime + 15000L)) { "Same target must be allowed after 10s cooldown has passed" }
+
+    // Different target: allowed immediately
+    val otherPos = net.minecraft.core.BlockPos(6, 10, 15)
+    check(canInteract(otherPos, clickTime + 500L)) { "Different target must not be blocked by another target's cooldown" }
+
+    // Re-triggering updates timestamp and resets cooldown
+    trackedClicks[targetPos] = clickTime + 10000L
+    check(!canInteract(targetPos, clickTime + 10500L)) { "Re-clicking target must re-arm the 10s cooldown" }
+    check(canInteract(targetPos, clickTime + 20000L)) { "Target must be re-interactable after second cooldown expires" }
 }
 

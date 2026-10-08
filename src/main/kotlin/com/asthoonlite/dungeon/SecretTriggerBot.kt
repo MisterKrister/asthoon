@@ -34,7 +34,7 @@ object SecretTriggerBot {
     }
 
     private fun tick() {
-        if (!Config.secretTriggerBotEnabled || !DungeonContext.inDungeon) return
+        if (!Config.secretTriggerBotEnabled || (!DungeonContext.inDungeon && !Config.secretHitboxAnywhere)) return
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
         val level = mc.level ?: return
@@ -51,8 +51,10 @@ object SecretTriggerBot {
         val eye = player.eyePosition
         if (eye.distanceTo(Vec3.atCenterOf(pos)) > 5.0) return
 
+        val cooldownMs = (Config.secretTriggerBotCooldown * 1000.0).toLong().coerceAtLeast(200L)
+
         // Cooldown cleanup
-        lastClicked.entries.removeIf { now - it.value > 3000L }
+        lastClicked.entries.removeIf { now - it.value > maxOf(cooldownMs * 2, 60000L) }
 
         // Simon Says start button:
         // When looking over the start button, click it 3 times at ~7 CPS with humanized jitter to skip
@@ -101,7 +103,7 @@ object SecretTriggerBot {
             return
         }
 
-        if (now - (lastClicked[pos] ?: 0L) < 400L) return
+        if (now - (lastClicked[pos] ?: 0L) < cooldownMs) return
 
         val state = level.getBlockState(pos)
         val block = state.block
@@ -113,8 +115,10 @@ object SecretTriggerBot {
         // Don't click blacklisted levers
         if (block is LeverBlock && !SecretHitboxes.isValidLever(pos)) return
 
-        // Don't click already-powered levers or buttons
-        if (block is LeverBlock && state.getValue(LeverBlock.POWERED)) return
+        // Don't click levers that were already powered before we ever interacted with them in dungeons
+        if (block is LeverBlock && state.getValue(LeverBlock.POWERED)) {
+            if (DungeonContext.inDungeon && !lastClicked.containsKey(pos)) return
+        }
         if (block is ButtonBlock && state.getValue(ButtonBlock.POWERED)) return
 
         if (SecretAura.isRightClickSecret(block)) {

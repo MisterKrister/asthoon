@@ -326,6 +326,10 @@ object Config {
         var pathfindingEnabled         : Boolean = false,
         var activePathfindingPresetId  : String  = "",
         var pathfindingDebugRender     : Boolean = true,
+
+        // ── Triggerbot Cooldowns ─────────────────────────────────────────────
+        var secretTriggerBotCooldown   : Double  = 10.0,
+        var terminalTriggerBotCooldown : Double  = 10.0,
     )
 
     var data = Data()
@@ -1239,6 +1243,14 @@ object Config {
     var pathfindingDebugRender: Boolean
         get() = data.pathfindingDebugRender
         set(v) { data.pathfindingDebugRender = v; save() }
+
+    var secretTriggerBotCooldown: Double
+        get() = data.secretTriggerBotCooldown.coerceIn(0.5, 60.0)
+        set(v) { data.secretTriggerBotCooldown = v.coerceIn(0.5, 60.0); save() }
+
+    var terminalTriggerBotCooldown: Double
+        get() = data.terminalTriggerBotCooldown.coerceIn(0.5, 60.0)
+        set(v) { data.terminalTriggerBotCooldown = v.coerceIn(0.5, 60.0); save() }
 
     fun load() {
         if (!configDir.exists()) configDir.mkdirs()

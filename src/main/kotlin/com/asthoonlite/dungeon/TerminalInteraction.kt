@@ -70,7 +70,9 @@ object TerminalInteraction {
         for (stand in nearbyStands) {
             val name = stand.customName?.string ?: continue
             if (name.contains("Completed", ignoreCase = true)) return false
-            if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) return false
+            if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) {
+                if (DungeonContext.inDungeon && !lastEntityClicks.containsKey(frame.id)) return false
+            }
         }
 
         // Check if mounted on / adjacent to a command block
@@ -101,7 +103,7 @@ object TerminalInteraction {
         }
 
         // In F7 / M7 dungeon boss rooms, any non-arrow item frame is a terminal interaction target
-        if (DungeonContext.inDungeon) {
+        if (DungeonContext.inDungeon || Config.autoTerminalAnywhere) {
             return true
         }
 
@@ -114,7 +116,9 @@ object TerminalInteraction {
     fun isTerminalArmorStand(stand: ArmorStand): Boolean {
         val name = stand.customName?.string ?: return false
         if (name.contains("Completed", ignoreCase = true)) return false
-        if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) return false
+        if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) {
+            if (DungeonContext.inDungeon && !lastEntityClicks.containsKey(stand.id)) return false
+        }
         return name.contains("Terminal", ignoreCase = true) || name.contains("Click Here", ignoreCase = true)
     }
 
@@ -131,7 +135,9 @@ object TerminalInteraction {
         for (stand in nearbyStands) {
             val name = stand.customName?.string ?: continue
             if (name.contains("Completed", ignoreCase = true)) return false
-            if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) return false
+            if (name.contains("Active", ignoreCase = true) && !name.contains("Inactive", ignoreCase = true)) {
+                if (DungeonContext.inDungeon && !lastBlockClicks.containsKey(pos)) return false
+            }
         }
         return true
     }
@@ -143,8 +149,10 @@ object TerminalInteraction {
         if (!DungeonContext.inDungeon && !Config.autoTerminalAnywhere) return
 
         val now = System.currentTimeMillis()
-        lastEntityClicks.entries.removeIf { now - it.value > 3000L }
-        lastBlockClicks.entries.removeIf { now - it.value > 3000L }
+        val cooldownMs = (Config.terminalTriggerBotCooldown * 1000.0).toLong().coerceAtLeast(200L)
+        val cleanupWindow = maxOf(cooldownMs * 2, 60000L)
+        lastEntityClicks.entries.removeIf { now - it.value > cleanupWindow }
+        lastBlockClicks.entries.removeIf { now - it.value > cleanupWindow }
 
         // Update cached terminal command blocks periodically (every 500ms)
         if (now - lastBlockScanTime > 500L) {
@@ -184,6 +192,7 @@ object TerminalInteraction {
     private fun tickTriggerBot(mc: Minecraft, level: Level, player: LocalPlayer, now: Long) {
         if (now - lastActionTime < 120L) return
         val hit = mc.hitResult ?: return
+        val cooldownMs = (Config.terminalTriggerBotCooldown * 1000.0).toLong().coerceAtLeast(200L)
 
         if (hit is EntityHitResult) {
             val entity = hit.entity
@@ -191,7 +200,7 @@ object TerminalInteraction {
                          (entity is ArmorStand && isTerminalArmorStand(entity))
             if (!isTerm) return
             if (player.eyePosition.distanceTo(entity.position()) > 5.0) return
-            if (now - (lastEntityClicks[entity.id] ?: 0L) < 800L) return
+            if (now - (lastEntityClicks[entity.id] ?: 0L) < cooldownMs) return
 
             player.swing(InteractionHand.MAIN_HAND)
             mc.gameMode?.interact(player, entity, hit, InteractionHand.MAIN_HAND)
@@ -201,7 +210,7 @@ object TerminalInteraction {
             val pos = hit.blockPos
             if (!isTerminalBlock(level, pos)) return
             if (player.eyePosition.distanceTo(Vec3.atCenterOf(pos)) > 5.0) return
-            if (now - (lastBlockClicks[pos] ?: 0L) < 800L) return
+            if (now - (lastBlockClicks[pos] ?: 0L) < cooldownMs) return
 
             player.swing(InteractionHand.MAIN_HAND)
             mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
@@ -215,6 +224,7 @@ object TerminalInteraction {
         val maxRange = Config.terminalAuraRange
         val eye = player.eyePosition
         val look = player.lookAngle
+        val cooldownMs = (Config.terminalTriggerBotCooldown * 1000.0).toLong().coerceAtLeast(200L)
 
         // 1. Scan for nearby terminal entities (ItemFrames / ArmorStands)
         val searchBox = player.boundingBox.inflate(maxRange)
@@ -225,7 +235,7 @@ object TerminalInteraction {
 
         var bestEntity: Pair<Entity, Double>? = null
         for (entity in entities) {
-            if (lastEntityClicks.containsKey(entity.id)) continue
+            if (now - (lastEntityClicks[entity.id] ?: 0L) < cooldownMs) continue
             val center = entity.position().add(0.0, entity.bbHeight / 2.0, 0.0)
             val dist = eye.distanceTo(center)
             if (dist > maxRange) continue
@@ -254,7 +264,7 @@ object TerminalInteraction {
         // 2. Scan for command blocks if no entity target was found
         var bestBlock: Pair<BlockPos, Double>? = null
         for (pos in cachedTerminalBlocks) {
-            if (lastBlockClicks.containsKey(pos)) continue
+            if (now - (lastBlockClicks[pos] ?: 0L) < cooldownMs) continue
             val center = Vec3.atCenterOf(pos)
             val dist = eye.distanceTo(center)
             if (dist > maxRange) continue

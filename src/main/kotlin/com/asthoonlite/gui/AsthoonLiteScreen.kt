@@ -579,6 +579,9 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.terminalHighlightEnabled }, { Config.terminalHighlightEnabled = it }),
                 ToggleRow("Terminal Triggerbot", "Automatically clicks terminal when looking at its interaction hitbox within range",
                     { Config.terminalTriggerBotEnabled }, { Config.terminalTriggerBotEnabled = it }),
+                WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 30.0f, Config.terminalTriggerBotCooldown.toFloat(), "Terminal Triggerbot Cooldown: ", "s") {
+                    Config.terminalTriggerBotCooldown = it.toDouble()
+                }),
                 ToggleRow("Terminal Aura", "Automatically opens terminals within reach and FOV",
                     { Config.terminalAuraEnabled }, { Config.terminalAuraEnabled = it }),
                 WidgetRow(FloatSlider(subX, 0, subW, 24, 2.0f, 6.0f, Config.terminalAuraRange.toFloat(), "Terminal Aura Range: ", " blocks") {
@@ -848,6 +851,9 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     SectionHeader("Secret Interaction & Aura"),
                     ToggleRow("Secret Triggerbot", "Auto-click levers, buttons, skulls, and secrets when looking at them",
                         { Config.secretTriggerBotEnabled }, { Config.secretTriggerBotEnabled = it }),
+                    WidgetRow(FloatSlider(subX, 0, subW, 24, 1.0f, 30.0f, Config.secretTriggerBotCooldown.toFloat(), "Secret Triggerbot Cooldown: ", "s") {
+                        Config.secretTriggerBotCooldown = it.toDouble()
+                    }),
                     ToggleRow("  ↳ Block Wrong Simon Clicks", "Prevents clicking or triggerbot from failing Simon Says on wrong buttons",
                         { Config.blockWrongDeviceClicks }, { Config.blockWrongDeviceClicks = it }),
                     ToggleRow("Auto-Close Secret Chest", "Instantly closes secret chest GUI on open",
