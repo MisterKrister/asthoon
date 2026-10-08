@@ -555,15 +555,20 @@ internal fun simonDeviceRegressionChecks() {
     }
 
     // 24. Auto-gap jump towards distant platform across chasm
-    fun canAutoGapJump(onGround: Boolean, isLedge: Boolean, distH: Double, isCrouch: Boolean): Boolean {
-        return onGround && isLedge && distH > 1.4 && !isCrouch
+    fun canAutoGapJump(nodeType: String, onGround: Boolean, isLedge: Boolean, distH: Double, isCrouch: Boolean): Boolean {
+        if (nodeType == "BONZO_STAFF") return false
+        return nodeType == "WALK" && onGround && isLedge && distH > 1.4 && !isCrouch
     }
-    // Approaching chasm ledge to distant platform (8.9m, e.g. Node 2 to Node 3): MUST JUMP!
-    check(canAutoGapJump(onGround = true, isLedge = true, distH = 8.9, isCrouch = false)) {
-        "Ledge jump to distant platform across chasm must trigger"
+    // Approaching chasm ledge to distant platform on WALK node: MUST JUMP!
+    check(canAutoGapJump("WALK", onGround = true, isLedge = true, distH = 8.9, isCrouch = false)) {
+        "Ledge jump to distant platform across chasm must trigger on WALK node"
+    }
+    // Approaching BONZO_STAFF node: must NEVER auto gap jump! (Must stay grounded for staff explosion)
+    check(!canAutoGapJump("BONZO_STAFF", onGround = true, isLedge = true, distH = 2.0, isCrouch = false)) {
+        "Approaching Bonzo staff node must NEVER auto gap jump"
     }
     // Already arrived on platform (distH <= 1.4): must NOT jump
-    check(!canAutoGapJump(onGround = true, isLedge = true, distH = 1.0, isCrouch = false)) {
+    check(!canAutoGapJump("WALK", onGround = true, isLedge = true, distH = 1.0, isCrouch = false)) {
         "Ledge jump must not trigger when already arrived on platform"
     }
 

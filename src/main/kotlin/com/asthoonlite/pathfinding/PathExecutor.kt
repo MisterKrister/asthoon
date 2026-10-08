@@ -119,7 +119,15 @@ object PathExecutor {
         resetSpecialNodeState()
         lastHandledNodeIndex = -1
 
-        val player = Minecraft.getInstance().player
+        val mc = Minecraft.getInstance()
+        if (mc.screen != null) {
+            mc.setScreen(null)
+        }
+        if (!mc.mouseHandler.isMouseGrabbed) {
+            mc.mouseHandler.grabMouse()
+        }
+
+        val player = mc.player
         player?.sendSystemMessage(
             Component.literal("§a[AsthoonLite] §fStarted path execution: §e${preset.name} §7(${preset.points.size} nodes)")
         )
@@ -176,6 +184,11 @@ object PathExecutor {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: run { if (isActive) stop(); return }
         val level = mc.level ?: run { if (isActive) stop(); return }
+
+        // Keep cursor locked/grabbed in window while route is running
+        if (isActive && mc.screen == null && !mc.mouseHandler.isMouseGrabbed) {
+            mc.mouseHandler.grabMouse()
+        }
 
         // Stop if player died
         if (player.isDeadOrDying) {
@@ -292,6 +305,12 @@ object PathExecutor {
 
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
+            // Keep player firmly grounded during approach to Bonzo launch point; clear any lingering jump pulse
+            if (bonzoState == BonzoState.IDLE && jumpTicksRemaining > 0) {
+                jumpTicksRemaining = 0
+                mc.options.keyJump.setDown(false)
+            }
+
             val isAtNodeElev = player.y >= target.y - 0.5 && player.y <= target.y + 1.2
             val toNextDx = if (nextTarget != null) nextTarget.x - player.x else target.x - player.x
             val toNextDz = if (nextTarget != null) nextTarget.z - player.z else target.z - player.z
@@ -566,17 +585,24 @@ object PathExecutor {
         val toTargetDz = target.z - player.z
         val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
         val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
-        // Auto gap jump: trigger whenever there is a chasm/drop ahead of the player leading to target platform
-        // (distH > 1.4 ensures we jump chasms while traveling to any node platform including BONZO_STAFF)
-        val canAutoGapJump = player.onGround() && isLedge && distH > 1.4 && !isCrouchNode
+        // Auto gap jump: trigger ONLY on WALK nodes when there is a drop ahead.
+        // BONZO_STAFF nodes must NEVER auto-jump during approach — they must stay grounded for the staff blast!
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK) && player.onGround() && isLedge && distH > 1.4 && !isCrouchNode
         val isObstacleCollision = player.horizontalCollision && player.onGround()
         val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
-        if (!isApproaching || isBonzoRunway) {
+        // BONZO_STAFF nodes must NEVER auto-jump during approach!
+        // The jump must occur strictly on the exact tick of initiateBonzoLaunch while grounded on the platform.
+        val shouldAutoJump = if (nodeType == RouteNodeType.BONZO_STAFF) {
+            false
+        } else {
+            canAutoGapJump || isObstacleCollision || isElevationStep
+        }
+
+        if (!isApproaching || isBonzoRunway || nodeType == RouteNodeType.BONZO_STAFF) {
             jumpTicksRemaining = 0
         } else {
-            jumpTicksRemaining = nextAutoJumpPulse(canAutoGapJump || isObstacleCollision || isElevationStep,
-                jumpTicksRemaining, mc.options.keyJump.isDown)
+            jumpTicksRemaining = nextAutoJumpPulse(shouldAutoJump, jumpTicksRemaining, mc.options.keyJump.isDown)
         }
 
         if (jumpTicksRemaining > 0) {

@@ -21,6 +21,13 @@ public class MixinTerminalCaptureMouseHandler {
         TerminalCapture.rawMouseButton(window, button.button(), button.modifiers(), action, System.nanoTime());
     }
 
+    @Inject(method = "turnPlayer(D)V", at = @At("HEAD"), cancellable = true)
+    private void asthoonlite$lockCursorDuringRoute(double delta, CallbackInfo ci) {
+        if (com.asthoonlite.pathfinding.PathExecutor.INSTANCE.isActive()) {
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "onScroll(JDD)V", at = @At("HEAD"))
     private void asthoonlite$captureScroll(long window, double horizontal, double vertical, CallbackInfo ci) {
         TerminalCapture.rawMouseScroll(window, horizontal, vertical, System.nanoTime());
