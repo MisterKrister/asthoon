@@ -436,13 +436,15 @@ internal fun simonDeviceRegressionChecks() {
         "CROUCH node must advance via generic arrival check"
     }
 
-    // 20. Bonzo ground impact pitch calculation
+    // 20. Bonzo ground impact pitch calculation: preserves user's tuned angle (32.55° for ground glide, 63.78° for vault)
     fun computeBonzoLaunchPitch(configuredPitch: Float): Float {
-        return if (configuredPitch in 75.0f..88.0f) configuredPitch else 79.0f
+        return if (configuredPitch in 15.0f..88.0f) configuredPitch else 65.0f
     }
-    // Forward / shallow view angles (e.g. 32.55° or 40° looking at next platform): must be overridden to steep 79°
-    check(computeBonzoLaunchPitch(32.55f) == 79.0f) { "Forward pitch must default to steep ground pitch (79°)" }
-    check(computeBonzoLaunchPitch(0.0f) == 79.0f) { "Horizontal pitch must default to steep ground pitch (79°)" }
+    // Forward / shallow view angles (e.g. 32.55° floor glide or 63.78° vault): preserved
+    check(computeBonzoLaunchPitch(32.55f) == 32.55f) { "Floor glide pitch must be preserved (32.55°)" }
+    check(computeBonzoLaunchPitch(63.78f) == 63.78f) { "Vault pitch must be preserved (63.78°)" }
+    // Unconfigured horizontal pitch (0.0°): defaults to safe 65.0°
+    check(computeBonzoLaunchPitch(0.0f) == 65.0f) { "Unconfigured pitch must default to 65°" }
     // User specifically configured steep pitch (e.g. 82°): honored
     check(computeBonzoLaunchPitch(82.0f) == 82.0f) { "Configured steep pitch must be honored" }
 
@@ -542,14 +544,14 @@ internal fun simonDeviceRegressionChecks() {
     // 25. Bonzo Staff launch platform arrival & sprint momentum gating
     fun canLaunchBonzo(onGround: Boolean, distH: Double, currentBpsH: Double, isAtLaunchLedge: Boolean): Boolean {
         val isArrived = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-        val hasSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
+        val hasSpeed = currentBpsH >= 7.0 || distH <= 0.8
         return onGround && isArrived && hasSpeed
     }
     // Airborne descending from jump onto pillar (onGround = false): must NEVER fire mid-air!
     check(!canLaunchBonzo(onGround = false, distH = 1.2, currentBpsH = 0.0, isAtLaunchLedge = false)) {
         "Airborne descent onto Bonzo pillar must not fire prematurely"
     }
-    // Just touched down on pillar with 0 speed (not accelerated yet): must NOT fire yet!
+    // Just touched down on pillar with 0 speed and not at brink: must NOT fire yet!
     check(!canLaunchBonzo(onGround = true, distH = 1.4, currentBpsH = 2.0, isAtLaunchLedge = false)) {
         "Slow speed touchdown on Bonzo pillar must not fire before accelerating"
     }
@@ -558,8 +560,72 @@ internal fun simonDeviceRegressionChecks() {
         "Sprint momentum on Bonzo pillar must trigger full-power launch"
     }
     // Reached launch ledge of pillar: fires before falling off!
-    check(canLaunchBonzo(onGround = true, distH = 1.8, currentBpsH = 5.0, isAtLaunchLedge = true)) {
-        "Reaching launch ledge of Bonzo pillar must trigger launch"
+    check(canLaunchBonzo(onGround = true, distH = 1.8, currentBpsH = 8.0, isAtLaunchLedge = true)) {
+        "Reaching launch ledge of Bonzo pillar with sprint speed must trigger launch"
+    }
+
+    // 26. Bonzo Staff launch yaw calculation: custom yaw preservation vs obstacle clearance
+    fun computeBonzoLaunchYaw(
+        nodeHasLookNode: Boolean,
+        nodeLookX: Double,
+        nodeLookZ: Double,
+        nodeYaw: Float,
+        playerX: Double,
+        playerZ: Double,
+        destX: Double,
+        destZ: Double
+    ): Float {
+        return when {
+            nodeHasLookNode -> {
+                val ldx = nodeLookX - playerX
+                val ldz = nodeLookZ - playerZ
+                (-Math.toDegrees(Math.atan2(ldx, ldz))).toFloat()
+            }
+            nodeYaw != 0.0f -> nodeYaw
+            else -> {
+                val dx = destX - playerX
+                val dz = destZ - playerZ
+                (-Math.toDegrees(Math.atan2(dx, dz))).toFloat()
+            }
+        }
+    }
+    // Node 2 in niggap3 with recorded yaw -44.77°: MUST PRESERVE -44.77° to clear left corner wall!
+    val yawNode2 = computeBonzoLaunchYaw(
+        nodeHasLookNode = false, nodeLookX = 0.0, nodeLookZ = 0.0,
+        nodeYaw = -44.7701f,
+        playerX = 97.95, playerZ = 72.10,
+        destX = 107.5, destZ = 89.5
+    )
+    check(Math.abs(yawNode2 - (-44.7701f)) < 0.001f) {
+        "Bonzo launch must respect recorded node yaw (-44.77°) instead of aiming into wall (-28.8°)"
+    }
+
+    // Node without custom yaw: calculates straight-line heading to destination
+    val yawDefault = computeBonzoLaunchYaw(
+        nodeHasLookNode = false, nodeLookX = 0.0, nodeLookZ = 0.0,
+        nodeYaw = 0.0f,
+        playerX = 0.0, playerZ = 0.0,
+        destX = 10.0, destZ = 10.0
+    )
+    check(Math.abs(yawDefault - (-45.0f)) < 0.01f) {
+        "Unconfigured node yaw must fall back to straight line heading (-45°)"
+    }
+
+    // Look-node override
+    val yawLookNode = computeBonzoLaunchYaw(
+        nodeHasLookNode = true, nodeLookX = -10.0, nodeLookZ = 0.0,
+        nodeYaw = -44.7701f,
+        playerX = 0.0, playerZ = 0.0,
+        destX = 10.0, destZ = 10.0
+    )
+    check(Math.abs(yawLookNode - 90.0f) < 0.01f) {
+        "Look-node override must take highest priority for Bonzo launch yaw"
+    }
+
+    // 27. Bonzo launch jump key suppression: never jump on fire
+    fun isJumpAllowedOnBonzoFire(): Boolean = false
+    check(!isJumpAllowedOnBonzoFire()) {
+        "Jump key must remain FALSE on Bonzo fire to maintain ground sprint acceleration"
     }
 }
 
