@@ -7,6 +7,7 @@ import com.asthoonlite.dungeon.TerminalInteraction
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.Minecraft
+import net.minecraft.client.player.LocalPlayer
 import net.minecraft.core.BlockPos
 import net.minecraft.network.chat.Component
 import net.minecraft.sounds.SoundEvents
@@ -16,6 +17,8 @@ import net.minecraft.world.InteractionHand
 import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.entity.decoration.ArmorStand
 import net.minecraft.world.entity.decoration.ItemFrame
+import net.minecraft.world.level.Level
+import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.world.phys.EntityHitResult
@@ -266,8 +269,10 @@ object PathExecutor {
 
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
-            val triggerDist = if (isHighSpeed) 3.8 else 2.4
-            if (distH <= triggerDist && distY <= 2.8) {
+            val triggerDist = if (isHighSpeed) 1.8 else 1.2
+            val canLaunch = (distH <= triggerDist && distY <= 1.5) &&
+                            (player.onGround() || player.fallDistance < 0.25)
+            if (canLaunch) {
                 initiateBonzoLaunch(points, isHighSpeed)
                 return
             }
@@ -366,12 +371,17 @@ object PathExecutor {
         // 5. Waypoint Lookahead, Look Node Aiming & Corner-Rounding
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
-        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 6.0) {
+        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 2.0) {
             val bDx = nextTarget.x - player.x
             val bDz = nextTarget.z - player.z
             val bYaw = (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
             val deltaYaw = Mth.wrapDegrees(bYaw - player.yRot)
-            val deltaPitch = (83.0f - player.xRot)
+            val desiredPitch = if (target.pitch in 15.0f..75.0f) {
+                target.pitch
+            } else {
+                if (nextTarget.y > player.y + 2.0) 32.0f else 55.0f
+            }
+            val deltaPitch = (desiredPitch - player.xRot)
             val maxTurnRate = 35.0f
             player.yRot += (deltaYaw * 0.55f).coerceIn(-maxTurnRate, maxTurnRate)
             player.xRot += (deltaPitch * 0.55f).coerceIn(-maxTurnRate, maxTurnRate)
@@ -414,7 +424,7 @@ object PathExecutor {
         }
 
         // 6. Movement Controls with Look-Node & Pre-Aim Strafe Compensation
-        val isPreAimingBonzo = (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 6.0)
+        val isPreAimingBonzo = (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 1.8)
         if ((target.hasLookNode || isPreAimingBonzo) && distH > 0.8) {
             val moveYaw = (-Math.toDegrees(atan2(target.x - player.x, target.z - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
@@ -434,10 +444,16 @@ object PathExecutor {
             mc.options.keySprint.setDown(true)
         }
 
-        // Jump handling: auto-jump on elevation step-up, obstacle collision, or Jump nodes
-        if (nodeType == RouteNodeType.JUMP || player.horizontalCollision || (target.y > player.y + 0.35 && distH < 2.5)) {
+        // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection, or Jump nodes
+        val isLedge = isLedgeOrGapAhead(level, player, player.yRot)
+        val shouldAutoJump = nodeType == RouteNodeType.JUMP ||
+                             player.horizontalCollision ||
+                             (target.y > player.y + 0.35 && distH < 3.0) ||
+                             (player.onGround() && isLedge && distH > 1.2)
+
+        if (shouldAutoJump) {
             mc.options.keyJump.setDown(true)
-        } else if (player.onGround()) {
+        } else if (player.onGround() && !isLedge) {
             mc.options.keyJump.setDown(false)
         }
 
@@ -525,9 +541,37 @@ object PathExecutor {
         return null
     }
 
+    private fun isLedgeOrGapAhead(level: Level, player: LocalPlayer, moveYaw: Float): Boolean {
+        val rad = Math.toRadians(-moveYaw.toDouble())
+        val nx = sin(rad)
+        val nz = cos(rad)
+
+        val footY = floor(player.y).toInt()
+        val isHazardOrAir: (net.minecraft.world.level.block.state.BlockState) -> Boolean = { state ->
+            state.isAir || state.`is`(Blocks.LAVA) || state.`is`(Blocks.WATER)
+        }
+
+        // Probe 0.9, 1.4, and 1.9 blocks ahead in movement direction
+        for (dist in listOf(0.9, 1.4, 1.9)) {
+            val probeX = player.x + nx * dist
+            val probeZ = player.z + nz * dist
+            val probeBlockPos = BlockPos(floor(probeX).toInt(), footY, floor(probeZ).toInt())
+
+            val stateAtFeet = level.getBlockState(probeBlockPos)
+            val stateBelow = level.getBlockState(probeBlockPos.below())
+
+            // If feet level AND 1 block below are air/lava/hazard, there is a drop/gap ahead!
+            if (isHazardOrAir(stateAtFeet) && isHazardOrAir(stateBelow)) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun initiateBonzoLaunch(points: List<PathPoint>, isHighSpeed: Boolean) {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
+        val currentNode = points[currentNodeIndex]
 
         // Auto-select Bonzo's Staff
         selectBonzoStaff()
@@ -535,25 +579,29 @@ object PathExecutor {
         // Launch towards the next waypoint in the route
         val nextIdx = currentNodeIndex + 1
         bonzoTargetNextIndex = nextIdx
-        val destination = points.getOrNull(nextIdx) ?: points[currentNodeIndex]
+        val destination = points.getOrNull(nextIdx) ?: currentNode
 
         val launchDx = destination.x - player.x
         val launchDz = destination.z - player.z
         val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
         bonzoLaunchYaw = launchYaw
 
-        // Snap body orientation and pitch firmly towards destination and down onto the platform floor
-        player.yRot = launchYaw
-        player.xRot = 83.0f
-
-        if (isHighSpeed) {
-            // High speed (e.g. 550 speed): release W and tap S for 1 tick to prevent sliding off platform edge
-            mc.options.keyUp.setDown(false)
-            mc.options.keyDown.setDown(true)
+        // Pitch: prioritize node's saved pitch if configured, else smart elevation-aware pitch
+        val launchPitch = if (currentNode.pitch in 15.0f..75.0f) {
+            currentNode.pitch
         } else {
-            mc.options.keyUp.setDown(true)
-            mc.options.keyDown.setDown(false)
+            if (destination.y > player.y + 2.0) 32.0f else 55.0f
         }
+
+        // Snap body orientation and pitch firmly towards destination
+        player.yRot = launchYaw
+        player.xRot = launchPitch
+
+        // Movement keys: Hold forward (W) and Sprint on both 500 and 550 speed.
+        // Advancing over the impact point ensures the blast catches the player from behind and boosts forward.
+        mc.options.keyUp.setDown(true)
+        mc.options.keyDown.setDown(false)
+        mc.options.keySprint.setDown(true)
 
         // Fire immediately so projectile hits the platform floor ahead/under player in time
         player.swing(InteractionHand.MAIN_HAND)
@@ -561,26 +609,30 @@ object PathExecutor {
         PathfindCapture.notifyBonzoShot("AUTO_EXECUTOR")
 
         bonzoState = BonzoState.POST_FIRE_PROPEL
-        bonzoTicksRemaining = 4
+        bonzoTicksRemaining = 6
     }
 
     private fun handleActiveBonzoState(points: List<PathPoint>, isHighSpeed: Boolean) {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
+        val currentNode = points.getOrNull(currentNodeIndex)
 
         when (bonzoState) {
             BonzoState.POST_FIRE_PROPEL -> {
-                // Release backward brake tap from the fire tick
-                mc.options.keyDown.setDown(false)
-
                 // Engage forward (W), Jump, and Sprint directly in direction of destination
                 mc.options.keyUp.setDown(true)
+                mc.options.keyDown.setDown(false)
                 mc.options.keyJump.setDown(true)
                 mc.options.keySprint.setDown(true)
 
                 // Hold body and pitch firmly in launch orientation
                 player.yRot = bonzoLaunchYaw
-                player.xRot = 83.0f
+                val launchPitch = if (currentNode != null && currentNode.pitch in 15.0f..75.0f) {
+                    currentNode.pitch
+                } else {
+                    50.0f
+                }
+                player.xRot = launchPitch
 
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {

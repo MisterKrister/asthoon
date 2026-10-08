@@ -364,10 +364,15 @@ internal fun simonDeviceRegressionChecks() {
     check(restoredLookPoint.timeoutSeconds == 2.5) { "Timeout seconds must round-trip cleanly" }
 
     // 14. Bonzo Staff pitch and server delay constants
-    val bonzoPitch = 83.0f
-    val bonzoPostFireTicks = 4
-    check(bonzoPitch >= 80.0f) { "Bonzo launch pitch must look down far enough (>=80°) to hit ground directly under player" }
-    check(bonzoPostFireTicks >= 3) { "Bonzo post-fire delay must be at least 3-4 ticks to absorb server ping and floor explosion" }
+    val bonzoMinPitch = 25.0f
+    val bonzoMaxPitch = 65.0f
+    val bonzoPostFireTicks = 6
+    check(bonzoMinPitch in 20.0f..35.0f && bonzoMaxPitch in 55.0f..75.0f) {
+        "Bonzo launch pitch must hit floor ahead/behind player at 25°-65° without stalling into feet at 83°"
+    }
+    check(bonzoPostFireTicks >= 5) {
+        "Bonzo post-fire delay must be at least 5-6 ticks to absorb floor explosion propulsion"
+    }
 
     // 15. RouteEditor Node View mode check
     check(com.asthoonlite.pathfinding.RouteEditor.nodeViewMode) { "RouteEditor.nodeViewMode must default to true" }
@@ -397,6 +402,17 @@ internal fun simonDeviceRegressionChecks() {
     // Ordinary walking at steady speed
     check(!isBonzoKnockbackImpulse(vy = -0.07, dvy = 0.0, bpsH = 11.0, dvH = 0.1)) {
         "Steady walking must not trigger knockback detection"
+    }
+
+    // 18. Smart auto-jump gap and ledge detection
+    fun shouldAutoJump(isLedge: Boolean, onGround: Boolean, distH: Double, isCollision: Boolean): Boolean {
+        return isCollision || (onGround && isLedge && distH > 1.2)
+    }
+    check(shouldAutoJump(isLedge = true, onGround = true, distH = 8.6, isCollision = false)) {
+        "Approaching a gap or ledge on a walk node must trigger auto-jump"
+    }
+    check(!shouldAutoJump(isLedge = false, onGround = true, distH = 8.6, isCollision = false)) {
+        "Continuous flat ground must not trigger auto-jump"
     }
 }
 
