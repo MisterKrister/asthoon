@@ -435,16 +435,41 @@ object PathExecutor {
 
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
-        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 2.5) {
-            // Smoothly pre-aim launch yaw and downward ground pitch (79°) as player approaches Bonzo node
-            val bDx = nextTarget.x - player.x
-            val bDz = nextTarget.z - player.z
-            val bYaw = (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
-            aimRotation(player, bYaw, 79.0f)
+        } else if (nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5) {
+            // Smoothly pre-aim launch yaw and pitch as player approaches Bonzo node
+            val preYaw = if (target.hasLookNode) {
+                val ldx = target.lookX - player.x
+                val ldz = target.lookZ - player.z
+                (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+            } else if (target.yaw != 0f) {
+                target.yaw
+            } else if (nextTarget != null) {
+                val bDx = nextTarget.x - player.x
+                val bDz = nextTarget.z - player.z
+                (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
+            } else {
+                target.yaw
+            }
+            val prePitch = if (target.pitch != 0f) target.pitch else 79.0f
+            aimRotation(player, preYaw, prePitch)
         } else {
-            val aimDx = aimPos.x - player.x
-            val aimDz = aimPos.z - player.z
-            val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
+            var aimDx = aimPos.x - player.x
+            var aimDz = aimPos.z - player.z
+            var aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
+
+            // Lookahead extension: when within 4.0m of the node, project lookahead along upcoming track
+            // to avoid camera whipping as player runs directly over or near the waypoint
+            if (aimDistH < 4.0 && nextTarget != null) {
+                val trackDx = nextTarget.x - target.x
+                val trackDz = nextTarget.z - target.z
+                val trackLen = sqrt(trackDx * trackDx + trackDz * trackDz)
+                if (trackLen > 0.1) {
+                    val extend = 4.0 - aimDistH
+                    aimDx += (trackDx / trackLen) * extend
+                    aimDz += (trackDz / trackLen) * extend
+                    aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
+                }
+            }
 
             val destYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
             val aimDy = aimPos.y - (player.y + player.eyeHeight)
@@ -651,13 +676,10 @@ object PathExecutor {
         current: Float, target: Float, velocity: Float, rate: Double, maxStep: Float, wrap: Boolean = false
     ): Pair<Float, Float> {
         val delta = if (wrap) Mth.wrapDegrees(target - current) else target - current
-        val goal = current + delta
-        val decay = exp(-rate)
-        val impulse = velocity - rate * delta
-        val step = (delta + (-delta + impulse) * decay).toFloat().coerceIn(-maxStep, maxStep)
-        val nextVelocity = ((velocity - rate * impulse) * decay).toFloat().coerceIn(-maxStep, maxStep)
-        return if (delta == 0f || (delta > 0f && step >= delta) || (delta < 0f && step <= delta))
-            goal to 0f else (current + step) to nextVelocity
+        if (abs(delta) < 0.02f) return (current + delta) to 0f
+        val alpha = (1.0 - exp(-rate)).toFloat().coerceIn(0.15f, 0.65f)
+        val step = (delta * alpha).coerceIn(-maxStep, maxStep)
+        return (current + step) to step
     }
 
     internal fun waypointLookahead(target: PathPoint, next: PathPoint?, distH: Double, arrival: Double): Vec3 {
@@ -747,16 +769,19 @@ object PathExecutor {
 
         val launchDx = destination.x - player.x
         val launchDz = destination.z - player.z
-        val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
+        val calculatedYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
+        val launchYaw = if (currentNode.hasLookNode) {
+            val ldx = currentNode.lookX - player.x
+            val ldz = currentNode.lookZ - player.z
+            (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+        } else if (currentNode.yaw != 0f) {
+            currentNode.yaw
+        } else {
+            calculatedYaw
+        }
         bonzoLaunchYaw = launchYaw
 
-        // Bonzo ground impact pitch:
-        // In Hypixel SkyBlock, to launch yourself across a chasm, the balloon MUST impact
-        // the solid platform floor right at the player's feet (78°–82°).
-        // If pitch is shallow (e.g. 30°–60°), the projectile flies off the platform into the void.
-        // A steep pitch of 79° guarantees the projectile hits the solid platform block 0.3 blocks
-        // under the player's feet in 1 tick, giving maximum forward and upward knockback boost.
-        val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
+        val launchPitch = if (currentNode.pitch != 0f) currentNode.pitch else 79.0f
 
         player.yRotO = launchYaw
         player.xRotO = launchPitch
