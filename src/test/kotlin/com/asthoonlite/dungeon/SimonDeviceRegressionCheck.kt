@@ -1,7 +1,5 @@
 package com.asthoonlite.dungeon
 
-import com.asthoonlite.pathfinding.PathExecutor
-import com.asthoonlite.pathfinding.PathPoint
 import com.asthoonlite.pathfinding.RouteNodeType
 
 internal fun simonDeviceRegressionChecks() {
@@ -563,24 +561,6 @@ internal fun simonDeviceRegressionChecks() {
     check(canLaunchBonzo(onGround = true, distH = 1.8, currentBpsH = 5.0, isAtLaunchLedge = true)) {
         "Reaching launch ledge of Bonzo pillar must trigger launch"
     }
-
-    // 26. Camera rotation critically damped spring & wrap handling
-    val (settledYaw, _) = PathExecutor.dampRotation(0f, 10f, 0f, 0.8, 12f, wrap = true)
-    check(settledYaw > 0f && settledYaw <= 10f) { "Damped yaw must step towards target" }
-
-    // Wrap around 180° boundary (-179° to 179° is 2° step, not 358°)
-    val (wrappedYaw, _) = PathExecutor.dampRotation(-179f, 179f, 0f, 0.8, 12f, wrap = true)
-    check(wrappedYaw < -179f || wrappedYaw > 179f || Math.abs(wrappedYaw - (-179f)) < 3f) {
-        "Damped rotation must take shortest angular path across wrap boundary"
-    }
-
-    // 27. Waypoint smoothstep lookahead blending
-    val lp1 = PathPoint(0.0, 70.0, 0.0, action = "WALK")
-    val lp2 = PathPoint(10.0, 70.0, 10.0, action = "WALK")
-    val lookFar = PathExecutor.waypointLookahead(lp1, lp2, distH = 10.0, arrival = 1.2)
-    check(lookFar.x == 0.0 && lookFar.z == 0.0) { "Lookahead when far must point to target" }
-    val lookNear = PathExecutor.waypointLookahead(lp1, lp2, distH = 2.0, arrival = 1.2)
-    check(lookNear.x > 0.0 && lookNear.z > 0.0) { "Lookahead when near must blend towards next waypoint" }
 }
 
 

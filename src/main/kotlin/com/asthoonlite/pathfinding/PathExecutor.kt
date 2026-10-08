@@ -76,9 +76,6 @@ object PathExecutor {
     private var bonzoTargetNextIndex = 0
     private var bonzoLaunchYaw = 0f
     private var jumpTicksRemaining = 0
-    private var cameraYawVelocity = 0f
-    private var cameraPitchVelocity = 0f
-    private var aimedThisTick = false
 
     // Specialized node states
     private var terminalScreenWasOpen = false
@@ -141,9 +138,6 @@ object PathExecutor {
         terminalTicks = 0
         timeoutTicksRemaining = -1
         bonzoLaunchYaw = 0f
-        cameraYawVelocity = 0f
-        cameraPitchVelocity = 0f
-        aimedThisTick = false
     }
 
     private fun releaseAllMovementKeys() {
@@ -164,7 +158,6 @@ object PathExecutor {
     }
 
     private fun tick() {
-        aimedThisTick = false
         val mc = Minecraft.getInstance()
         val player = mc.player ?: run { if (isActive) stop(); return }
         val level = mc.level ?: run { if (isActive) stop(); return }
@@ -427,9 +420,22 @@ object PathExecutor {
         }
 
         // 5. Waypoint Lookahead, Look Node Aiming & Smooth Natural Camera Control
-        val isClimbingToNode = target.y > player.y + 0.4
-        val arrivalThreshold = if (isClimbingToNode) 1.2 else if (isHighSpeed) 2.2 else 1.2
-        val aimPos = waypointLookahead(target, nextTarget, distH, arrivalThreshold)
+        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+            ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
+        } else {
+            0.0
+        }
+
+        val aimX = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.x * (1.0 - lookaheadBlend) + nextTarget.x * lookaheadBlend
+        } else {
+            target.x
+        }
+        val aimZ = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.z * (1.0 - lookaheadBlend) + nextTarget.z * lookaheadBlend
+        } else {
+            target.z
+        }
 
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
@@ -438,17 +444,36 @@ object PathExecutor {
             val bDx = nextTarget.x - player.x
             val bDz = nextTarget.z - player.z
             val bYaw = (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
-            aimRotation(player, bYaw, 79.0f)
+            val deltaYaw = Mth.wrapDegrees(bYaw - player.yRot)
+            val deltaPitch = (79.0f - player.xRot)
+            val maxTurnRate = 18.0f
+            player.yRot += (deltaYaw * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
+            player.xRot += (deltaPitch * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
         } else {
-            val aimDx = aimPos.x - player.x
-            val aimDz = aimPos.z - player.z
+            val aimDx = aimX - player.x
+            val aimDz = aimZ - player.z
             val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
 
             val destYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
-            val aimDy = aimPos.y - (player.y + player.eyeHeight)
+            // Natural human pitch: look toward eye-level horizon (Y + 1.2), not down at feet
+            val targetEyeY = target.y + 1.2
+            val aimDy = targetEyeY - (player.y + player.eyeHeight)
             val destPitch = (-Math.toDegrees(atan2(aimDy, aimDistH))).toFloat().coerceIn(-15.0f, 15.0f)
 
-            aimRotation(player, destYaw, destPitch)
+            // Organic human-like micro-sway
+            val swayYaw = (sin(tickCount * 0.35) * 0.22 + sin(tickCount * 0.8) * 0.10).toFloat()
+            val swayPitch = (cos(tickCount * 0.30) * 0.12).toFloat()
+
+            val deltaYaw = Mth.wrapDegrees(destYaw + swayYaw - player.yRot)
+            val deltaPitch = (destPitch + swayPitch - player.xRot)
+
+            // Smooth damping: turn smoothly without hard robotic locks or jarring jumps
+            val maxTurnRateYaw = 12.0f
+            val maxTurnRatePitch = 6.0f
+            val turnStepYaw = (deltaYaw * 0.25f).coerceIn(-maxTurnRateYaw, maxTurnRateYaw)
+            val turnStepPitch = (deltaPitch * 0.20f).coerceIn(-maxTurnRatePitch, maxTurnRatePitch)
+            player.yRot += turnStepYaw
+            player.xRot += turnStepPitch
         }
 
         // 6. Movement Controls with WASD Vectoring, In-Air Braking & Ledge Jump Handling
@@ -498,8 +523,8 @@ object PathExecutor {
             player.setSprinting(true)
         } else {
             // On ground: calculate movement vector towards target
-            val targetMoveX = if (distH > arrivalThreshold && nextTarget != null) aimPos.x else target.x
-            val targetMoveZ = if (distH > arrivalThreshold && nextTarget != null) aimPos.z else target.z
+            val targetMoveX = if (lookaheadBlend > 0.0 && nextTarget != null) aimX else target.x
+            val targetMoveZ = if (lookaheadBlend > 0.0 && nextTarget != null) aimZ else target.z
             val moveYaw = (-Math.toDegrees(atan2(targetMoveX - player.x, targetMoveZ - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
             val rad = Math.toRadians(angleDiff.toDouble())
@@ -596,6 +621,8 @@ object PathExecutor {
         }
 
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
+        val isClimbingToNode = target.y > player.y + 0.4
+        val arrivalThreshold = if (isClimbingToNode) 1.2 else if (isHighSpeed) 2.2 else 1.2
         val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.4 else distY < 2.2
 
         if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP &&
@@ -617,7 +644,7 @@ object PathExecutor {
         if (targetPos != null) aimTowardsVec(player, targetPos)
     }
 
-    private fun aimTowardsVec(player: LocalPlayer, targetPos: Vec3) {
+    private fun aimTowardsVec(player: net.minecraft.client.player.LocalPlayer, targetPos: Vec3) {
         val dx = targetPos.x - player.x
         val dy = targetPos.y - (player.y + player.eyeHeight)
         val dz = targetPos.z - player.z
@@ -626,47 +653,12 @@ object PathExecutor {
         val destYaw = (-Math.toDegrees(atan2(dx, dz))).toFloat()
         val destPitch = (-Math.toDegrees(atan2(dy, distH))).toFloat().coerceIn(-89f, 89f)
 
-        aimRotation(player, destYaw, destPitch)
-    }
+        val deltaYaw = Mth.wrapDegrees(destYaw - player.yRot)
+        val deltaPitch = (destPitch - player.xRot)
 
-    private fun aimRotation(player: LocalPlayer, yaw: Float, pitch: Float, launching: Boolean = false) {
-        if (aimedThisTick) return
-        aimedThisTick = true
-        val oldYaw = player.yRot
-        val oldPitch = player.xRot
-        val rate = if (launching) 1.6 else 0.8
-        val (nextYaw, yawVelocity) = dampRotation(oldYaw, yaw, cameraYawVelocity, rate, if (launching) 30f else 12f, wrap = true)
-        val (nextPitch, pitchVelocity) = dampRotation(oldPitch, pitch, cameraPitchVelocity, rate, if (launching) 30f else 12f)
-        cameraYawVelocity = yawVelocity
-        cameraPitchVelocity = pitchVelocity
-        player.yRotO = oldYaw
-        player.xRotO = oldPitch
-        player.yRot = nextYaw
-        player.xRot = nextPitch
-    }
-
-    internal fun dampRotation(
-        current: Float, target: Float, velocity: Float, rate: Double, maxStep: Float, wrap: Boolean = false
-    ): Pair<Float, Float> {
-        val delta = if (wrap) Mth.wrapDegrees(target - current) else target - current
-        val goal = current + delta
-        val decay = exp(-rate)
-        val impulse = velocity - rate * delta
-        val step = (delta + (-delta + impulse) * decay).toFloat().coerceIn(-maxStep, maxStep)
-        val nextVelocity = ((velocity - rate * impulse) * decay).toFloat().coerceIn(-maxStep, maxStep)
-        return if (delta == 0f || (delta > 0f && step >= delta) || (delta < 0f && step <= delta))
-            goal to 0f else (current + step) to nextVelocity
-    }
-
-    internal fun waypointLookahead(target: PathPoint, next: PathPoint?, distH: Double, arrival: Double): Vec3 {
-        val t = if ((target.nodeType() == RouteNodeType.WALK || target.nodeType() == RouteNodeType.JUMP) && next != null)
-            ((arrival + 3.0 - distH) / 3.0).coerceIn(0.0, 1.0) else 0.0
-        val blend = t * t * (3.0 - 2.0 * t)
-        return Vec3(
-            target.x + ((next?.x ?: target.x) - target.x) * blend,
-            target.y + 1.2 + ((next?.y ?: target.y) - target.y) * blend,
-            target.z + ((next?.z ?: target.z) - target.z) * blend
-        )
+        val maxTurnRate = 18.0f
+        player.yRot += (deltaYaw * 0.32f).coerceIn(-maxTurnRate, maxTurnRate)
+        player.xRot += (deltaPitch * 0.30f).coerceIn(-maxTurnRate, maxTurnRate)
     }
 
     private fun findTerminalTarget(level: net.minecraft.world.level.Level, center: Vec3): Vec3? {
@@ -756,10 +748,6 @@ object PathExecutor {
         // under the player's feet in 1 tick, giving maximum forward and upward knockback boost.
         val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
 
-        player.yRotO = launchYaw
-        player.xRotO = launchPitch
-        cameraYawVelocity = 0f
-        cameraPitchVelocity = 0f
         player.yRot = launchYaw
         player.xRot = launchPitch
 
@@ -809,7 +797,11 @@ object PathExecutor {
 
                 // Smoothly recover camera pitch from ground (79°) back up to eye level (10°)
                 // and keep yaw smoothly aligned with launchYaw
-                aimRotation(player, bonzoLaunchYaw, 10.0f)
+                val deltaYaw = Mth.wrapDegrees(bonzoLaunchYaw - player.yRot)
+                player.yRot += (deltaYaw * 0.35f).coerceIn(-12.0f, 12.0f)
+                val targetRecoveryPitch = 10.0f
+                val deltaPitch = targetRecoveryPitch - player.xRot
+                player.xRot += (deltaPitch * 0.30f).coerceIn(-15.0f, 15.0f)
 
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {
