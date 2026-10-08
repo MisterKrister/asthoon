@@ -71,6 +71,7 @@ object PathExecutor {
     private var bonzoState = BonzoState.IDLE
     private var bonzoTicksRemaining = 0
     private var bonzoTargetNextIndex = 0
+    private var bonzoLaunchYaw = 0f
 
     // Specialized node states
     private var terminalScreenWasOpen = false
@@ -98,6 +99,7 @@ object PathExecutor {
         isActive = true
         bonzoState = BonzoState.IDLE
         bonzoTicksRemaining = 0
+        bonzoLaunchYaw = 0f
         tickCount = 0L
         resetSpecialNodeState()
         lastHandledNodeIndex = -1
@@ -115,6 +117,7 @@ object PathExecutor {
         currentNodeIndex = 0
         bonzoState = BonzoState.IDLE
         bonzoTicksRemaining = 0
+        bonzoLaunchYaw = 0f
         resetSpecialNodeState()
         lastHandledNodeIndex = -1
 
@@ -128,6 +131,7 @@ object PathExecutor {
         terminalClicksDone = 0
         terminalTicks = 0
         timeoutTicksRemaining = -1
+        bonzoLaunchYaw = 0f
     }
 
     private fun releaseAllMovementKeys() {
@@ -257,8 +261,8 @@ object PathExecutor {
 
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
-            // Trigger Bonzo launch when inside trigger zone (~2.2 blocks)
-            if (distH <= 2.2 && distY <= 2.5) {
+            val triggerDist = if (isHighSpeed) 3.8 else 2.4
+            if (distH <= triggerDist && distY <= 2.8) {
                 initiateBonzoLaunch(points, isHighSpeed)
                 return
             }
@@ -357,6 +361,15 @@ object PathExecutor {
         // 5. Waypoint Lookahead, Look Node Aiming & Corner-Rounding
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
+        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 6.0) {
+            val bDx = nextTarget.x - player.x
+            val bDz = nextTarget.z - player.z
+            val bYaw = (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
+            val deltaYaw = Mth.wrapDegrees(bYaw - player.yRot)
+            val deltaPitch = (83.0f - player.xRot)
+            val maxTurnRate = 35.0f
+            player.yRot += (deltaYaw * 0.55f).coerceIn(-maxTurnRate, maxTurnRate)
+            player.xRot += (deltaPitch * 0.55f).coerceIn(-maxTurnRate, maxTurnRate)
         } else {
             val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
                 ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
@@ -395,8 +408,9 @@ object PathExecutor {
             player.xRot += deltaPitch * 0.42f
         }
 
-        // 6. Movement Controls with Look-Node Strafe Compensation
-        if (target.hasLookNode && distH > 0.8) {
+        // 6. Movement Controls with Look-Node & Pre-Aim Strafe Compensation
+        val isPreAimingBonzo = (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 6.0)
+        if ((target.hasLookNode || isPreAimingBonzo) && distH > 0.8) {
             val moveYaw = (-Math.toDegrees(atan2(target.x - player.x, target.z - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
             val rad = Math.toRadians(angleDiff.toDouble())
@@ -521,23 +535,27 @@ object PathExecutor {
         val launchDx = destination.x - player.x
         val launchDz = destination.z - player.z
         val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
-        val deltaYaw = Mth.wrapDegrees(launchYaw - player.yRot)
-        player.yRot += deltaYaw * 0.65f
+        bonzoLaunchYaw = launchYaw
 
-        // Look all the way down (~82°) so the projectile hits the ground properly under the player
-        player.xRot = 82.0f
+        // Snap body orientation and pitch firmly towards destination and down onto the platform floor
+        player.yRot = launchYaw
+        player.xRot = 83.0f
 
         if (isHighSpeed) {
-            // Over 400 speed (e.g. 550 speed): pause W for 2 ticks to fling cleanly
+            // High speed (e.g. 550 speed): release W and tap S for 1 tick to prevent sliding off platform edge
             mc.options.keyUp.setDown(false)
-            bonzoState = BonzoState.PRE_FIRE_PAUSE
-            bonzoTicksRemaining = 2
+            mc.options.keyDown.setDown(true)
         } else {
-            // Under 400 speed: fire immediately while maintaining forward momentum
             mc.options.keyUp.setDown(true)
-            bonzoState = BonzoState.FIRE_CLICK
-            bonzoTicksRemaining = 1
+            mc.options.keyDown.setDown(false)
         }
+
+        // Fire immediately so projectile hits the platform floor ahead/under player in time
+        player.swing(InteractionHand.MAIN_HAND)
+        mc.gameMode?.useItem(player, InteractionHand.MAIN_HAND)
+
+        bonzoState = BonzoState.POST_FIRE_PROPEL
+        bonzoTicksRemaining = 4
     }
 
     private fun handleActiveBonzoState(points: List<PathPoint>, isHighSpeed: Boolean) {
@@ -545,37 +563,23 @@ object PathExecutor {
         val player = mc.player ?: return
 
         when (bonzoState) {
-            BonzoState.PRE_FIRE_PAUSE -> {
-                mc.options.keyUp.setDown(false)
-                player.xRot = 82.0f
-                bonzoTicksRemaining--
-                if (bonzoTicksRemaining <= 0) {
-                    bonzoState = BonzoState.FIRE_CLICK
-                    bonzoTicksRemaining = 1
-                }
-            }
-
-            BonzoState.FIRE_CLICK -> {
-                player.xRot = 82.0f
-                // Fire Bonzo Staff explosive recoil
-                player.swing(InteractionHand.MAIN_HAND)
-                mc.gameMode?.useItem(player, InteractionHand.MAIN_HAND)
-                bonzoState = BonzoState.POST_FIRE_PROPEL
-                // Keep looking down for ~4 ticks (200ms) to accommodate server ping and floor explosion
-                bonzoTicksRemaining = 4
-            }
-
             BonzoState.POST_FIRE_PROPEL -> {
-                // Instantly re-engage forward (W) and Jump to ride the explosive propulsion
+                // Release backward brake tap from the fire tick
+                mc.options.keyDown.setDown(false)
+
+                // Engage forward (W), Jump, and Sprint directly in direction of destination
                 mc.options.keyUp.setDown(true)
                 mc.options.keyJump.setDown(true)
                 mc.options.keySprint.setDown(true)
-                player.xRot = 82.0f
+
+                // Hold body and pitch firmly in launch orientation
+                player.yRot = bonzoLaunchYaw
+                player.xRot = 83.0f
 
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {
                     bonzoState = BonzoState.IDLE
-                    // Immediately transition to the next walk waypoint
+                    // Immediately transition to the destination waypoint
                     if (bonzoTargetNextIndex < points.size) {
                         currentNodeIndex = bonzoTargetNextIndex
                     } else {
@@ -588,7 +592,9 @@ object PathExecutor {
                 }
             }
 
-            BonzoState.IDLE -> {}
+            else -> {
+                bonzoState = BonzoState.IDLE
+            }
         }
     }
 

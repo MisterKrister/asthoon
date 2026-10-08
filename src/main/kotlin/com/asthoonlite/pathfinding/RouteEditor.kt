@@ -42,6 +42,9 @@ object RouteEditor {
     var targetedLookPos: Vec3? = null
         private set
 
+    /** When true, renders in-world route nodes and tracers without crosshair select mode intercepting clicks. */
+    var nodeViewMode: Boolean = true
+
     var defaultNodeType: RouteNodeType = RouteNodeType.WALK
 
     // Currently selected node for coordinate/type editing in the GUI (-1 = none)

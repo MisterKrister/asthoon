@@ -1192,7 +1192,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     }
                     items.add(WidgetRow(btnDoneRoute))
 
-                    // Controls: Run Route / Stop, and In-World Crosshair Pick Mode
+                    // Controls: Run Route / Stop, and In-World Node View Toggle
                     val btnHalfW = (subW - 4) / 2
                     val isRunning = PathExecutor.isActive && PathExecutor.activePreset?.id == preset.id
                     val runBtnText = if (isRunning) "■ Stop Path Execution" else "▶ Run Route in World"
@@ -1201,31 +1201,22 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         if (isRunning) {
                             PathExecutor.stop()
                             Config.activePathfindingPresetId = ""
+                            rebuildTab(Tab.PATHFINDING)
                         } else {
                             Config.activePathfindingPresetId = preset.id
                             Config.pathfindingEnabled = true
                             PathExecutor.start(preset)
+                            onClose()
                         }
-                        rebuildTab(Tab.PATHFINDING)
                     }
 
-                    val pickText = if (RouteEditor.pickBlockMode) "Pick Crosshair: ON" else "Pick with Crosshair"
-                    val pickCol = if (RouteEditor.pickBlockMode) 0xFF06B6D4.toInt() else 0xFF38BDF8.toInt()
-                    val btnPick = ModernButton(subX + btnHalfW + 4, 0, btnHalfW, 24, Component.literal(pickText), pickCol) {
-                        RouteEditor.pickBlockMode = !RouteEditor.pickBlockMode
-                        if (RouteEditor.pickBlockMode) {
-                            minecraft.player?.sendSystemMessage(
-                                Component.literal("§a[AsthoonLite] §fCrosshair select mode §2ENABLED§f for route §e\"${preset.name}\"§f. Left-click blocks in the world to add waypoints. Press §bESC§f or type §b/asl routes crosshairselect false§f to exit.")
-                            )
-                            onClose()
-                        } else {
-                            minecraft.player?.sendSystemMessage(
-                                Component.literal("§e[AsthoonLite] §fCrosshair select mode §cDISABLED§f.")
-                            )
-                            rebuildTab(Tab.PATHFINDING)
-                        }
+                    val nodeViewText = if (RouteEditor.nodeViewMode) "👁 Node View: ON" else "👁 Node View: OFF"
+                    val nodeViewCol = if (RouteEditor.nodeViewMode) 0xFF06B6D4.toInt() else 0xFF64748B.toInt()
+                    val btnNodeView = ModernButton(subX + btnHalfW + 4, 0, btnHalfW, 24, Component.literal(nodeViewText), nodeViewCol) {
+                        RouteEditor.nodeViewMode = !RouteEditor.nodeViewMode
+                        rebuildTab(Tab.PATHFINDING)
                     }
-                    items.add(MultiWidgetRow(listOf(btnRun, btnPick), 24))
+                    items.add(MultiWidgetRow(listOf(btnRun, btnNodeView), 24))
 
                     // ── Add Waypoint Node ────────────────────────────────────
                     items.add(SectionHeader("Add Waypoint Node"))
@@ -1233,7 +1224,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         addNodeInputIndex = (preset.points.size + 1).toString()
                     }
 
-                    val btnAddPos = ModernButton(subX, 0, subW, 22, Component.literal("+ Add Node at Current Player Position (as Node #$addNodeInputIndex)"), 0xFF38BDF8.toInt()) {
+                    val btnAddPos = ModernButton(subX, 0, btnHalfW, 22, Component.literal("+ Add at Player Pos (#$addNodeInputIndex)"), 0xFF38BDF8.toInt()) {
                         val player = minecraft.player
                         if (player != null) {
                             val node = PathPoint(
@@ -1252,7 +1243,24 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                             rebuildTab(Tab.PATHFINDING)
                         }
                     }
-                    items.add(WidgetRow(btnAddPos))
+
+                    val pickText = if (RouteEditor.pickBlockMode) "⌖ Crosshair Pick: ON" else "⌖ Add with Crosshair"
+                    val pickCol = if (RouteEditor.pickBlockMode) 0xFF06B6D4.toInt() else 0xFF8B5CF6.toInt()
+                    val btnAddCrosshair = ModernButton(subX + btnHalfW + 4, 0, btnHalfW, 22, Component.literal(pickText), pickCol) {
+                        RouteEditor.pickBlockMode = !RouteEditor.pickBlockMode
+                        if (RouteEditor.pickBlockMode) {
+                            minecraft.player?.sendSystemMessage(
+                                Component.literal("§a[AsthoonLite] §fCrosshair select mode §2ENABLED§f for route §e\"${preset.name}\"§f. Left-click blocks in the world to add waypoints. Press §bESC§f or type §b/asl routes crosshairselect false§f to exit.")
+                            )
+                            onClose()
+                        } else {
+                            minecraft.player?.sendSystemMessage(
+                                Component.literal("§e[AsthoonLite] §fCrosshair select mode §cDISABLED§f.")
+                            )
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                    }
+                    items.add(MultiWidgetRow(listOf(btnAddPos, btnAddCrosshair), 22))
 
                     // 5 columns: Node #, X, Y, Z, Type
                     val colW = (subW - 16) / 5

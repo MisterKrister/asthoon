@@ -90,7 +90,7 @@ object PathfindingRenderer {
             } else null
         if (preset == null) return
 
-        if (!Config.pathfindingDebugRender && !RouteEditor.pickBlockMode && !RouteEditor.pickLookNodeMode && RouteEditor.activePreset == null) {
+        if (!Config.pathfindingDebugRender && !PathExecutor.isActive && !RouteEditor.pickBlockMode && !RouteEditor.pickLookNodeMode && !RouteEditor.nodeViewMode) {
             return
         }
 

@@ -364,10 +364,23 @@ internal fun simonDeviceRegressionChecks() {
     check(restoredLookPoint.timeoutSeconds == 2.5) { "Timeout seconds must round-trip cleanly" }
 
     // 14. Bonzo Staff pitch and server delay constants
-    val bonzoPitch = 82.0f
+    val bonzoPitch = 83.0f
     val bonzoPostFireTicks = 4
     check(bonzoPitch >= 80.0f) { "Bonzo launch pitch must look down far enough (>=80°) to hit ground directly under player" }
     check(bonzoPostFireTicks >= 3) { "Bonzo post-fire delay must be at least 3-4 ticks to absorb server ping and floor explosion" }
+
+    // 15. RouteEditor Node View mode check
+    check(com.asthoonlite.pathfinding.RouteEditor.nodeViewMode) { "RouteEditor.nodeViewMode must default to true" }
+
+    // 16. Directional Bonzo launch yaw calculation check (diagonally left)
+    fun computeLaunchYaw(playerX: Double, playerZ: Double, targetX: Double, targetZ: Double): Float {
+        val dx = targetX - playerX
+        val dz = targetZ - playerZ
+        return (-Math.toDegrees(kotlin.math.atan2(dx, dz))).toFloat()
+    }
+    // Target is diagonally left (e.g. player at (0, 0), target at (-10, 10))
+    val diagYaw = computeLaunchYaw(0.0, 0.0, -10.0, 10.0)
+    check(diagYaw == 45.0f) { "Bonzo launch yaw must point directly along vector to destination (45° for diagonally left)" }
 }
 
 
