@@ -131,6 +131,7 @@ object AsthoonLite : ClientModInitializer {
         com.asthoonlite.pathfinding.RouteEditor.register()
         com.asthoonlite.pathfinding.PathfindingRenderer.register()
         com.asthoonlite.pathfinding.PathExecutor.register()
+        com.asthoonlite.pathfinding.GoldorRouteShortcut.register()
 
         ClientTickEvents.END_CLIENT_TICK.register {
             DungeonServerTick.tick()

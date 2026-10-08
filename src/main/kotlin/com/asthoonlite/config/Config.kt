@@ -334,6 +334,8 @@ object Config {
         var dungeonMapStyle: Int = 0, // 0 = Devonian, 1 = Noamm
         var dungeonMapEditMode: Boolean = false,
         var starMobRenderMode: Int = 0, // 0 = Fill, 1 = Box
+        var goldorRouteKey: Int = -1,
+        var lastPathfindingPresetId: String = "",
     )
 
     var data = Data()
@@ -1259,6 +1261,14 @@ object Config {
     var pathfindingDebugRender: Boolean
         get() = data.pathfindingDebugRender
         set(v) { data.pathfindingDebugRender = v; save() }
+
+    var goldorRouteKey: Int
+        get() = data.goldorRouteKey
+        set(v) { data.goldorRouteKey = v; save() }
+
+    var lastPathfindingPresetId: String
+        get() = data.lastPathfindingPresetId
+        set(v) { data.lastPathfindingPresetId = v; save() }
 
     var secretTriggerBotCooldown: Double
         get() = data.secretTriggerBotCooldown.coerceIn(0.5, 60.0)

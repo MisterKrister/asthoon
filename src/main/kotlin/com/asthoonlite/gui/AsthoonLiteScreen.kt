@@ -156,6 +156,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var listeningForInventoryAutoClickerKey = false
     private lateinit var btnQuietModeKey: ModernButton
     private var listeningForQuietModeKey = false
+    private lateinit var btnGoldorRouteKey: ModernButton
+    private var listeningForGoldorRouteKey = false
     private lateinit var searchBox: EditBox
     private var searchQuery = ""
     private var scrollOffset = 0
@@ -298,6 +300,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
         listeningForQuietModeKey = false
+        listeningForGoldorRouteKey = false
 
         val px = px()
         val py = py()
@@ -461,6 +464,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         listeningForAutoClickerKey = false
         listeningForInventoryAutoClickerKey = false
         listeningForQuietModeKey = false
+        listeningForGoldorRouteKey = false
 
         val px = px()
         val all = getSearchableEntries(px)
@@ -1006,6 +1010,17 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.pathfindingEnabled }, { Config.pathfindingEnabled = it }))
                 items.add(ToggleRow("  ↳ Route Visualizer", "Renders 3D waypoints and path lines in world",
                     { Config.pathfindingDebugRender }, { Config.pathfindingDebugRender = it }))
+                items.add(WidgetRow(run {
+                    btnGoldorRouteKey = ModernButton(subX, 0, subW, 24, Component.literal(goldorRouteKeyLabel())) {
+                        listeningForGoldorRouteKey = true
+                        listeningForQuietModeKey = false
+                        listeningForAutoClickerKey = false
+                        listeningForInventoryAutoClickerKey = false
+                        btnGoldorRouteKey.message = Component.literal("Press a key (ESC = NONE)")
+                    }
+                    btnGoldorRouteKey
+                }))
+                items.add(NoteRow("Runs /tpto goldor, then starts the last played route after landing."))
 
                 items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("+ Create New Route Preset"), 0xFF10B981.toInt()) {
                     activePathfindingSection = PathfindingSection.CREATE_PRESET
@@ -1737,7 +1752,21 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return "Quiet Mode Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
     }
 
+    private fun goldorRouteKeyLabel(): String {
+        val key = Config.goldorRouteKey
+        if (listeningForGoldorRouteKey) return "Press a key (ESC = NONE)"
+        if (key < 0) return "Goldor + Last Route Keybind: NONE"
+        if (key in 0..7) return "Goldor + Last Route Keybind: MOUSE $key"
+        return "Goldor + Last Route Keybind: ${InputConstants.Type.KEYSYM.getOrCreate(key).displayName.string.uppercase()}"
+    }
+
     override fun keyPressed(event: KeyEvent): Boolean {
+        if (listeningForGoldorRouteKey) {
+            Config.goldorRouteKey = if (event.key() == GLFW.GLFW_KEY_ESCAPE) InputConstants.UNKNOWN.value else event.key()
+            listeningForGoldorRouteKey = false
+            btnGoldorRouteKey.message = Component.literal(goldorRouteKeyLabel())
+            return true
+        }
         if (listeningForQuietModeKey) {
             val keyCode = event.key()
             Config.quietModeKey = if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
@@ -1803,6 +1832,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     }
 
     override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        if (listeningForGoldorRouteKey && event.button() != 0) {
+            Config.goldorRouteKey = event.button()
+            listeningForGoldorRouteKey = false
+            btnGoldorRouteKey.message = Component.literal(goldorRouteKeyLabel())
+            return true
+        }
         if (listeningForQuietModeKey && event.button() != 0) {
             Config.quietModeKey = event.button()
             listeningForQuietModeKey = false

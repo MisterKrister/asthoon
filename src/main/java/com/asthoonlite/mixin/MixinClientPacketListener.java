@@ -12,6 +12,7 @@ import com.asthoonlite.dungeon.map.DungeonMapScanner;
 import com.asthoonlite.dungeon.solvers.CampHelper;
 import com.asthoonlite.dungeon.solvers.TicTacToeSolver;
 import com.asthoonlite.dungeon.solvers.TeleportMazeSolver;
+import com.asthoonlite.pathfinding.GoldorRouteShortcut;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientPacketListener;
@@ -42,6 +43,7 @@ public abstract class MixinClientPacketListener {
     @Inject(method = "handleMovePlayer(Lnet/minecraft/network/protocol/game/ClientboundPlayerPositionPacket;)V", at = @At("TAIL"))
     private void asthoonlite_onMovePlayer(ClientboundPlayerPositionPacket packet, CallbackInfo ci) {
         TeleportMazeSolver.INSTANCE.onPlayerPositionPacket(packet);
+        GoldorRouteShortcut.INSTANCE.onPlayerPositionPacket();
     }
 
     @Inject(method = "handleSoundEvent(Lnet/minecraft/network/protocol/game/ClientboundSoundPacket;)V", at = @At("TAIL"))
