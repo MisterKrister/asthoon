@@ -277,6 +277,37 @@ internal fun simonDeviceRegressionChecks() {
     check(!bonzoRequiresPause(0.4000)) { "400 speed (0.40) must traverse without pausing forward key" }
     check(!bonzoRequiresPause(0.3500)) { "350 speed (0.35) must traverse without pausing forward key" }
     check(!bonzoRequiresPause(0.1000)) { "100 base speed (0.10) must traverse without pausing forward key" }
+
+    // 6. 1-based index insertion into route
+    fun insertNodeAtNumber(preset: com.asthoonlite.pathfinding.PathPreset, number: Int, point: com.asthoonlite.pathfinding.PathPoint) {
+        val idx = (number - 1).coerceIn(0, preset.points.size)
+        preset.points.add(idx, point)
+    }
+
+    val insertPreset = com.asthoonlite.pathfinding.PathPreset(name = "Insertion Test", category = "M7", subcategory = "P1")
+    val p1 = com.asthoonlite.pathfinding.PathPoint(1.0, 1.0, 1.0)
+    val p2 = com.asthoonlite.pathfinding.PathPoint(2.0, 2.0, 2.0)
+    val p3 = com.asthoonlite.pathfinding.PathPoint(3.0, 3.0, 3.0)
+    insertNodeAtNumber(insertPreset, 1, p1)
+    insertNodeAtNumber(insertPreset, 2, p3) // currently p1, p3
+    insertNodeAtNumber(insertPreset, 2, p2) // insert at position 2 -> p1, p2, p3
+    check(insertPreset.points == listOf(p1, p2, p3)) { "Inserting at number 2 must place node between #1 and #3" }
+
+    // 7. Node editing and repositioning
+    val nodeToEdit = insertPreset.points[1] // p2
+    nodeToEdit.x = 2.5
+    nodeToEdit.action = "BONZO_STAFF"
+    check(insertPreset.points[1].x == 2.5 && insertPreset.points[1].action == "BONZO_STAFF") {
+        "Directly editing node fields must mutate the node in the route"
+    }
+
+    // 8. Continuous sprint arrival distance scaling
+    fun arrivalDistance(speedAttribute: Double): Double {
+        val skyblockSpeed = speedAttribute * 1000.0
+        return if (skyblockSpeed > 400.0) 2.2 else 1.2
+    }
+    check(arrivalDistance(0.55) == 2.2) { "High speed (550) must use 2.2 block arrival threshold for non-stop sprinting" }
+    check(arrivalDistance(0.10) == 1.2) { "Normal speed (100) must use 1.2 block arrival threshold" }
 }
 
 

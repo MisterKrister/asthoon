@@ -46,6 +46,15 @@ object RouteEditor {
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
+        net.fabricmc.fabric.api.client.screen.v1.ScreenEvents.AFTER_INIT.register { mc, screen, _, _ ->
+            if (pickBlockMode && screen is net.minecraft.client.gui.screens.PauseScreen) {
+                pickBlockMode = false
+                mc.setScreen(null)
+                mc.player?.sendSystemMessage(
+                    Component.literal("§e[AsthoonLite] §fCrosshair select mode §cDISABLED§f.")
+                )
+            }
+        }
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
             pickBlockMode = false
             targetedBlock = null

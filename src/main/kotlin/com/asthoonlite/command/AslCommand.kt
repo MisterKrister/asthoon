@@ -65,6 +65,34 @@ object AslCommand {
                                     1
                                 }
                         )
+                        .then(
+                            ClientCommands.literal("routes")
+                                .then(
+                                    ClientCommands.literal("crosshairselect")
+                                        .then(
+                                            ClientCommands.literal("true")
+                                                .executes { ctx ->
+                                                    com.asthoonlite.pathfinding.RouteEditor.pickBlockMode = true
+                                                    ctx.source.sendFeedback(Component.literal("§a[AsthoonLite] §fCrosshair select mode: §2ENABLED"))
+                                                    1
+                                                }
+                                        )
+                                        .then(
+                                            ClientCommands.literal("false")
+                                                .executes { ctx ->
+                                                    com.asthoonlite.pathfinding.RouteEditor.pickBlockMode = false
+                                                    ctx.source.sendFeedback(Component.literal("§a[AsthoonLite] §fCrosshair select mode: §cDISABLED"))
+                                                    1
+                                                }
+                                        )
+                                        .executes { ctx ->
+                                            com.asthoonlite.pathfinding.RouteEditor.pickBlockMode = !com.asthoonlite.pathfinding.RouteEditor.pickBlockMode
+                                            val st = if (com.asthoonlite.pathfinding.RouteEditor.pickBlockMode) "§2ENABLED" else "§cDISABLED"
+                                            ctx.source.sendFeedback(Component.literal("§a[AsthoonLite] §fCrosshair select mode: $st"))
+                                            1
+                                        }
+                                )
+                        )
                         .executes { _ ->
                             openConfigScreen()
                             1

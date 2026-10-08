@@ -4,7 +4,6 @@ import com.asthoonlite.config.Config
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.Minecraft
-import net.minecraft.core.Direction
 import net.minecraft.network.chat.Component
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
@@ -13,26 +12,29 @@ import net.minecraft.world.InteractionHand
 import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.world.phys.HitResult
-import net.minecraft.world.phys.Vec3
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Autonomous Path Executor with Speed-Aware Movement & Realistic Camera Control:
+ * Autonomous Path Executor with Speed-Aware Movement & Fluid Human-like Camera Control:
  *
- * Traversal & Camera:
- * - Traverses node-by-node according to route presets.
- * - Simulates realistic human camera motion via damped angle interpolation and organic micro-sway/tremor,
- *   closely reproducing the camera movements captured in user runs.
+ * Traversal & Fluid Continuity:
+ * - Begins pathfinding from player's current location directly towards node #1 (index 0).
+ * - Traverses node-by-node without halting between consecutive walk waypoints, utilizing
+ *   speed-scaled lookahead and corner-rounding to preserve sprinting momentum.
+ * - Simulates authentic human camera steering with damped angle interpolation and
+ *   organic micro-sway/tremor derived from recorded high-speed runs.
  *
  * Bonzo Staff Mechanics:
- * - Reads player speed attribute ([Attributes.MOVEMENT_SPEED] * 1000).
- * - When at a [RouteNodeType.BONZO_STAFF] waypoint:
- *   - At > 400 speed (e.g. 550 speed), pauses holding W for 1-2 ticks while pitching down (~45°),
- *     fires the Bonzo Staff, then re-engages W + Jump to ride the explosive boost without momentum cancellation.
- *   - At <= 400 speed, traverses while pitching down without pausing W.
+ * - A Bonzo Staff waypoint acts as an explosive propulsion trigger zone.
+ * - When entering the trigger zone of a Bonzo waypoint, it immediately launches towards
+ *   the subsequent waypoint:
+ *   - At > 400 speed (e.g. 550 speed), pauses forward (W) for 1 tick while pitching down (~48°),
+ *     fires the Bonzo Staff, and instantly re-engages forward + jump.
+ *   - At <= 400 speed, maintains forward movement while pitching down and firing.
+ *   - Advances target to the next walk waypoint immediately, seamlessly flying forward.
  *
  * Mobility Constraints:
  * - Strictly enforces M7 constraints (strictly no AOTV / Etherwarp).
@@ -60,6 +62,7 @@ object PathExecutor {
 
     private var bonzoState = BonzoState.IDLE
     private var bonzoTicksRemaining = 0
+    private var bonzoTargetNextIndex = 0
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
@@ -118,7 +121,7 @@ object PathExecutor {
         val level = mc.level ?: run { stop(); return }
         val preset = activePreset ?: run { stop(); return }
 
-        // Stop if any full screen GUI (except chat) is opened or pathfinding toggled off
+        // Stop if any menu (except chat) is opened or pathfinding toggled off
         if (mc.screen != null && mc.screen !is net.minecraft.client.gui.screens.ChatScreen) {
             stop()
             return
@@ -138,6 +141,7 @@ object PathExecutor {
 
         val target = points[currentNodeIndex]
         val nodeType = target.nodeType()
+        val nextTarget = points.getOrNull(currentNodeIndex + 1)
 
         val dx = target.x - player.x
         val dy = target.y - (player.y + player.eyeHeight)
@@ -145,43 +149,79 @@ object PathExecutor {
         val distH = sqrt(dx * dx + dz * dz)
         val distY = Math.abs(target.y - player.y)
 
-        // 1. Handle Bonzo's Staff special execution
-        if (nodeType == RouteNodeType.BONZO_STAFF) {
-            val speedAttr = player.getAttributeValue(Attributes.MOVEMENT_SPEED)
-            val skyblockSpeed = speedAttr * 1000.0 // e.g. 550 speed = 0.55 * 1000
-            val highSpeedPause = skyblockSpeed > 400.0
+        // Read player speed (Hypixel Skyblock speed = attribute * 1000)
+        val speedAttr = player.getAttributeValue(Attributes.MOVEMENT_SPEED)
+        val skyblockSpeed = speedAttr * 1000.0
+        val isHighSpeed = skyblockSpeed > 400.0
 
-            handleBonzoStep(target, dx, dz, distH, highSpeedPause)
+        // 1. Handle Active Bonzo Staff Execution State Machine
+        if (bonzoState != BonzoState.IDLE) {
+            handleActiveBonzoState(points, isHighSpeed)
             return
         }
 
-        // 2. Aim camera toward target waypoint with realistic micro-sway
-        val destYaw = (-Math.toDegrees(atan2(dx, dz))).toFloat()
-        val destPitch = (-Math.toDegrees(atan2(dy, distH))).toFloat().coerceIn(-89f, 89f)
+        // 2. Handle approaching a Bonzo Staff node
+        if (nodeType == RouteNodeType.BONZO_STAFF) {
+            // Trigger Bonzo launch when inside trigger zone (~2.0 blocks) or if already close
+            if (distH <= 2.2 && distY <= 2.5) {
+                initiateBonzoLaunch(points, isHighSpeed)
+                return
+            }
+            // Otherwise, sprint towards the Bonzo trigger zone
+        }
+
+        // 3. Waypoint Lookahead & Corner-Rounding
+        // When approaching a walk waypoint, smoothly blend aim towards the next waypoint
+        // so the player rounds corners naturally without deceleration.
+        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+            ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
+        } else {
+            0.0
+        }
+
+        val aimX = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.x * (1.0 - lookaheadBlend) + nextTarget.x * lookaheadBlend
+        } else {
+            target.x
+        }
+        val aimZ = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.z * (1.0 - lookaheadBlend) + nextTarget.z * lookaheadBlend
+        } else {
+            target.z
+        }
+
+        val aimDx = aimX - player.x
+        val aimDz = aimZ - player.z
+        val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
+
+        val destYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
+        val destPitch = (-Math.toDegrees(atan2(dy, aimDistH))).toFloat().coerceIn(-89f, 89f)
 
         // Organic micro-sway matching recorded run data (simulates player hand tremors and head bob)
-        val swayYaw = (sin(tickCount * 0.45) * 0.45 + sin(tickCount * 0.95) * 0.25).toFloat()
-        val swayPitch = (cos(tickCount * 0.4) * 0.35).toFloat()
+        val swayYaw = (sin(tickCount * 0.45) * 0.35 + sin(tickCount * 0.95) * 0.18).toFloat()
+        val swayPitch = (cos(tickCount * 0.40) * 0.22).toFloat()
 
         val deltaYaw = Mth.wrapDegrees(destYaw + swayYaw - player.yRot)
         val deltaPitch = (destPitch + swayPitch - player.xRot)
 
-        // Smooth human rotation interpolation
-        player.yRot += deltaYaw * 0.38f
-        player.xRot += deltaPitch * 0.38f
+        // Smooth human rotation interpolation with realistic turn-rate damping
+        val maxTurnRate = 32.0f
+        val turnStep = (deltaYaw * 0.42f).coerceIn(-maxTurnRate, maxTurnRate)
+        player.yRot += turnStep
+        player.xRot += deltaPitch * 0.42f
 
-        // 3. Movement controls
+        // 4. Movement Controls: Continuous Forward Sprinting
         mc.options.keyUp.setDown(true)
         mc.options.keySprint.setDown(true)
 
-        // Jump handling
-        if (nodeType == RouteNodeType.JUMP || player.horizontalCollision || (target.y > player.y + 0.5 && distH < 2.0)) {
+        // Jump handling: auto-jump on elevation step-up, obstacle collision, or Jump nodes
+        if (nodeType == RouteNodeType.JUMP || player.horizontalCollision || (target.y > player.y + 0.35 && distH < 2.5)) {
             mc.options.keyJump.setDown(true)
         } else if (player.onGround()) {
             mc.options.keyJump.setDown(false)
         }
 
-        // 4. Interaction node handling
+        // 5. Interaction Node Handling
         if (nodeType == RouteNodeType.INTERACT && distH < 3.8 && distY < 3.0) {
             val hit = mc.hitResult
             if (hit != null && hit.type == HitResult.Type.BLOCK) {
@@ -195,8 +235,11 @@ object PathExecutor {
             return
         }
 
-        // 5. Waypoint arrival check
-        if (distH < 0.95 && distY < 1.6) {
+        // 6. Fluid Waypoint Transition: Speed-Scaled Arrival Check
+        // At high speeds (~16-25 bps), arrival threshold is larger to prevent overshooting or stutter
+        val arrivalThreshold = if (isHighSpeed) 2.2 else 1.2
+        if (distH < arrivalThreshold && distY < 2.2) {
+            // Immediately advance to next waypoint without dropping forward key
             currentNodeIndex++
             if (currentNodeIndex >= points.size) {
                 finishRoute(preset)
@@ -204,43 +247,46 @@ object PathExecutor {
         }
     }
 
-    private fun handleBonzoStep(
-        target: PathPoint,
-        dx: Double,
-        dz: Double,
-        distH: Double,
-        highSpeedPause: Boolean
-    ) {
+    private fun initiateBonzoLaunch(points: List<PathPoint>, isHighSpeed: Boolean) {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
 
-        // Auto-switch to Bonzo's Staff if in hotbar
+        // Auto-select Bonzo's Staff
         selectBonzoStaff()
 
-        // Direction to propel forward (Bonzo fires behind player or down-backwards)
-        val destYaw = (-Math.toDegrees(atan2(dx, dz))).toFloat()
-        val deltaYaw = Mth.wrapDegrees(destYaw - player.yRot)
-        player.yRot += deltaYaw * 0.45f
+        // Launch towards the next waypoint in the route
+        val nextIdx = currentNodeIndex + 1
+        bonzoTargetNextIndex = nextIdx
+        val destination = points.getOrNull(nextIdx) ?: points[currentNodeIndex]
 
-        // Look down ~45°-55° to get maximum propulsion arc
+        val launchDx = destination.x - player.x
+        val launchDz = destination.z - player.z
+        val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
+        val deltaYaw = Mth.wrapDegrees(launchYaw - player.yRot)
+        player.yRot += deltaYaw * 0.60f
+
+        // Flick pitch down ~48° to catch explosive propulsion
         val targetPitch = 48.0f
-        player.xRot += (targetPitch - player.xRot) * 0.50f
+        player.xRot += (targetPitch - player.xRot) * 0.65f
+
+        if (isHighSpeed) {
+            // Over 400 speed (e.g. 550 speed): pause W for 1-2 ticks
+            mc.options.keyUp.setDown(false)
+            bonzoState = BonzoState.PRE_FIRE_PAUSE
+            bonzoTicksRemaining = 2
+        } else {
+            // Under 400 speed: fire immediately while moving forward
+            mc.options.keyUp.setDown(true)
+            bonzoState = BonzoState.FIRE_CLICK
+            bonzoTicksRemaining = 1
+        }
+    }
+
+    private fun handleActiveBonzoState(points: List<PathPoint>, isHighSpeed: Boolean) {
+        val mc = Minecraft.getInstance()
+        val player = mc.player ?: return
 
         when (bonzoState) {
-            BonzoState.IDLE -> {
-                if (highSpeedPause) {
-                    // Over 400 speed (e.g. 550 speed): stop holding W for 1-2 ticks
-                    mc.options.keyUp.setDown(false)
-                    bonzoState = BonzoState.PRE_FIRE_PAUSE
-                    bonzoTicksRemaining = 2
-                } else {
-                    // Under 400 speed: keep traversing while pitching down
-                    mc.options.keyUp.setDown(true)
-                    bonzoState = BonzoState.FIRE_CLICK
-                    bonzoTicksRemaining = 1
-                }
-            }
-
             BonzoState.PRE_FIRE_PAUSE -> {
                 mc.options.keyUp.setDown(false)
                 bonzoTicksRemaining--
@@ -251,15 +297,15 @@ object PathExecutor {
             }
 
             BonzoState.FIRE_CLICK -> {
-                // Fire Bonzo Staff
+                // Fire Bonzo Staff explosive recoil
                 player.swing(InteractionHand.MAIN_HAND)
                 mc.gameMode?.useItem(player, InteractionHand.MAIN_HAND)
                 bonzoState = BonzoState.POST_FIRE_PROPEL
-                bonzoTicksRemaining = 2
+                bonzoTicksRemaining = 1
             }
 
             BonzoState.POST_FIRE_PROPEL -> {
-                // Immediately re-engage W and Jump to ride the explosive boost
+                // Instantly re-engage forward (W) and Jump to ride the explosive propulsion
                 mc.options.keyUp.setDown(true)
                 mc.options.keyJump.setDown(true)
                 mc.options.keySprint.setDown(true)
@@ -267,9 +313,19 @@ object PathExecutor {
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {
                     bonzoState = BonzoState.IDLE
-                    currentNodeIndex++
+                    // Immediately transition to the next walk waypoint
+                    if (bonzoTargetNextIndex < points.size) {
+                        currentNodeIndex = bonzoTargetNextIndex
+                    } else {
+                        currentNodeIndex++
+                    }
+                    if (currentNodeIndex >= points.size) {
+                        activePreset?.let { finishRoute(it) }
+                    }
                 }
             }
+
+            BonzoState.IDLE -> {}
         }
     }
 
