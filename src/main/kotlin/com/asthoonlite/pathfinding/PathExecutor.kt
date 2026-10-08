@@ -289,12 +289,18 @@ object PathExecutor {
             val nextYaw = (-Math.toDegrees(atan2(toNextDx, toNextDz))).toFloat()
             val isAtLaunchLedge = isLedgeOrGapAhead(level, player, nextYaw)
 
-            // At 500-550 speed (15+ bps, ~0.8m/tick), distH <= 3.2m triggers while on the solid platform
-            // before sprinting off the edge into the chasm.
-            val isArrivedOnPlatform = distH <= 3.2 || isAtLaunchLedge
-            val hasLaunchSpeed = currentBpsH >= 5.0 || isAtLaunchLedge || distH <= 1.0
-            val isGroundedOrStepping = player.onGround() || (player.fallDistance < 0.6 && player.deltaMovement.y > -0.40)
-            val canLaunch = isGroundedOrStepping && !player.isInLava && !player.isInWater &&
+            // Proximity check:
+            // Node 0 (start node) triggers when firmly grounded within 2.2m.
+            // Subsequent Bonzo nodes trigger within 2.6m, or up to 3.4m if arriving at the chasm launch ledge.
+            // isAtLaunchLedge must NEVER trigger when far from the node (e.g. 8+ meters away at the previous landing spot)!
+            val isArrivedOnPlatform = if (currentNodeIndex == 0) {
+                distH <= 2.2
+            } else {
+                distH <= 2.6 || (isAtLaunchLedge && distH <= 3.4)
+            }
+            val hasLaunchSpeed = currentBpsH >= 5.0 || (isAtLaunchLedge && distH <= 3.4) || (currentNodeIndex == 0 && distH <= 1.2)
+            val isGrounded = player.onGround()
+            val canLaunch = isGrounded && !player.isInLava && !player.isInWater &&
                             isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed
 
             if (canLaunch) {
@@ -669,7 +675,14 @@ object PathExecutor {
 
         when {
             bonzoState == BonzoState.POST_FIRE_PROPEL -> {
-                goalYaw = bonzoLaunchYaw
+                val destNode = points.getOrNull(bonzoTargetNextIndex) ?: points.getOrNull(currentNodeIndex + 1)
+                goalYaw = if (destNode != null) {
+                    val sdx = destNode.x - predX
+                    val sdz = destNode.z - predZ
+                    (-Math.toDegrees(atan2(sdx, sdz))).toFloat()
+                } else {
+                    bonzoLaunchYaw
+                }
                 goalPitch = 10.0f
                 isFastAim = true
             }
@@ -972,8 +985,16 @@ object PathExecutor {
                 }
 
                 // Smoothly recover camera pitch from ground (79°) back up to eye level (10°)
-                // and keep yaw smoothly aligned with launchYaw
-                aimRotation(player, bonzoLaunchYaw, 10.0f, launching = true)
+                // and steer towards destination waypoint during flight
+                val destPoint = points.getOrNull(bonzoTargetNextIndex)
+                val steerYaw = if (destPoint != null) {
+                    val sdx = destPoint.x - player.x
+                    val sdz = destPoint.z - player.z
+                    (-Math.toDegrees(atan2(sdx, sdz))).toFloat()
+                } else {
+                    bonzoLaunchYaw
+                }
+                aimRotation(player, steerYaw, 10.0f, launching = true)
 
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {

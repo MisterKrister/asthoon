@@ -16,8 +16,8 @@ public abstract class MixinGameRenderer {
         EtherwarpOverlay.INSTANCE.close();
     }
 
-    @Inject(method = "renderLevel(Lnet/minecraft/client/DeltaTracker;)V", at = @At("HEAD"))
-    private void asthoonlite_onRenderLevel(DeltaTracker deltaTracker, CallbackInfo ci) {
+    @Inject(method = "update(Lnet/minecraft/client/DeltaTracker;Z)V", at = @At("HEAD"))
+    private void asthoonlite_onUpdate(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
         PathExecutor.INSTANCE.onRenderFrame(deltaTracker);
     }
 }
