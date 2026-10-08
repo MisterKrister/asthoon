@@ -54,6 +54,35 @@ object PathfindingRenderer {
             }
         }
 
+        // 1b. Highlight targeted position (air or block) when "Pick Look Node" mode is active
+        if (RouteEditor.pickLookNodeMode) {
+            val target = RouteEditor.targetedLookPos
+            if (target != null) {
+                val pulse = (sin(System.currentTimeMillis() / 150.0) * 0.15 + 0.85).toFloat()
+                val half = 0.20
+                WorldBoxRenderer.queueFilled(
+                    target.x - half, target.y - half, target.z - half,
+                    target.x + half, target.y + half, target.z + half,
+                    0.85f * pulse, 0.25f * pulse, 0.95f * pulse, 0.40f,
+                    throughWalls = true
+                )
+                WorldBoxRenderer.queueOutline(
+                    target.x - half, target.y - half, target.z - half,
+                    target.x + half, target.y + half, target.z + half,
+                    0.95f * pulse, 0.45f * pulse, 1.0f * pulse, 0.95f,
+                    thickness = 0.04,
+                    throughWalls = true
+                )
+                WorldTextRenderer.queueText(
+                    "⌖ CLICK TO SET LOOK NODE (AIR/BLOCK)",
+                    target.x, target.y + 0.45, target.z,
+                    scale = 0.85f,
+                    color = 0xFFD946EF.toInt(),
+                    throughWalls = true
+                )
+            }
+        }
+
         // 2. Render active preset nodes and tracers
         val preset = RouteEditor.activePreset
             ?: if (Config.pathfindingEnabled || Config.pathfindingDebugRender) {
@@ -61,7 +90,7 @@ object PathfindingRenderer {
             } else null
         if (preset == null) return
 
-        if (!Config.pathfindingDebugRender && !RouteEditor.pickBlockMode && RouteEditor.activePreset == null) {
+        if (!Config.pathfindingDebugRender && !RouteEditor.pickBlockMode && !RouteEditor.pickLookNodeMode && RouteEditor.activePreset == null) {
             return
         }
 
@@ -108,8 +137,12 @@ object PathfindingRenderer {
             WorldBoxRenderer.queueFilled(x1, y1, z1, x2, y2, z2, r, g, b, a, throughWalls = true)
             WorldBoxRenderer.queueOutline(x1, y1, z1, x2, y2, z2, r, g, b, 0.90f, thickness = 0.03, throughWalls = true)
 
-            // In-world label: #1 [WALK]
-            val label = "#${i + 1} [${nodeType.displayName}]"
+            // In-world label: #1 [WALK] or #1 [TIMEOUT 2.0s]
+            val label = if (nodeType == RouteNodeType.TIMEOUT) {
+                "#${i + 1} [${nodeType.displayName} ${pt.timeoutSeconds}s]"
+            } else {
+                "#${i + 1} [${nodeType.displayName}]"
+            }
             WorldTextRenderer.queueText(
                 label,
                 pt.x, pt.y + 0.70, pt.z,
@@ -117,6 +150,38 @@ object PathfindingRenderer {
                 color = badgeCol,
                 throughWalls = true
             )
+
+            // Look Node Marker & Tracer Line
+            if (pt.hasLookNode) {
+                val lHalf = 0.16
+                WorldBoxRenderer.queueFilled(
+                    pt.lookX - lHalf, pt.lookY - lHalf, pt.lookZ - lHalf,
+                    pt.lookX + lHalf, pt.lookY + lHalf, pt.lookZ + lHalf,
+                    0.20f, 0.80f, 0.95f, 0.45f,
+                    throughWalls = true
+                )
+                WorldBoxRenderer.queueOutline(
+                    pt.lookX - lHalf, pt.lookY - lHalf, pt.lookZ - lHalf,
+                    pt.lookX + lHalf, pt.lookY + lHalf, pt.lookZ + lHalf,
+                    0.35f, 0.90f, 1.0f, 0.90f,
+                    thickness = 0.03,
+                    throughWalls = true
+                )
+                WorldTextRenderer.queueText(
+                    "#${i + 1} [LOOK]",
+                    pt.lookX, pt.lookY + 0.35, pt.lookZ,
+                    scale = 0.70f,
+                    color = 0xFF38BDF8.toInt(),
+                    throughWalls = true
+                )
+                WorldBoxRenderer.queueLine(
+                    pt.x, pt.y + 0.25, pt.z,
+                    pt.lookX, pt.lookY, pt.lookZ,
+                    0.25f, 0.75f, 0.95f, 0.70f,
+                    thickness = 0.03,
+                    throughWalls = true
+                )
+            }
 
             // Tracer line to the next node
             if (i < points.size - 1) {

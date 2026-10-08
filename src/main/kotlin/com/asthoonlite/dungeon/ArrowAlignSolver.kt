@@ -80,6 +80,19 @@ object ArrowAlignSolver {
         solution?.getOrNull(index)?.let { clicksRemaining[index] = getClicks(frameRotations[index], it) }
     }
 
+    /** Return true when the puzzle is solved or marked completed by a world hologram. */
+    fun isSolved(): Boolean {
+        if (solution != null && clicksRemaining.all { it == 0 }) return true
+        val mc = Minecraft.getInstance()
+        val level = mc.level ?: return false
+        val stands = level.getEntitiesOfClass(net.minecraft.world.entity.decoration.ArmorStand::class.java, net.minecraft.world.phys.AABB(gridCorner).inflate(6.0))
+        for (stand in stands) {
+            val name = stand.customName?.string ?: continue
+            if (name.contains("Completed", ignoreCase = true)) return true
+        }
+        return false
+    }
+
     private fun getClicks(current: Int, target: Int): Int = if (target < 0) 0 else (8 - current + target) % 8
 
     private fun reset() {

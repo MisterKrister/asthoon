@@ -757,6 +757,24 @@ object F7Devices {
         InputCapture.onSimonCompleted(reason, durationNs, rounds)
     }
 
+    fun isSimonCompleted(): Boolean {
+        if (simonLifecycle.completed) return true
+        val mc = Minecraft.getInstance()
+        val level = mc.level ?: return false
+        val stands = level.getEntitiesOfClass(
+            net.minecraft.world.entity.decoration.ArmorStand::class.java,
+            net.minecraft.world.phys.AABB(
+                ssDeviceCenter.x - 5.0, ssDeviceCenter.y - 4.0, ssDeviceCenter.z - 5.0,
+                ssDeviceCenter.x + 5.0, ssDeviceCenter.y + 4.0, ssDeviceCenter.z + 5.0
+            )
+        )
+        for (stand in stands) {
+            val name = stand.customName?.string ?: continue
+            if (name.contains("Completed", ignoreCase = true)) return true
+        }
+        return false
+    }
+
     fun reset() {
         resetDeviceStateOnly()
         lastI4Click = 0L

@@ -33,6 +33,15 @@ object RouteEditor {
     var targetedBlock: BlockPos? = null
         private set
 
+    var pickLookNodeMode: Boolean = false
+        set(value) {
+            field = value
+            if (!value) targetedLookPos = null
+        }
+
+    var targetedLookPos: Vec3? = null
+        private set
+
     var defaultNodeType: RouteNodeType = RouteNodeType.WALK
 
     // Currently selected node for coordinate/type editing in the GUI (-1 = none)
@@ -47,8 +56,9 @@ object RouteEditor {
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
         net.fabricmc.fabric.api.client.screen.v1.ScreenEvents.AFTER_INIT.register { mc, screen, _, _ ->
-            if (pickBlockMode && screen is net.minecraft.client.gui.screens.PauseScreen) {
+            if ((pickBlockMode || pickLookNodeMode) && screen is net.minecraft.client.gui.screens.PauseScreen) {
                 pickBlockMode = false
+                pickLookNodeMode = false
                 mc.setScreen(null)
                 mc.player?.sendSystemMessage(
                     Component.literal("§e[AsthoonLite] §fCrosshair select mode §cDISABLED§f.")
@@ -64,7 +74,9 @@ object RouteEditor {
         activePreset = null
         editingNodeIndex = -1
         pickBlockMode = false
+        pickLookNodeMode = false
         targetedBlock = null
+        targetedLookPos = null
         draggedNodeIndex = -1
         dragHoverIndex = -1
         PathPresetManager.savePresets()
@@ -118,8 +130,50 @@ object RouteEditor {
             } else {
                 wasLeftMouseDown = false
             }
+        } else if (pickLookNodeMode) {
+            val eyePos = player.eyePosition
+            val lookVec = player.lookAngle
+            val hit = mc.hitResult
+            val targetPos: Vec3 = if (hit != null && hit.type == HitResult.Type.BLOCK) {
+                hit.location
+            } else {
+                // In the air: 5.5 blocks ahead along line of sight
+                eyePos.add(lookVec.scale(5.5))
+            }
+            targetedLookPos = targetPos
+
+            if (mc.screen == null) {
+                val isLeftDown = mc.mouseHandler.isLeftPressed
+                if (isLeftDown && !wasLeftMouseDown) {
+                    val preset = activePreset
+                    val editIdx = editingNodeIndex
+                    if (preset != null && editIdx in preset.points.indices) {
+                        val node = preset.points[editIdx]
+                        node.hasLookNode = true
+                        node.lookX = Math.round(targetPos.x * 100.0) / 100.0
+                        node.lookY = Math.round(targetPos.y * 100.0) / 100.0
+                        node.lookZ = Math.round(targetPos.z * 100.0) / 100.0
+                        PathPresetManager.savePresets()
+
+                        player.sendSystemMessage(
+                            Component.literal("§a[AsthoonLite] §fSet Look Target for node §e#${editIdx + 1} §fat §b(${node.lookX}, ${node.lookY}, ${node.lookZ})")
+                        )
+                        level.playLocalSound(
+                            player.x, player.y, player.z,
+                            SoundEvents.EXPERIENCE_ORB_PICKUP,
+                            SoundSource.PLAYERS,
+                            0.8f, 1.4f, false
+                        )
+                        pickLookNodeMode = false
+                    }
+                }
+                wasLeftMouseDown = isLeftDown
+            } else {
+                wasLeftMouseDown = false
+            }
         } else {
             targetedBlock = null
+            targetedLookPos = null
             wasLeftMouseDown = false
         }
     }

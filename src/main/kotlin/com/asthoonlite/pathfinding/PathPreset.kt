@@ -61,15 +61,19 @@ enum class RouteNodeType(
 ) {
     WALK("Walk", 0xFF10B981.toInt(), "Traverse on foot towards waypoint"),
     BONZO_STAFF("Bonzo Staff", 0xFFEC4899.toInt(), "Fires Bonzo's Staff explosive recoil to launch forward"),
-    INTERACT("Interact", 0xFF38BDF8.toInt(), "Clicks or triggers lever, terminal, button, or device"),
-    JUMP("Jump", 0xFFF59E0B.toInt(), "Jumps while moving towards waypoint");
+    JUMP("Jump", 0xFFF59E0B.toInt(), "Jumps while moving towards waypoint"),
+    TERMINAL("Terminal", 0xFF06B6D4.toInt(), "Aims camera at terminal and opens with triggerbot"),
+    SIMON_SAYS("Simon Says", 0xFF8B5CF6.toInt(), "Stands at waypoint until Simon Says device completes"),
+    ARROWS_ALIGN("Arrows Align", 0xFF3B82F6.toInt(), "Stands at waypoint until Arrows Align completes"),
+    TIMEOUT("Timeout", 0xFFF97316.toInt(), "Waits configured seconds standing still"),
+    INTERACT("Interact", 0xFF38BDF8.toInt(), "Clicks or triggers lever, button, or device");
 
     companion object {
         fun fromString(name: String): RouteNodeType =
             entries.firstOrNull { it.name.equals(name, ignoreCase = true) || it.displayName.equals(name, ignoreCase = true) } ?: WALK
 
         fun allowedForCategory(category: RouteCategory): List<RouteNodeType> = when (category) {
-            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, INTERACT, JUMP) // Strictly no AOTV/Etherwarp in M7
+            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, JUMP, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, INTERACT)
             else -> entries
         }
     }
@@ -87,7 +91,12 @@ data class PathPoint(
     var action: String = "WALK",
     var speedBps: Double = 0.0,
     var delayMs: Long = 0L,
-    var note: String = ""
+    var note: String = "",
+    var hasLookNode: Boolean = false,
+    var lookX: Double = 0.0,
+    var lookY: Double = 0.0,
+    var lookZ: Double = 0.0,
+    var timeoutSeconds: Double = 1.0
 ) {
     fun nodeType(): RouteNodeType = RouteNodeType.fromString(action)
 }

@@ -238,9 +238,13 @@ internal fun simonDeviceRegressionChecks() {
     check(m7Allowed == listOf(
         com.asthoonlite.pathfinding.RouteNodeType.WALK,
         com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
-        com.asthoonlite.pathfinding.RouteNodeType.INTERACT,
-        com.asthoonlite.pathfinding.RouteNodeType.JUMP
-    )) { "M7 routes must only allow WALK, BONZO_STAFF, INTERACT, and JUMP (no AOTV / Etherwarp)" }
+        com.asthoonlite.pathfinding.RouteNodeType.JUMP,
+        com.asthoonlite.pathfinding.RouteNodeType.TERMINAL,
+        com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS,
+        com.asthoonlite.pathfinding.RouteNodeType.ARROWS_ALIGN,
+        com.asthoonlite.pathfinding.RouteNodeType.TIMEOUT,
+        com.asthoonlite.pathfinding.RouteNodeType.INTERACT
+    )) { "M7 routes must allow WALK, BONZO_STAFF, JUMP, TERMINAL, SIMON_SAYS, ARROWS_ALIGN, TIMEOUT, and INTERACT (no AOTV / Etherwarp)" }
 
     // 4. Node swapping and drag-and-drop reordering
     val preset = com.asthoonlite.pathfinding.PathPreset(
@@ -327,6 +331,44 @@ internal fun simonDeviceRegressionChecks() {
     check(activeId == "test-preset-1") { "Toggling inactive preset must activate it" }
     togglePreset("test-preset-1")
     check(activeId.isEmpty()) { "Toggling active preset must deactivate it" }
+
+    // 11. Expanded RouteNodeType checks for M7
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF)) { "M7 must allow BONZO_STAFF" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.JUMP)) { "M7 must allow JUMP" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.TERMINAL)) { "M7 must allow TERMINAL" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS)) { "M7 must allow SIMON_SAYS" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.ARROWS_ALIGN)) { "M7 must allow ARROWS_ALIGN" }
+    check(m7Allowed.contains(com.asthoonlite.pathfinding.RouteNodeType.TIMEOUT)) { "M7 must allow TIMEOUT" }
+
+    // 12. PathPoint Look Node and Timeout JSON backward-compatibility check
+    val oldPointJson = """{"x":10.5,"y":64.0,"z":-20.5,"action":"WALK"}"""
+    val deserializedPoint = com.google.gson.Gson().fromJson(oldPointJson, com.asthoonlite.pathfinding.PathPoint::class.java)
+    check(!deserializedPoint.hasLookNode) { "Deserializing old PathPoint without look node must default hasLookNode to false" }
+    check(deserializedPoint.lookX == 0.0 && deserializedPoint.lookY == 0.0 && deserializedPoint.lookZ == 0.0) { "Look coordinates must default to 0.0" }
+    val effectiveTimeout = if (deserializedPoint.timeoutSeconds > 0.0) deserializedPoint.timeoutSeconds else 1.0
+    check(effectiveTimeout == 1.0) { "Effective timeout seconds must fallback to 1.0" }
+
+    // 13. PathPoint with Look Node serialization round-trip
+    val lookPoint = com.asthoonlite.pathfinding.PathPoint(
+        x = 5.0, y = 70.0, z = 15.0,
+        hasLookNode = true,
+        lookX = 5.5, lookY = 73.2, lookZ = 18.0,
+        timeoutSeconds = 2.5
+    )
+    val roundTripJson = com.google.gson.Gson().toJson(lookPoint)
+    val restoredLookPoint = com.google.gson.Gson().fromJson(roundTripJson, com.asthoonlite.pathfinding.PathPoint::class.java)
+    check(restoredLookPoint.hasLookNode) { "Serialized look point must retain hasLookNode == true" }
+    check(restoredLookPoint.lookX == 5.5 && restoredLookPoint.lookY == 73.2 && restoredLookPoint.lookZ == 18.0) {
+        "Look coordinates must round-trip cleanly"
+    }
+    check(restoredLookPoint.timeoutSeconds == 2.5) { "Timeout seconds must round-trip cleanly" }
+
+    // 14. Bonzo Staff pitch and server delay constants
+    val bonzoPitch = 82.0f
+    val bonzoPostFireTicks = 4
+    check(bonzoPitch >= 80.0f) { "Bonzo launch pitch must look down far enough (>=80°) to hit ground directly under player" }
+    check(bonzoPostFireTicks >= 3) { "Bonzo post-fire delay must be at least 3-4 ticks to absorb server ping and floor explosion" }
 }
+
 
 

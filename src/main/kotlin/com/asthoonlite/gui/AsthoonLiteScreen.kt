@@ -180,6 +180,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var editNodeInputY: String = ""
     private var editNodeInputZ: String = ""
     private var editNodeSelectedType: RouteNodeType = RouteNodeType.WALK
+    private var editTypeDropdownOpen: Boolean = false
+    private var editLookDropdownOpen: Boolean = false
+    private var editLookInputX: String = ""
+    private var editLookInputY: String = ""
+    private var editLookInputZ: String = ""
+    private var editTimeoutSeconds: String = ""
 
     private var mouseDownNodeIdx: Int = -1
     private var mouseClickStartX: Double = 0.0
@@ -1307,9 +1313,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         val targetNode = preset.points[editIdx]
 
                         items.add(SectionHeader("Edit Waypoint Node #${editIdx + 1}"))
-                        items.add(NoteRow("Modify position number, coordinates, or type for node #${editIdx + 1}."))
+                        items.add(NoteRow("Select action type, position, look target, or wait duration."))
 
-                        val editColW = (subW - 16) / 5
+                        // 1. Position & Coordinates
+                        val editColW = (subW - 12) / 4
                         val editNumBox = EditBox(font, subX, 0, editColW, 20, Component.literal("Node #"))
                         editNumBox.setHint(Component.literal("# in list"))
                         if (editNodeInputIndex.isBlank()) editNodeInputIndex = (editIdx + 1).toString()
@@ -1334,13 +1341,149 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         editZBox.value = editNodeInputZ
                         editZBox.setResponder { editNodeInputZ = it }
 
-                        val btnEditType = ModernButton(subX + (editColW + 4) * 4, 0, editColW, 20, Component.literal(editNodeSelectedType.displayName), editNodeSelectedType.badgeColor) {
-                            val nextIdx = (allowedTypes.indexOf(editNodeSelectedType) + 1) % allowedTypes.size
-                            editNodeSelectedType = allowedTypes[nextIdx]
+                        items.add(MultiWidgetRow(listOf(editNumBox, editXBox, editYBox, editZBox), 20))
+
+                        // 2. Action Type Dropdown
+                        val typeDropIcon = if (editTypeDropdownOpen) "▲" else "▼"
+                        val btnTypeDropdown = ModernButton(
+                            subX, 0, subW, 22,
+                            Component.literal("Action Type: ${editNodeSelectedType.displayName} $typeDropIcon"),
+                            editNodeSelectedType.badgeColor
+                        ) {
+                            editTypeDropdownOpen = !editTypeDropdownOpen
                             rebuildTab(Tab.PATHFINDING)
                         }
-                        items.add(MultiWidgetRow(listOf(editNumBox, editXBox, editYBox, editZBox, btnEditType), 20))
+                        items.add(WidgetRow(btnTypeDropdown))
 
+                        if (editTypeDropdownOpen) {
+                            val typePairs = allowedTypes.chunked(2)
+                            for (pair in typePairs) {
+                                if (pair.size == 2) {
+                                    val b1 = ModernButton(subX, 0, (subW - 4) / 2, 20, Component.literal(pair[0].displayName), pair[0].badgeColor) {
+                                        editNodeSelectedType = pair[0]
+                                        targetNode.action = pair[0].name
+                                        PathPresetManager.savePresets()
+                                        editTypeDropdownOpen = false
+                                        rebuildTab(Tab.PATHFINDING)
+                                    }
+                                    val b2 = ModernButton(subX + (subW - 4) / 2 + 4, 0, (subW - 4) / 2, 20, Component.literal(pair[1].displayName), pair[1].badgeColor) {
+                                        editNodeSelectedType = pair[1]
+                                        targetNode.action = pair[1].name
+                                        PathPresetManager.savePresets()
+                                        editTypeDropdownOpen = false
+                                        rebuildTab(Tab.PATHFINDING)
+                                    }
+                                    items.add(MultiWidgetRow(listOf(b1, b2), 20))
+                                } else {
+                                    val b1 = ModernButton(subX, 0, subW, 20, Component.literal(pair[0].displayName), pair[0].badgeColor) {
+                                        editNodeSelectedType = pair[0]
+                                        targetNode.action = pair[0].name
+                                        PathPresetManager.savePresets()
+                                        editTypeDropdownOpen = false
+                                        rebuildTab(Tab.PATHFINDING)
+                                    }
+                                    items.add(WidgetRow(b1))
+                                }
+                            }
+                        }
+
+                        // 3. Timeout Configuration (if type is TIMEOUT)
+                        if (editNodeSelectedType == RouteNodeType.TIMEOUT) {
+                            items.add(NoteRow("Timeout Duration (seconds to wait standing at node):"))
+                            val timeoutBox = EditBox(font, subX, 0, subW, 20, Component.literal("Timeout (s)"))
+                            timeoutBox.setHint(Component.literal("Timeout duration in seconds (e.g. 1.5, 3.0)"))
+                            if (editTimeoutSeconds.isBlank()) editTimeoutSeconds = targetNode.timeoutSeconds.toString()
+                            timeoutBox.value = editTimeoutSeconds
+                            timeoutBox.setResponder {
+                                editTimeoutSeconds = it
+                                it.toDoubleOrNull()?.let { v ->
+                                    targetNode.timeoutSeconds = v
+                                    PathPresetManager.savePresets()
+                                }
+                            }
+                            items.add(WidgetRow(timeoutBox))
+                        }
+
+                        // 4. Look Node Dropdown
+                        val lookSummary = if (targetNode.hasLookNode) {
+                            "Active (${String.format("%.1f", targetNode.lookX)}, ${String.format("%.1f", targetNode.lookY)}, ${String.format("%.1f", targetNode.lookZ)})"
+                        } else {
+                            "None"
+                        }
+                        val lookDropIcon = if (editLookDropdownOpen) "▲" else "▼"
+                        val btnLookDropdown = ModernButton(
+                            subX, 0, subW, 22,
+                            Component.literal("⌖ Look Node: $lookSummary $lookDropIcon"),
+                            if (targetNode.hasLookNode) 0xFF38BDF8.toInt() else 0xFF64748B.toInt()
+                        ) {
+                            editLookDropdownOpen = !editLookDropdownOpen
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                        items.add(WidgetRow(btnLookDropdown))
+
+                        if (editLookDropdownOpen) {
+                            items.add(NoteRow("Aims camera at 3D target (blocks or mid-air) when approaching/at node."))
+                            val btnPickLook = ModernButton(subX, 0, (subW - 4) * 2 / 3, 22, Component.literal("⌖ Pick Target in World/Air"), 0xFF38BDF8.toInt()) {
+                                RouteEditor.pickLookNodeMode = true
+                                minecraft.setScreen(null)
+                                minecraft.player?.sendSystemMessage(
+                                    Component.literal("§e[AsthoonLite] §fLook node selection §2ACTIVE§f! §bAim at block or mid-air and LEFT-CLICK §fto set target.")
+                                )
+                            }
+                            val btnClearLook = ModernButton(subX + (subW - 4) * 2 / 3 + 4, 0, (subW - 4) / 3, 22, Component.literal("✕ Clear"), 0xFFEF4444.toInt()) {
+                                targetNode.hasLookNode = false
+                                editLookInputX = ""
+                                editLookInputY = ""
+                                editLookInputZ = ""
+                                PathPresetManager.savePresets()
+                                rebuildTab(Tab.PATHFINDING)
+                            }
+                            items.add(MultiWidgetRow(listOf(btnPickLook, btnClearLook), 22))
+
+                            val lookColW = (subW - 8) / 3
+                            val lookXBox = EditBox(font, subX, 0, lookColW, 20, Component.literal("Look X"))
+                            lookXBox.setHint(Component.literal("Look X"))
+                            if (editLookInputX.isBlank()) editLookInputX = if (targetNode.hasLookNode) targetNode.lookX.toString() else targetNode.x.toString()
+                            lookXBox.value = editLookInputX
+                            lookXBox.setResponder {
+                                editLookInputX = it
+                                it.toDoubleOrNull()?.let { v ->
+                                    targetNode.lookX = v
+                                    targetNode.hasLookNode = true
+                                    PathPresetManager.savePresets()
+                                }
+                            }
+
+                            val lookYBox = EditBox(font, subX + lookColW + 4, 0, lookColW, 20, Component.literal("Look Y"))
+                            lookYBox.setHint(Component.literal("Look Y"))
+                            if (editLookInputY.isBlank()) editLookInputY = if (targetNode.hasLookNode) targetNode.lookY.toString() else (targetNode.y + 1.2).toString()
+                            lookYBox.value = editLookInputY
+                            lookYBox.setResponder {
+                                editLookInputY = it
+                                it.toDoubleOrNull()?.let { v ->
+                                    targetNode.lookY = v
+                                    targetNode.hasLookNode = true
+                                    PathPresetManager.savePresets()
+                                }
+                            }
+
+                            val lookZBox = EditBox(font, subX + (lookColW + 4) * 2, 0, lookColW, 20, Component.literal("Look Z"))
+                            lookZBox.setHint(Component.literal("Look Z"))
+                            if (editLookInputZ.isBlank()) editLookInputZ = if (targetNode.hasLookNode) targetNode.lookZ.toString() else targetNode.z.toString()
+                            lookZBox.value = editLookInputZ
+                            lookZBox.setResponder {
+                                editLookInputZ = it
+                                it.toDoubleOrNull()?.let { v ->
+                                    targetNode.lookZ = v
+                                    targetNode.hasLookNode = true
+                                    PathPresetManager.savePresets()
+                                }
+                            }
+
+                            items.add(MultiWidgetRow(listOf(lookXBox, lookYBox, lookZBox), 20))
+                        }
+
+                        // 5. Apply Changes & Deselect
                         val halfBtnW = (subW - 4) / 2
                         val btnApplyEdit = ModernButton(subX, 0, halfBtnW, 24, Component.literal("✦ Apply Changes to Node #${editIdx + 1}"), 0xFF10B981.toInt()) {
                             val newX = editNodeInputX.toDoubleOrNull() ?: targetNode.x
@@ -1350,6 +1493,20 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                             targetNode.y = newY
                             targetNode.z = newZ
                             targetNode.action = editNodeSelectedType.name
+                            if (editNodeSelectedType == RouteNodeType.TIMEOUT) {
+                                targetNode.timeoutSeconds = editTimeoutSeconds.toDoubleOrNull() ?: targetNode.timeoutSeconds
+                            }
+                            if (editLookInputX.isNotBlank() && editLookInputY.isNotBlank() && editLookInputZ.isNotBlank()) {
+                                val lx = editLookInputX.toDoubleOrNull()
+                                val ly = editLookInputY.toDoubleOrNull()
+                                val lz = editLookInputZ.toDoubleOrNull()
+                                if (lx != null && ly != null && lz != null) {
+                                    targetNode.lookX = lx
+                                    targetNode.lookY = ly
+                                    targetNode.lookZ = lz
+                                    targetNode.hasLookNode = true
+                                }
+                            }
 
                             val targetNum = editNodeInputIndex.toIntOrNull() ?: (editIdx + 1)
                             val targetPos = (targetNum - 1).coerceIn(0, preset.points.size - 1)
@@ -1370,6 +1527,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                             editNodeInputX = ""
                             editNodeInputY = ""
                             editNodeInputZ = ""
+                            editTypeDropdownOpen = false
+                            editLookDropdownOpen = false
                             rebuildTab(Tab.PATHFINDING)
                         }
                         items.add(MultiWidgetRow(listOf(btnApplyEdit, btnCancelEdit), 24))
@@ -1390,7 +1549,9 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                             val isEditingThis = RouteEditor.editingNodeIndex == idx
                             val prefix = if (isExecCurrent) "▶ #${idx + 1}" else "#${idx + 1}"
                             val tag = if (isEditingThis) " [EDITING]" else ""
-                            val label = "$prefix [${nType.displayName}] (${String.format("%.1f", node.x)}, ${String.format("%.1f", node.y)}, ${String.format("%.1f", node.z)})$tag"
+                            val lookTag = if (node.hasLookNode) " [LOOK]" else ""
+                            val timeoutTag = if (nType == RouteNodeType.TIMEOUT) " [${node.timeoutSeconds}s]" else ""
+                            val label = "$prefix [${nType.displayName}]$timeoutTag$lookTag (${String.format("%.1f", node.x)}, ${String.format("%.1f", node.y)}, ${String.format("%.1f", node.z)})$tag"
 
                             val btnColor = if (isEditingThis) 0xFFF59E0B.toInt() else nType.badgeColor
                             val btnInfo = ModernButton(subX, 0, infoW, 20, Component.literal(label), btnColor) {
@@ -1400,6 +1561,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                                 editNodeInputY = node.y.toString()
                                 editNodeInputZ = node.z.toString()
                                 editNodeSelectedType = nType
+                                editLookInputX = if (node.hasLookNode) node.lookX.toString() else ""
+                                editLookInputY = if (node.hasLookNode) node.lookY.toString() else ""
+                                editLookInputZ = if (node.hasLookNode) node.lookZ.toString() else ""
+                                editTimeoutSeconds = if (node.timeoutSeconds > 0.0) node.timeoutSeconds.toString() else "1.0"
+                                editTypeDropdownOpen = false
+                                editLookDropdownOpen = false
                                 rebuildTab(Tab.PATHFINDING)
                             }
 
