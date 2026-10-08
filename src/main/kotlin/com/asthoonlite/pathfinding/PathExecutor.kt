@@ -322,8 +322,8 @@ object PathExecutor {
             // Initial and uphill launches need the full runway speed. A later downward launch
             // can use the short platform's available momentum, while still checking alignment.
             val isArrivedOnPlatform = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-            val downwardFollowup = nextTarget != null && nextTarget.y < target.y &&
-                points.take(currentNodeIndex).any { it.nodeType() == RouteNodeType.BONZO_STAFF }
+            val isFollowupLaunch = points.take(currentNodeIndex).any { it.nodeType() == RouteNodeType.BONZO_STAFF }
+            val downwardFollowup = nextTarget != null && (nextTarget.y < target.y || isFollowupLaunch)
             val hasLaunchSpeed = hasBonzoRunwayVelocity(Vec3(toNextDx, 0.0, toNextDz), player.deltaMovement, downwardFollowup)
             val launchPitch = if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
             val hasGroundImpact = player.onGround() && !player.isInLava && !player.isInWater && isAtNodeElev && isArrivedOnPlatform &&
@@ -519,16 +519,19 @@ object PathExecutor {
         val isAirborne = !player.onGround() && !player.isInLava && !player.isInWater
         val offset = Vec3(dx, 0.0, dz)
         val landingFloor = BlockPos.containing(player.x, target.y - 0.1, player.z)
-        val landingSupport = isStationaryDest && !level.getBlockState(landingFloor).getCollisionShape(level, landingFloor).isEmpty
+        val landingSupport = isStationaryDest && player.onGround() && !level.getBlockState(landingFloor).getCollisionShape(level, landingFloor).isEmpty
         val stationaryMotion = if (isStationaryDest) stationaryMovement(offset, player.deltaMovement, player.y - target.y, landingSupport) else null
         val isApproaching = stationaryMotion == null || isApproachingNode(offset, stationaryMotion, player.y - target.y, landingSupport)
+        val isApproachingBonzoRunway = nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null &&
+            player.onGround() && !player.isInLava && !player.isInWater &&
+            distH <= 2.5 && player.y >= target.y - 0.5 && player.y <= target.y + 1.2
 
         if (stationaryMotion != null) {
             // Steer and brake in world coordinates, even while the camera turns toward a device.
             moveInDirection(player, stationaryMotion, !isCrouchNode && isApproaching && (isAirborne || distH > 2.5), isCrouchNode && !isAirborne)
         } else if (isAirborne) {
             moveInDirection(player, airborneMovement(offset, player.deltaMovement), true)
-        } else if (isBonzoRunway && nextTarget != null) {
+        } else if ((isBonzoRunway || isApproachingBonzoRunway) && nextTarget != null) {
             // Build launch momentum along the verified platform floor.
             moveInDirection(player, Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z), true)
         } else {
@@ -632,9 +635,18 @@ object PathExecutor {
 
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
         val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.6 else distY < 2.5
+        val isPrecedingAirborne = points.getOrNull(currentNodeIndex - 1)?.nodeType() in setOf(RouteNodeType.BONZO_STAFF, RouteNodeType.JUMP)
+        val isNextStationary = nextTarget != null && (
+            nextTarget.nodeType() == RouteNodeType.SIMON_SAYS ||
+            nextTarget.nodeType() == RouteNodeType.ARROWS_ALIGN ||
+            nextTarget.nodeType() == RouteNodeType.TERMINAL ||
+            nextTarget.nodeType() == RouteNodeType.TIMEOUT
+        )
+        val requiresTouchdown = isPrecedingAirborne || isNextStationary
 
         if (advancesOnArrival(nodeType) &&
             distH < arrivalThreshold && canArriveElevation &&
+            (!requiresTouchdown || player.onGround()) &&
             (!isStationaryDest || isSettled)) {
             currentNodeIndex++
             resetSpecialNodeState()
