@@ -1,8 +1,11 @@
 package com.asthoonlite.dungeon
 
 import com.asthoonlite.pathfinding.PathExecutor
+import com.asthoonlite.pathfinding.PathfindCapture
 import com.asthoonlite.pathfinding.PathPoint
 import com.asthoonlite.pathfinding.RouteNodeType
+import com.google.gson.JsonParser
+import java.util.Locale
 
 internal fun simonDeviceRegressionChecks() {
     val run = SimonDeviceLifecycle()
@@ -460,35 +463,31 @@ internal fun simonDeviceRegressionChecks() {
     // Once player steps onto platform at Y=118.8, distH 0.9: arrival triggers cleanly
     check(canArriveElevatedNode(118.8, 119.0, 0.9)) { "Player arriving at top platform must trigger arrival" }
 
-    // 22. In-air overshoot brake detection & stationary destination braking
-    fun shouldInAirBrake(
-        isStationaryDest: Boolean,
-        distToTargetH: Double,
-        vy: Double,
-        currentBpsH: Double,
-        playerY: Double,
-        targetY: Double
-    ): Boolean {
-        if (isStationaryDest && distToTargetH < 3.8) return true
-        if (vy >= 0.1 || distToTargetH >= 6.0 || currentBpsH <= 5.0) return false
-        val height = (playerY - targetY).coerceAtLeast(0.2)
-        val fallSpeed = Math.abs(vy).coerceAtLeast(0.18)
-        val ticksToLand = (height / fallSpeed).coerceIn(1.0, 12.0)
-        val predictedDist = (currentBpsH / 20.0) * ticksToLand
-        return (predictedDist - distToTargetH) > 0.8
+    // 22. Real capture: all three lava bounces stall outside node #5's platform.
+    // At tick 159 the old 3.8-block brake presses S before reaching platform height.
+    val landingTarget = net.minecraft.world.phys.Vec3(107.5, 120.0, 93.5)
+    val stalledSamples = listOf(
+        net.minecraft.world.phys.Vec3(103.9110, 119.0738, 94.1133) to 0.0987,
+        net.minecraft.world.phys.Vec3(104.0791, 122.0848, 94.0986) to 0.0063,
+        net.minecraft.world.phys.Vec3(103.9625, 108.2000, 94.1435) to 0.0096,
+        net.minecraft.world.phys.Vec3(103.7802, 108.2000, 94.1766) to 0.0096
+    )
+    for ((position, forwardSpeed) in stalledSamples) {
+        val distance = Math.hypot(landingTarget.x - position.x, landingTarget.z - position.z)
+        check(PathExecutor.airborneLandingInput(distance, position.y - landingTarget.y, forwardSpeed) == 1) {
+            "Lava recovery must keep moving toward the platform at $position (distance $distance)"
+        }
     }
-    // High velocity approaching Simon Says in mid-air: must brake hard to prevent flying past platform
-    check(shouldInAirBrake(isStationaryDest = true, distToTargetH = 3.2, vy = 0.05, currentBpsH = 18.0, playerY = 120.0, targetY = 120.0)) {
-        "Airborne approach towards stationary destination must engage air brake"
-    }
-    // High velocity (18 bps) close to target (2.0m) while descending: must brake to prevent overshoot
-    check(shouldInAirBrake(isStationaryDest = false, distToTargetH = 2.0, vy = -0.3, currentBpsH = 18.0, playerY = 120.5, targetY = 119.0)) {
-        "High-velocity airborne descent overshooting target must engage air brake"
-    }
-    // Normal trajectory falling short (need distance): must NOT brake
-    check(!shouldInAirBrake(isStationaryDest = false, distToTargetH = 5.0, vy = -0.3, currentBpsH = 12.0, playerY = 120.5, targetY = 119.0)) {
-        "Airborne descent needing distance must not engage air brake"
-    }
+    check(PathExecutor.airborneLandingInput(0.8, -2.0, 0.25) == 1) { "Do not brake below a ledge" }
+    check(PathExecutor.airborneLandingInput(1.4, 2.0, 0.25) == 1) { "Reach the landing area before braking" }
+    check(PathExecutor.airborneLandingInput(0.8, 2.0, 0.25) == -1) { "Brake over the platform" }
+    check(PathExecutor.airborneLandingInput(0.8, 2.0, 0.02) == 0) { "Coast instead of reversing slow forward motion" }
+    check(PathExecutor.airborneLandingInput(0.8, 2.0, -0.02) == 0) { "Small reverse drift must not cause alternating W/S" }
+    check(PathExecutor.airborneLandingInput(0.8, 2.0, -0.25) == 1) { "Counter reverse drift toward the platform" }
+    check(!PathExecutor.hasLandedAtNode(0.5, 0.1, false)) { "Being near the final node in flight is not a landing" }
+    check(!PathExecutor.hasLandedAtNode(3.5, 0.0, true)) { "A nearby ground surface is not the destination" }
+    check(!PathExecutor.hasLandedAtNode(0.5, 2.0, true)) { "Ground below the destination must not complete the route" }
+    check(PathExecutor.hasLandedAtNode(0.5, 0.5, true)) { "A grounded landing within half a block completes the route" }
 
     // 23. WASD Movement Key Vectoring (look-node decoupled vs normal straight pathing)
     fun computeWasd(hasLookNode: Boolean, isAirborne: Boolean, angleDiffDeg: Double): List<Boolean> {
@@ -581,6 +580,20 @@ internal fun simonDeviceRegressionChecks() {
     check(lookFar.x == 0.0 && lookFar.z == 0.0) { "Lookahead when far must point to target" }
     val lookNear = PathExecutor.waypointLookahead(lp1, lp2, distH = 2.0, arrival = 1.2)
     check(lookNear.x > 0.0 && lookNear.z > 0.0) { "Lookahead when near must blend towards next waypoint" }
+
+    // JSON numbers must remain parseable on the Swedish locale used by the capture.
+    val previousLocale = Locale.getDefault()
+    try {
+        Locale.setDefault(Locale.forLanguageTag("sv-SE"))
+        val x = PathfindCapture.formatNumber(103.911, 4)
+        val vy = PathfindCapture.formatNumber(-0.0784, 4)
+        val yaw = PathfindCapture.formatNumber(-98.97f, 2)
+        check(x == "103.9110" && vy == "-0.0784" && yaw == "-98.97")
+        val record = JsonParser.parseString("""{"x":$x,"vel":[0.0000,$vy,0.8307],"yaw":$yaw}""").asJsonObject
+        check(record["x"].asDouble == 103.911 && record["vel"].asJsonArray[1].asDouble == -0.0784)
+    } finally {
+        Locale.setDefault(previousLocale)
+    }
 }
 
 

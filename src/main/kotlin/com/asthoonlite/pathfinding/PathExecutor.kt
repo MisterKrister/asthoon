@@ -335,7 +335,7 @@ object PathExecutor {
         }
 
         // 3. Specialized Stationary Nodes: Simon Says, Arrows Align, Timeout
-        if (nodeType == RouteNodeType.SIMON_SAYS && distH < 1.8 && distY < 2.2) {
+        if (nodeType == RouteNodeType.SIMON_SAYS && player.onGround() && distH < 1.8 && distY < 2.2) {
             releaseAllMovementKeys()
             val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
             if (hSpeed > 1.2) {
@@ -350,7 +350,7 @@ object PathExecutor {
             return
         }
 
-        if (nodeType == RouteNodeType.ARROWS_ALIGN && distH < 1.8 && distY < 2.2) {
+        if (nodeType == RouteNodeType.ARROWS_ALIGN && player.onGround() && distH < 1.8 && distY < 2.2) {
             releaseAllMovementKeys()
             val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
             if (hSpeed > 1.2) {
@@ -365,7 +365,7 @@ object PathExecutor {
             return
         }
 
-        if (nodeType == RouteNodeType.TIMEOUT && distH < 1.3 && distY < 2.2) {
+        if (nodeType == RouteNodeType.TIMEOUT && player.onGround() && distH < 1.3 && distY < 2.2) {
             releaseAllMovementKeys()
             val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
             if (hSpeed > 1.2) {
@@ -497,31 +497,21 @@ object PathExecutor {
                                 nodeType == RouteNodeType.TIMEOUT ||
                                 currentNodeIndex == points.size - 1)
 
-        // In-Air Braking & Deceleration:
-        // Only brake hard when arriving at stationary puzzle stations (e.g. Simon Says, Arrows Align, final stop)
-        // NEVER brake or tap S mid-air on normal movement waypoints or chasm flights!
-        var inAirBrakeActive = false
-        if (isAirborne && bonzoState == BonzoState.IDLE) {
-            if (isStationaryDest && distH < 3.8) {
-                inAirBrakeActive = true
+        if (isAirborne) {
+            // Reach the platform before slowing down; coast once forward speed is small.
+            val yawRad = Math.toRadians(player.yRot.toDouble())
+            val forwardSpeed = -sin(yawRad) * player.deltaMovement.x + cos(yawRad) * player.deltaMovement.z
+            val airInput = if (isStationaryDest) {
+                airborneLandingInput(distH, player.y - target.y, forwardSpeed)
+            } else {
+                1
             }
-        }
-
-        if (inAirBrakeActive) {
-            // Apply air brake: cancel forward sprint and tap S to drop cleanly
-            mc.options.keySprint.setDown(false)
-            mc.options.keyUp.setDown(false)
-            mc.options.keyDown.setDown(true)
+            mc.options.keyUp.setDown(airInput > 0)
+            mc.options.keyDown.setDown(airInput < 0)
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
-        } else if (isAirborne) {
-            // In air during flight/jumps: NEVER strafe sideways (prevents deflecting into lava)
-            mc.options.keyUp.setDown(true)
-            mc.options.keyDown.setDown(false)
-            mc.options.keyLeft.setDown(false)
-            mc.options.keyRight.setDown(false)
-            mc.options.keySprint.setDown(true)
-            player.setSprinting(true)
+            mc.options.keySprint.setDown(airInput > 0)
+            player.setSprinting(airInput > 0)
         } else {
             // On ground: calculate movement vector towards target
             val targetMoveX = if (lookaheadBlend > 0.0 && nextTarget != null) aimX else target.x
@@ -625,7 +615,8 @@ object PathExecutor {
         val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.6 else distY < 2.5
 
         if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP &&
-            distH < arrivalThreshold && canArriveElevation) {
+            distH < arrivalThreshold && canArriveElevation &&
+            (!isStationaryDest || hasLandedAtNode(distH, distY, player.onGround()))) {
             currentNodeIndex++
             resetSpecialNodeState()
             if (currentNodeIndex >= points.size) {
@@ -633,6 +624,19 @@ object PathExecutor {
             }
         }
     }
+
+    /** Forward = 1, coast = 0, brake = -1. Only slow down over the destination platform. */
+    internal fun airborneLandingInput(distH: Double, heightAboveTarget: Double, forwardSpeed: Double): Int {
+        if (distH >= 1.4 || heightAboveTarget < -0.6) return 1
+        return when {
+            forwardSpeed > 0.06 -> -1
+            forwardSpeed < -0.06 -> 1
+            else -> 0
+        }
+    }
+
+    internal fun hasLandedAtNode(distH: Double, distY: Double, onGround: Boolean): Boolean =
+        onGround && distH < 1.4 && distY <= 0.6
 
     fun onRenderFrame(deltaTracker: DeltaTracker) {
         if (!isActive) return
