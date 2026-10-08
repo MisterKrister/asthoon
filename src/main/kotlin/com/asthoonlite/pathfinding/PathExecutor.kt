@@ -268,6 +268,9 @@ object PathExecutor {
         val dz = target.z - player.z
         val distH = sqrt(dx * dx + dz * dz)
         val distY = abs(target.y - player.y)
+        val isDeviceNode = nodeType == RouteNodeType.SIMON_SAYS || nodeType == RouteNodeType.ARROWS_ALIGN
+        val isStationaryDest = isDeviceNode || nodeType == RouteNodeType.TIMEOUT || currentNodeIndex == points.size - 1
+        val isSettled = isSettledAtNode(distH, distY, player.onGround(), player.deltaMovement.horizontalDistance())
 
         // Read player speed (Hypixel Skyblock speed = attribute * 1000)
         val speedAttr = player.getAttributeValue(Attributes.MOVEMENT_SPEED)
@@ -329,12 +332,10 @@ object PathExecutor {
         }
 
         // 3. Specialized Stationary Nodes: Simon Says, Arrows Align, Timeout
-        if (nodeType == RouteNodeType.SIMON_SAYS && player.onGround() && distH < 1.8 && distY < 2.2) {
+        if (nodeType == RouteNodeType.SIMON_SAYS && isSettled) {
             releaseAllMovementKeys()
-            val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
-            if (hSpeed > 1.2) {
-                mc.options.keyDown.setDown(true)
-            }
+            player.setSprinting(false)
+            jumpTicksRemaining = 0
             aimTowards(player, target, Vec3(110.5, 121.5, 93.5))
             if (F7Devices.isSimonCompleted()) {
                 currentNodeIndex++
@@ -344,12 +345,10 @@ object PathExecutor {
             return
         }
 
-        if (nodeType == RouteNodeType.ARROWS_ALIGN && player.onGround() && distH < 1.8 && distY < 2.2) {
+        if (nodeType == RouteNodeType.ARROWS_ALIGN && isSettled) {
             releaseAllMovementKeys()
-            val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
-            if (hSpeed > 1.2) {
-                mc.options.keyDown.setDown(true)
-            }
+            player.setSprinting(false)
+            jumpTicksRemaining = 0
             aimTowards(player, target, Vec3(-2.0, 122.5, 77.0))
             if (ArrowAlignSolver.isSolved()) {
                 currentNodeIndex++
@@ -359,12 +358,10 @@ object PathExecutor {
             return
         }
 
-        if (nodeType == RouteNodeType.TIMEOUT && player.onGround() && distH < 1.3 && distY < 2.2) {
+        if (nodeType == RouteNodeType.TIMEOUT && isSettled) {
             releaseAllMovementKeys()
-            val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
-            if (hSpeed > 1.2) {
-                mc.options.keyDown.setDown(true)
-            }
+            player.setSprinting(false)
+            jumpTicksRemaining = 0
             aimTowards(player, target, null)
             if (timeoutTicksRemaining < 0) {
                 val duration = if (target.timeoutSeconds > 0.0) target.timeoutSeconds else 1.0
@@ -450,7 +447,7 @@ object PathExecutor {
             target.z
         }
 
-        if (target.hasLookNode) {
+        if (target.hasLookNode && (!isDeviceNode || isSettled)) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
         } else if (nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5) {
             // Smoothly pre-aim launch yaw and pitch as player approaches Bonzo node
@@ -484,26 +481,28 @@ object PathExecutor {
         // 6. Movement Controls with WASD Vectoring, In-Air Braking & Ledge Jump Handling
         val isCrouchNode = (nodeType == RouteNodeType.CROUCH)
         val isAirborne = !player.onGround() && !player.isInLava && !player.isInWater
-        val isStationaryDest = (nodeType == RouteNodeType.SIMON_SAYS ||
-                                nodeType == RouteNodeType.ARROWS_ALIGN ||
-                                nodeType == RouteNodeType.TIMEOUT ||
-                                currentNodeIndex == points.size - 1)
+        val offset = Vec3(dx, 0.0, dz)
+        val stationaryMotion = if (isStationaryDest) stationaryMovement(offset, player.deltaMovement, player.y - target.y) else null
+        val isApproaching = stationaryMotion == null || isApproachingNode(offset, stationaryMotion, player.y - target.y)
 
-        if (isAirborne) {
-            // Reach the platform before slowing down; coast once forward speed is small.
-            val yawRad = Math.toRadians(player.yRot.toDouble())
-            val forwardSpeed = -sin(yawRad) * player.deltaMovement.x + cos(yawRad) * player.deltaMovement.z
-            val airInput = if (isStationaryDest) {
-                airborneLandingInput(distH, player.y - target.y, forwardSpeed)
-            } else {
-                1
-            }
-            mc.options.keyUp.setDown(airInput > 0)
-            mc.options.keyDown.setDown(airInput < 0)
+        if (stationaryMotion != null) {
+            // Steer and brake in world coordinates, even while the camera turns toward a device.
+            val (forward, strafe) = movementInput(stationaryMotion, player.yRot)
+            mc.options.keyUp.setDown(forward > 0.25)
+            mc.options.keyDown.setDown(forward < -0.25)
+            mc.options.keyLeft.setDown(strafe > 0.25)
+            mc.options.keyRight.setDown(strafe < -0.25)
+            mc.options.keyShift.setDown(isCrouchNode && !isAirborne)
+            val wantsSprint = !isCrouchNode && isApproaching && forward > 0.25 && (isAirborne || distH > 2.5)
+            mc.options.keySprint.setDown(wantsSprint)
+            player.setSprinting(wantsSprint)
+        } else if (isAirborne) {
+            mc.options.keyUp.setDown(true)
+            mc.options.keyDown.setDown(false)
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
-            mc.options.keySprint.setDown(airInput > 0)
-            player.setSprinting(airInput > 0)
+            mc.options.keySprint.setDown(true)
+            player.setSprinting(true)
         } else {
             // On ground: calculate movement vector towards target
             val targetMoveX = if (lookaheadBlend > 0.0 && nextTarget != null) aimX else target.x
@@ -514,17 +513,7 @@ object PathExecutor {
             val forward = cos(rad)
             val strafe = -sin(rad)
 
-            // Stationary arrival deceleration (e.g. approaching Simon Says on ground)
-            val isSlowingForStationary = isStationaryDest && distH < 2.5
-            val isStoppingForStationary = isStationaryDest && distH < 1.4
-
-            if (isStoppingForStationary) {
-                mc.options.keyUp.setDown(false)
-                mc.options.keyDown.setDown(true) // quick brake tap
-                mc.options.keyLeft.setDown(false)
-                mc.options.keyRight.setDown(false)
-                mc.options.keySprint.setDown(false)
-            } else if (target.hasLookNode) {
+            if (target.hasLookNode) {
                 // Explicit look-node: camera is decoupled, full WASD vectoring
                 mc.options.keyUp.setDown(forward > 0.25)
                 mc.options.keyDown.setDown(forward < -0.25)
@@ -554,7 +543,7 @@ object PathExecutor {
                     mc.options.keySprint.setDown(false)
                 } else {
                     mc.options.keyShift.setDown(false)
-                    val wantsSprint = (forward > 0.2 || !isSharpTurn) && !isSlowingForStationary
+                    val wantsSprint = forward > 0.2 || !isSharpTurn
                     mc.options.keySprint.setDown(wantsSprint)
                     if (wantsSprint && !player.isSprinting) {
                         player.setSprinting(true)
@@ -574,7 +563,9 @@ object PathExecutor {
         val isObstacleCollision = player.horizontalCollision && player.onGround()
         val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
-        if ((canAutoGapJump || isObstacleCollision || isElevationStep) && jumpTicksRemaining <= 0) {
+        if (!isApproaching) {
+            jumpTicksRemaining = 0
+        } else if ((canAutoGapJump || isObstacleCollision || isElevationStep) && jumpTicksRemaining <= 0) {
             jumpTicksRemaining = 4
         }
 
@@ -606,9 +597,9 @@ object PathExecutor {
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
         val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.6 else distY < 2.5
 
-        if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP &&
+        if (advancesOnArrival(nodeType) &&
             distH < arrivalThreshold && canArriveElevation &&
-            (!isStationaryDest || hasLandedAtNode(distH, distY, player.onGround()))) {
+            (!isStationaryDest || isSettled)) {
             currentNodeIndex++
             resetSpecialNodeState()
             if (currentNodeIndex >= points.size) {
@@ -617,18 +608,49 @@ object PathExecutor {
         }
     }
 
-    /** Forward = 1, coast = 0, brake = -1. Only slow down over the destination platform. */
-    internal fun airborneLandingInput(distH: Double, heightAboveTarget: Double, forwardSpeed: Double): Int {
-        if (distH >= 1.4 || heightAboveTarget < -0.6) return 1
-        return when {
-            forwardSpeed > 0.06 -> -1
-            forwardSpeed < -0.06 -> 1
-            else -> 0
+    internal fun stationaryMovement(offset: Vec3, velocity: Vec3, heightAboveTarget: Double): Vec3 {
+        val horizontalVelocity = Vec3(velocity.x, 0.0, velocity.z)
+        if (heightAboveTarget < -0.6) return offset
+        if (offset.horizontalDistance() < 1.4) {
+            return if (horizontalVelocity.horizontalDistance() > 0.06) horizontalVelocity.scale(-1.0) else Vec3.ZERO
         }
+        // Lead the stopping position by eight ticks of momentum before reaching the platform.
+        val correction = offset.subtract(horizontalVelocity.scale(8.0))
+        return if (correction.horizontalDistance() < 0.1) Vec3.ZERO else correction
     }
+
+    internal fun movementInput(motion: Vec3, yaw: Float): Pair<Double, Double> {
+        val direction = motion.normalize()
+        val radians = Math.toRadians(yaw.toDouble())
+        return (-sin(radians) * direction.x + cos(radians) * direction.z) to
+            (cos(radians) * direction.x + sin(radians) * direction.z)
+    }
+
+    internal fun isApproachingNode(offset: Vec3, motion: Vec3, heightAboveTarget: Double): Boolean =
+        (offset.horizontalDistance() >= 1.4 || heightAboveTarget < -0.6) && motion.dot(offset) > 0.0
+
+    internal fun advancesOnArrival(nodeType: RouteNodeType): Boolean =
+        nodeType == RouteNodeType.WALK || nodeType == RouteNodeType.CROUCH
 
     internal fun hasLandedAtNode(distH: Double, distY: Double, onGround: Boolean): Boolean =
         onGround && distH < 1.4 && distY <= 0.6
+
+    internal fun isSettledAtNode(distH: Double, distY: Double, onGround: Boolean, horizontalSpeed: Double): Boolean =
+        hasLandedAtNode(distH, distY, onGround) && horizontalSpeed <= 0.06
+
+    private fun isSettledAtNode(player: LocalPlayer, node: PathPoint): Boolean =
+        isSettledAtNode(hypot(node.x - player.x, node.z - player.z), abs(node.y - player.y),
+            player.onGround(), player.deltaMovement.horizontalDistance())
+
+    internal fun canUseSimonSolver(routeActive: Boolean, nodeType: RouteNodeType?, settled: Boolean): Boolean =
+        !routeActive || (nodeType == RouteNodeType.SIMON_SAYS && settled)
+
+    fun canUseSimonSolver(): Boolean {
+        if (!isActive) return true
+        val node = activePreset?.points?.getOrNull(currentNodeIndex) ?: return false
+        val player = Minecraft.getInstance().player ?: return false
+        return canUseSimonSolver(isActive, node.nodeType(), isSettledAtNode(player, node))
+    }
 
     fun onRenderFrame(deltaTracker: DeltaTracker) {
         if (!isActive) return
@@ -641,6 +663,10 @@ object PathExecutor {
         val target = points[currentNodeIndex]
         val nodeType = target.nodeType()
         val nextTarget = points.getOrNull(currentNodeIndex + 1)
+
+        val isDeviceNode = nodeType == RouteNodeType.SIMON_SAYS || nodeType == RouteNodeType.ARROWS_ALIGN
+        val isSettled = isSettledAtNode(player, target)
+        if (nodeType == RouteNodeType.SIMON_SAYS && isSettled && F7Devices.isSimonAiming()) return
 
         val partialTick = deltaTracker.getGameTimeDeltaPartialTick(true)
         val dtTicks = deltaTracker.realtimeDeltaTicks.coerceIn(0.005f, 1.0f)
@@ -680,7 +706,16 @@ object PathExecutor {
                 goalPitch = if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
                 isFastAim = true
             }
-            nodeType == RouteNodeType.SIMON_SAYS && distH < 3.0 -> {
+            target.hasLookNode && (!isDeviceNode || isSettled) -> {
+                val ldx = target.lookX - currentX
+                val ldy = target.lookY - currentEyeY
+                val ldz = target.lookZ - currentZ
+                val ldistH = sqrt(ldx * ldx + ldz * ldz)
+                goalYaw = (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+                goalPitch = (-Math.toDegrees(atan2(ldy, ldistH))).toFloat().coerceIn(-89f, 89f)
+                isFastAim = false
+            }
+            nodeType == RouteNodeType.SIMON_SAYS && isSettled -> {
                 val simonPos = Vec3(110.5, 121.5, 93.5)
                 val sdx = simonPos.x - currentX
                 val sdy = simonPos.y - currentEyeY
@@ -690,7 +725,7 @@ object PathExecutor {
                 goalPitch = (-Math.toDegrees(atan2(sdy, sdistH))).toFloat().coerceIn(-89f, 89f)
                 isFastAim = false
             }
-            nodeType == RouteNodeType.ARROWS_ALIGN && distH < 3.0 -> {
+            nodeType == RouteNodeType.ARROWS_ALIGN && isSettled -> {
                 val arrowPos = Vec3(-2.0, 122.5, 77.0)
                 val adx = arrowPos.x - currentX
                 val ady = arrowPos.y - currentEyeY
@@ -698,15 +733,6 @@ object PathExecutor {
                 val adistH = sqrt(adx * adx + adz * adz)
                 goalYaw = (-Math.toDegrees(atan2(adx, adz))).toFloat()
                 goalPitch = (-Math.toDegrees(atan2(ady, adistH))).toFloat().coerceIn(-89f, 89f)
-                isFastAim = false
-            }
-            target.hasLookNode -> {
-                val ldx = target.lookX - currentX
-                val ldy = target.lookY - currentEyeY
-                val ldz = target.lookZ - currentZ
-                val ldistH = sqrt(ldx * ldx + ldz * ldz)
-                goalYaw = (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
-                goalPitch = (-Math.toDegrees(atan2(ldy, ldistH))).toFloat().coerceIn(-89f, 89f)
                 isFastAim = false
             }
             else -> {
