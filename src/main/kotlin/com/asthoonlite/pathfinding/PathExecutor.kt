@@ -274,8 +274,13 @@ object PathExecutor {
         if (nodeType == RouteNodeType.BONZO_STAFF) {
             val triggerDist = if (isHighSpeed) 2.2 else 1.5
             val isAtNodeElev = player.y >= target.y - 0.6 && player.y <= target.y + 1.5
+            val toTargetDx = target.x - player.x
+            val toTargetDz = target.z - player.z
+            val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
+            val isAtLedge = isLedgeOrGapAhead(level, player, targetYaw)
             val canLaunch = !player.isInLava && !player.isInWater &&
-                            distH <= triggerDist && isAtNodeElev &&
+                            (distH <= triggerDist || (isAtLedge && distH <= 3.0)) &&
+                            isAtNodeElev &&
                             (player.onGround() || player.deltaMovement.y <= 0.05)
             if (canLaunch) {
                 initiateBonzoLaunch(points, isHighSpeed)
@@ -311,6 +316,10 @@ object PathExecutor {
         // 3. Specialized Stationary Nodes: Simon Says, Arrows Align, Timeout
         if (nodeType == RouteNodeType.SIMON_SAYS && distH < 1.8 && distY < 2.2) {
             releaseAllMovementKeys()
+            val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
+            if (hSpeed > 1.2) {
+                mc.options.keyDown.setDown(true)
+            }
             aimTowards(player, target, Vec3(110.5, 121.5, 93.5))
             if (F7Devices.isSimonCompleted()) {
                 currentNodeIndex++
@@ -322,6 +331,10 @@ object PathExecutor {
 
         if (nodeType == RouteNodeType.ARROWS_ALIGN && distH < 1.8 && distY < 2.2) {
             releaseAllMovementKeys()
+            val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
+            if (hSpeed > 1.2) {
+                mc.options.keyDown.setDown(true)
+            }
             aimTowards(player, target, Vec3(-2.0, 122.5, 77.0))
             if (ArrowAlignSolver.isSolved()) {
                 currentNodeIndex++
@@ -333,6 +346,10 @@ object PathExecutor {
 
         if (nodeType == RouteNodeType.TIMEOUT && distH < 1.3 && distY < 2.2) {
             releaseAllMovementKeys()
+            val hSpeed = player.deltaMovement.horizontalDistance() * 20.0
+            if (hSpeed > 1.2) {
+                mc.options.keyDown.setDown(true)
+            }
             aimTowards(player, target, null)
             if (timeoutTicksRemaining < 0) {
                 val duration = if (target.timeoutSeconds > 0.0) target.timeoutSeconds else 1.0
@@ -397,23 +414,19 @@ object PathExecutor {
             }
         }
 
-        // 5. Waypoint Lookahead, Look Node Aiming & Corner-Rounding
+        // 5. Waypoint Lookahead, Look Node Aiming & Smooth Natural Camera Control
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
-        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 2.0) {
+        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 2.5) {
+            // Smoothly pre-aim launch yaw and downward ground pitch (79°) as player approaches Bonzo node
             val bDx = nextTarget.x - player.x
             val bDz = nextTarget.z - player.z
             val bYaw = (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
             val deltaYaw = Mth.wrapDegrees(bYaw - player.yRot)
-            val desiredPitch = if (target.pitch in 15.0f..75.0f) {
-                target.pitch
-            } else {
-                if (nextTarget.y > player.y + 2.0) 32.0f else 55.0f
-            }
-            val deltaPitch = (desiredPitch - player.xRot)
-            val maxTurnRate = 35.0f
-            player.yRot += (deltaYaw * 0.55f).coerceIn(-maxTurnRate, maxTurnRate)
-            player.xRot += (deltaPitch * 0.55f).coerceIn(-maxTurnRate, maxTurnRate)
+            val deltaPitch = (79.0f - player.xRot)
+            val maxTurnRate = 18.0f
+            player.yRot += (deltaYaw * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
+            player.xRot += (deltaPitch * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
         } else {
             val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
                 ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
@@ -437,90 +450,99 @@ object PathExecutor {
             val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
 
             val destYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
-            val destPitch = (-Math.toDegrees(atan2(dy, aimDistH))).toFloat().coerceIn(-89f, 89f)
+            // Natural human pitch: look toward eye-level horizon (Y + 1.2), not down at feet
+            val targetEyeY = target.y + 1.2
+            val aimDy = targetEyeY - (player.y + player.eyeHeight)
+            val destPitch = (-Math.toDegrees(atan2(aimDy, aimDistH))).toFloat().coerceIn(-15.0f, 15.0f)
 
-            // Organic micro-sway matching recorded run data
-            val swayYaw = (sin(tickCount * 0.45) * 0.35 + sin(tickCount * 0.95) * 0.18).toFloat()
-            val swayPitch = (cos(tickCount * 0.40) * 0.22).toFloat()
+            // Organic human-like micro-sway
+            val swayYaw = (sin(tickCount * 0.35) * 0.22 + sin(tickCount * 0.8) * 0.10).toFloat()
+            val swayPitch = (cos(tickCount * 0.30) * 0.12).toFloat()
 
             val deltaYaw = Mth.wrapDegrees(destYaw + swayYaw - player.yRot)
             val deltaPitch = (destPitch + swayPitch - player.xRot)
 
-            val maxTurnRate = 32.0f
-            val turnStep = (deltaYaw * 0.42f).coerceIn(-maxTurnRate, maxTurnRate)
-            player.yRot += turnStep
-            player.xRot += deltaPitch * 0.42f
+            // Smooth damping: turn smoothly without hard robotic locks or jarring jumps
+            val maxTurnRateYaw = 12.0f
+            val maxTurnRatePitch = 6.0f
+            val turnStepYaw = (deltaYaw * 0.25f).coerceIn(-maxTurnRateYaw, maxTurnRateYaw)
+            val turnStepPitch = (deltaPitch * 0.20f).coerceIn(-maxTurnRatePitch, maxTurnRatePitch)
+            player.yRot += turnStepYaw
+            player.xRot += turnStepPitch
         }
 
-        // 6. Movement Controls with Look-Node, Crouch, Pre-Aim & In-Air Speed/Overshoot Adjustment
+        // 6. Movement Controls with WASD Vectoring, In-Air Braking & Ledge Jump Handling
         val isCrouchNode = (nodeType == RouteNodeType.CROUCH)
-        val isPreAimingBonzo = (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 1.8)
         val isAirborne = !player.onGround() && !player.isInLava && !player.isInWater
+        val isStationaryDest = (nodeType == RouteNodeType.SIMON_SAYS ||
+                                nodeType == RouteNodeType.ARROWS_ALIGN ||
+                                nodeType == RouteNodeType.TIMEOUT ||
+                                currentNodeIndex == points.size - 1)
 
-        // In-air speed & trajectory distance adjustment:
-        // When airborne and descending towards the target, estimate if horizontal velocity will overshoot the platform.
-        // If overshooting, tap S and release sprint to brake in the air; if falling short, hold W and sprint to stretch distance.
+        // In-Air Braking & Deceleration:
+        // When airborne and heading towards any destination:
+        // - If destination is stationary (e.g. Simon Says) and distH < 3.8: brake hard to drop onto platform!
+        // - If descending and projected flight distance overshoots platform target: tap S and release sprint!
         var inAirBrakeActive = false
         if (isAirborne && bonzoState == BonzoState.IDLE) {
             val vy = player.deltaMovement.y
             val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
-            val distToTargetH = Math.hypot(target.x - player.x, target.z - player.z)
-            if (vy < -0.05 && distToTargetH < 6.0) {
-                val heightAboveTarget = player.y - target.y
-                if (heightAboveTarget > 0.0) {
-                    val ticksToLand = (heightAboveTarget / Math.abs(vy)).coerceIn(1.0, 15.0)
-                    val predictedDistance = (currentBpsH / 20.0) * ticksToLand
-                    val overshoot = predictedDistance - distToTargetH
-                    if (overshoot > 0.8) {
-                        inAirBrakeActive = true
-                    }
+            if (isStationaryDest && distH < 3.8) {
+                inAirBrakeActive = true
+            } else if (vy < 0.1 && distH < 6.0 && currentBpsH > 5.0) {
+                val heightAboveTarget = (player.y - target.y).coerceAtLeast(0.2)
+                val fallSpeed = Math.abs(vy).coerceAtLeast(0.18)
+                val ticksToLand = (heightAboveTarget / fallSpeed).coerceIn(1.0, 12.0)
+                val predictedTravelH = (currentBpsH / 20.0) * ticksToLand
+                val overshoot = predictedTravelH - distH
+                if (overshoot > 0.8) {
+                    inAirBrakeActive = true
                 }
             }
         }
 
         if (inAirBrakeActive) {
-            // Apply air brake: release sprint and tap S
+            // Apply air brake: cancel forward sprint and tap S to drop cleanly
             mc.options.keySprint.setDown(false)
             mc.options.keyUp.setDown(false)
             mc.options.keyDown.setDown(true)
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
-        } else if ((target.hasLookNode || isPreAimingBonzo) && distH > 0.8) {
+        } else {
+            // WASD Vectoring: calculate camera-relative movement angles
+            // This allows the camera to smoothly look around while keys guide movement precisely!
             val moveYaw = (-Math.toDegrees(atan2(target.x - player.x, target.z - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
             val rad = Math.toRadians(angleDiff.toDouble())
             val forward = cos(rad)
             val strafe = -sin(rad)
-            mc.options.keyUp.setDown(forward > 0.2)
-            mc.options.keyDown.setDown(forward < -0.2)
-            mc.options.keyLeft.setDown(strafe < -0.2)
-            mc.options.keyRight.setDown(strafe > 0.2)
 
-            if (isCrouchNode) {
-                mc.options.keyShift.setDown(true)
+            // Stationary arrival deceleration (e.g. approaching Simon Says on ground)
+            val isSlowingForStationary = isStationaryDest && player.onGround() && distH < 2.5
+            val isStoppingForStationary = isStationaryDest && player.onGround() && distH < 1.4
+
+            if (isStoppingForStationary) {
+                mc.options.keyUp.setDown(false)
+                mc.options.keyDown.setDown(true) // quick brake tap
+                mc.options.keyLeft.setDown(false)
+                mc.options.keyRight.setDown(false)
                 mc.options.keySprint.setDown(false)
             } else {
-                mc.options.keyShift.setDown(false)
-                val wantsSprint = forward > 0.4
-                mc.options.keySprint.setDown(wantsSprint)
-                if (wantsSprint && !player.isSprinting) {
-                    player.setSprinting(true)
-                }
-            }
-        } else {
-            mc.options.keyUp.setDown(true)
-            mc.options.keyDown.setDown(false)
-            mc.options.keyLeft.setDown(false)
-            mc.options.keyRight.setDown(false)
+                mc.options.keyUp.setDown(forward > 0.25)
+                mc.options.keyDown.setDown(forward < -0.25)
+                mc.options.keyLeft.setDown(strafe > 0.25)
+                mc.options.keyRight.setDown(strafe < -0.25)
 
-            if (isCrouchNode) {
-                mc.options.keyShift.setDown(true)
-                mc.options.keySprint.setDown(false)
-            } else {
-                mc.options.keyShift.setDown(false)
-                mc.options.keySprint.setDown(true)
-                if (!player.isSprinting) {
-                    player.setSprinting(true)
+                if (isCrouchNode) {
+                    mc.options.keyShift.setDown(true)
+                    mc.options.keySprint.setDown(false)
+                } else {
+                    mc.options.keyShift.setDown(false)
+                    val wantsSprint = forward > 0.38 && !isSlowingForStationary
+                    mc.options.keySprint.setDown(wantsSprint)
+                    if (wantsSprint && !player.isSprinting) {
+                        player.setSprinting(true)
+                    }
                 }
             }
         }
@@ -530,8 +552,9 @@ object PathExecutor {
         val toTargetDz = target.z - player.z
         val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
         val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
-        // Auto gap jump: on WALK nodes, OR when target is across a chasm on another platform (distH > 2.0)
-        val canAutoGapJump = player.onGround() && isLedge && (nodeType == RouteNodeType.WALK || distH > 2.0)
+        // Auto gap jump: ONLY on WALK nodes
+        // NEVER on BONZO_STAFF (Bonzo handles its own launch)
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK) && player.onGround() && isLedge
         val isObstacleCollision = player.horizontalCollision && player.onGround()
         val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
@@ -600,9 +623,9 @@ object PathExecutor {
         val deltaYaw = Mth.wrapDegrees(destYaw - player.yRot)
         val deltaPitch = (destPitch - player.xRot)
 
-        val maxTurnRate = 35.0f
-        player.yRot += (deltaYaw * 0.45f).coerceIn(-maxTurnRate, maxTurnRate)
-        player.xRot += (deltaPitch * 0.45f).coerceIn(-maxTurnRate, maxTurnRate)
+        val maxTurnRate = 18.0f
+        player.yRot += (deltaYaw * 0.32f).coerceIn(-maxTurnRate, maxTurnRate)
+        player.xRot += (deltaPitch * 0.30f).coerceIn(-maxTurnRate, maxTurnRate)
     }
 
     private fun findTerminalTarget(level: net.minecraft.world.level.Level, center: Vec3): Vec3? {
@@ -684,29 +707,14 @@ object PathExecutor {
         val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
         bonzoLaunchYaw = launchYaw
 
-        // Calculate current forward momentum to determine optimal pitch.
-        // At full speed (>= 14 bps), a shallow pitch (e.g. 32° or node pitch) launches forward cleanly
-        // because player momentum carries them past the impact point before detonation.
-        // When just starting to accelerate (< 14 bps), projectile must hit directly under/behind feet
-        // (steep pitch 78°–82°) so the blast does NOT land in front of the player and knock them backwards.
-        val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
-        val targetPitch = if (currentNode.pitch in 15.0f..75.0f) {
-            currentNode.pitch
-        } else {
-            if (destination.y > player.y + 2.0) 32.0f else 55.0f
-        }
+        // Bonzo ground impact pitch:
+        // In Hypixel SkyBlock, to launch yourself across a chasm, the balloon MUST impact
+        // the solid platform floor right at the player's feet (78°–82°).
+        // If pitch is shallow (e.g. 30°–60°), the projectile flies off the platform into the void.
+        // A steep pitch of 79° guarantees the projectile hits the solid platform block 0.3 blocks
+        // under the player's feet in 1 tick, giving maximum forward and upward knockback boost.
+        val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
 
-        val launchPitch = if (currentBpsH >= 14.0) {
-            targetPitch
-        } else if (currentBpsH < 6.0) {
-            80.0f
-        } else {
-            // Smoothly interpolate between 80° (standstill/accelerating) and targetPitch (full sprint)
-            val t = ((currentBpsH - 6.0) / 8.0).toFloat().coerceIn(0.0f, 1.0f)
-            80.0f * (1.0f - t) + targetPitch * t
-        }
-
-        // Snap body orientation and pitch firmly towards destination
         player.yRot = launchYaw
         player.xRot = launchPitch
 
@@ -714,6 +722,8 @@ object PathExecutor {
         // Advancing over the impact point ensures the blast catches the player from behind and boosts forward.
         mc.options.keyUp.setDown(true)
         mc.options.keyDown.setDown(false)
+        mc.options.keyLeft.setDown(false)
+        mc.options.keyRight.setDown(false)
         mc.options.keySprint.setDown(true)
         player.setSprinting(true)
 
@@ -727,19 +737,20 @@ object PathExecutor {
         PathfindCapture.notifyBonzoShot("AUTO_EXECUTOR")
 
         bonzoState = BonzoState.POST_FIRE_PROPEL
-        bonzoTicksRemaining = 6
+        bonzoTicksRemaining = 8
     }
 
     private fun handleActiveBonzoState(points: List<PathPoint>, isHighSpeed: Boolean) {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
-        val currentNode = points.getOrNull(currentNodeIndex)
 
         when (bonzoState) {
             BonzoState.POST_FIRE_PROPEL -> {
                 // Engage forward (W) and Sprint directly in direction of destination
                 mc.options.keyUp.setDown(true)
                 mc.options.keyDown.setDown(false)
+                mc.options.keyLeft.setDown(false)
+                mc.options.keyRight.setDown(false)
                 mc.options.keySprint.setDown(true)
                 player.setSprinting(true)
 
@@ -751,14 +762,13 @@ object PathExecutor {
                     mc.options.keyJump.setDown(false)
                 }
 
-                // Hold body and pitch firmly in launch orientation
-                player.yRot = bonzoLaunchYaw
-                val launchPitch = if (currentNode != null && currentNode.pitch in 15.0f..75.0f) {
-                    currentNode.pitch
-                } else {
-                    50.0f
-                }
-                player.xRot = launchPitch
+                // Smoothly recover camera pitch from ground (79°) back up to eye level (10°)
+                // and keep yaw smoothly aligned with launchYaw
+                val deltaYaw = Mth.wrapDegrees(bonzoLaunchYaw - player.yRot)
+                player.yRot += (deltaYaw * 0.35f).coerceIn(-12.0f, 12.0f)
+                val targetRecoveryPitch = 10.0f
+                val deltaPitch = targetRecoveryPitch - player.xRot
+                player.xRot += (deltaPitch * 0.30f).coerceIn(-15.0f, 15.0f)
 
                 bonzoTicksRemaining--
                 if (bonzoTicksRemaining <= 0) {

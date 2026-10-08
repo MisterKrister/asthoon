@@ -436,25 +436,15 @@ internal fun simonDeviceRegressionChecks() {
         "CROUCH node must advance via generic arrival check"
     }
 
-    // 20. Speed-adaptive Bonzo pitch calculation (low speed / accelerating vs full sprint)
-    fun computeBonzoPitch(currentBpsH: Double, targetPitch: Float): Float {
-        return if (currentBpsH >= 14.0) {
-            targetPitch
-        } else if (currentBpsH < 6.0) {
-            80.0f
-        } else {
-            val t = ((currentBpsH - 6.0) / 8.0).toFloat().coerceIn(0.0f, 1.0f)
-            80.0f * (1.0f - t) + targetPitch * t
-        }
+    // 20. Bonzo ground impact pitch calculation
+    fun computeBonzoLaunchPitch(configuredPitch: Float): Float {
+        return if (configuredPitch in 75.0f..88.0f) configuredPitch else 79.0f
     }
-    // At standstill / early acceleration (e.g. 0 to 4 bps): pitch must be steep (~80°) to detonate under feet
-    check(computeBonzoPitch(0.0, 32.55f) == 80.0f) { "Bonzo from standstill must aim steep (80°) directly under feet" }
-    check(computeBonzoPitch(4.0, 32.55f) == 80.0f) { "Bonzo starting acceleration must aim steep (80°)" }
-    // At full sprint (>= 14 bps): pitch matches target pitch (e.g. 32.55°) to launch with maximum forward angle
-    check(computeBonzoPitch(16.0, 32.55f) == 32.55f) { "Bonzo at full sprint must use configured/shallow target pitch" }
-    // In-between (e.g. 10 bps): smoothly interpolated
-    val midPitch = computeBonzoPitch(10.0, 32.55f)
-    check(midPitch in 33.0f..79.0f) { "Bonzo at intermediate speed must interpolate pitch smoothly" }
+    // Forward / shallow view angles (e.g. 32.55° or 40° looking at next platform): must be overridden to steep 79°
+    check(computeBonzoLaunchPitch(32.55f) == 79.0f) { "Forward pitch must default to steep ground pitch (79°)" }
+    check(computeBonzoLaunchPitch(0.0f) == 79.0f) { "Horizontal pitch must default to steep ground pitch (79°)" }
+    // User specifically configured steep pitch (e.g. 82°): honored
+    check(computeBonzoLaunchPitch(82.0f) == 82.0f) { "Configured steep pitch must be honored" }
 
     // 21. Stair-climb elevation arrival gating
     fun canArriveElevatedNode(playerY: Double, targetY: Double, distH: Double): Boolean {
@@ -468,23 +458,67 @@ internal fun simonDeviceRegressionChecks() {
     // Once player steps onto platform at Y=118.8, distH 0.9: arrival triggers cleanly
     check(canArriveElevatedNode(118.8, 119.0, 0.9)) { "Player arriving at top platform must trigger arrival" }
 
-    // 22. In-air overshoot brake detection
-    fun shouldInAirBrake(vy: Double, currentBpsH: Double, playerY: Double, targetY: Double, distToTargetH: Double): Boolean {
-        if (vy >= -0.05 || distToTargetH >= 6.0) return false
-        val height = playerY - targetY
-        if (height <= 0.0) return false
-        val ticksToLand = (height / Math.abs(vy)).coerceIn(1.0, 15.0)
+    // 22. In-air overshoot brake detection & stationary destination braking
+    fun shouldInAirBrake(
+        isStationaryDest: Boolean,
+        distToTargetH: Double,
+        vy: Double,
+        currentBpsH: Double,
+        playerY: Double,
+        targetY: Double
+    ): Boolean {
+        if (isStationaryDest && distToTargetH < 3.8) return true
+        if (vy >= 0.1 || distToTargetH >= 6.0 || currentBpsH <= 5.0) return false
+        val height = (playerY - targetY).coerceAtLeast(0.2)
+        val fallSpeed = Math.abs(vy).coerceAtLeast(0.18)
+        val ticksToLand = (height / fallSpeed).coerceIn(1.0, 12.0)
         val predictedDist = (currentBpsH / 20.0) * ticksToLand
         return (predictedDist - distToTargetH) > 0.8
     }
+    // High velocity approaching Simon Says in mid-air: must brake hard to prevent flying past platform
+    check(shouldInAirBrake(isStationaryDest = true, distToTargetH = 3.2, vy = 0.05, currentBpsH = 18.0, playerY = 120.0, targetY = 120.0)) {
+        "Airborne approach towards stationary destination must engage air brake"
+    }
     // High velocity (18 bps) close to target (2.0m) while descending: must brake to prevent overshoot
-    check(shouldInAirBrake(vy = -0.3, currentBpsH = 18.0, playerY = 120.5, targetY = 119.0, distToTargetH = 2.0)) {
+    check(shouldInAirBrake(isStationaryDest = false, distToTargetH = 2.0, vy = -0.3, currentBpsH = 18.0, playerY = 120.5, targetY = 119.0)) {
         "High-velocity airborne descent overshooting target must engage air brake"
     }
     // Normal trajectory falling short (need distance): must NOT brake
-    check(!shouldInAirBrake(vy = -0.3, currentBpsH = 12.0, playerY = 120.5, targetY = 119.0, distToTargetH = 5.0)) {
+    check(!shouldInAirBrake(isStationaryDest = false, distToTargetH = 5.0, vy = -0.3, currentBpsH = 12.0, playerY = 120.5, targetY = 119.0)) {
         "Airborne descent needing distance must not engage air brake"
     }
+
+    // 23. WASD Movement Key Vectoring from camera-relative angle
+    fun computeWasd(angleDiffDeg: Double): List<Boolean> {
+        val rad = Math.toRadians(angleDiffDeg)
+        val forward = Math.cos(rad)
+        val strafe = -Math.sin(rad)
+        val w = forward > 0.25
+        val s = forward < -0.25
+        val a = strafe > 0.25
+        val d = strafe < -0.25
+        return listOf(w, s, a, d)
+    }
+    // Looking straight ahead (0°): W only
+    check(computeWasd(0.0) == listOf(true, false, false, false)) { "0° angle diff must press W only" }
+    // Target 45° to the right (+45°): W + D
+    check(computeWasd(45.0) == listOf(true, false, false, true)) { "+45° angle diff must press W + D" }
+    // Target 90° to the right (+90°): D only
+    check(computeWasd(90.0) == listOf(false, false, false, true)) { "+90° angle diff must press D only" }
+    // Target 45° to the left (-45°): W + A
+    check(computeWasd(-45.0) == listOf(true, false, true, false)) { "-45° angle diff must press W + A" }
+    // Target 90° to the left (-90°): A only
+    check(computeWasd(-90.0) == listOf(false, false, true, false)) { "-90° angle diff must press A only" }
+    // Target behind (180°): S only
+    check(computeWasd(180.0) == listOf(false, true, false, false)) { "180° angle diff must press S only" }
+
+    // 24. Auto-gap jump restricted to WALK nodes
+    fun canAutoGapJump(nodeType: RouteNodeType, onGround: Boolean, isLedge: Boolean): Boolean {
+        return (nodeType == RouteNodeType.WALK) && onGround && isLedge
+    }
+    check(canAutoGapJump(RouteNodeType.WALK, onGround = true, isLedge = true)) { "Gap on WALK node must trigger jump" }
+    check(!canAutoGapJump(RouteNodeType.BONZO_STAFF, onGround = true, isLedge = true)) { "Gap on BONZO_STAFF node must NEVER auto-jump" }
+    check(!canAutoGapJump(RouteNodeType.CROUCH, onGround = true, isLedge = true)) { "Gap on CROUCH node must not auto-jump" }
 }
 
 
