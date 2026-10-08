@@ -488,37 +488,79 @@ internal fun simonDeviceRegressionChecks() {
         "Airborne descent needing distance must not engage air brake"
     }
 
-    // 23. WASD Movement Key Vectoring from camera-relative angle
-    fun computeWasd(angleDiffDeg: Double): List<Boolean> {
+    // 23. WASD Movement Key Vectoring (look-node decoupled vs normal straight pathing)
+    fun computeWasd(hasLookNode: Boolean, isAirborne: Boolean, angleDiffDeg: Double): List<Boolean> {
+        if (isAirborne) return listOf(true, false, false, false) // in-air: straight forward flight only
         val rad = Math.toRadians(angleDiffDeg)
         val forward = Math.cos(rad)
         val strafe = -Math.sin(rad)
-        val w = forward > 0.25
-        val s = forward < -0.25
-        val a = strafe > 0.25
-        val d = strafe < -0.25
-        return listOf(w, s, a, d)
+        return if (hasLookNode) {
+            val w = forward > 0.25
+            val s = forward < -0.25
+            val a = strafe > 0.25
+            val d = strafe < -0.25
+            listOf(w, s, a, d)
+        } else {
+            val isSharpTurn = Math.abs(angleDiffDeg) > 50.0
+            val w = forward > 0.1 || !isSharpTurn
+            val s = forward < -0.5
+            val a = isSharpTurn && strafe > 0.5
+            val d = isSharpTurn && strafe < -0.5
+            listOf(w, s, a, d)
+        }
     }
-    // Looking straight ahead (0°): W only
-    check(computeWasd(0.0) == listOf(true, false, false, false)) { "0° angle diff must press W only" }
-    // Target 45° to the right (+45°): W + D
-    check(computeWasd(45.0) == listOf(true, false, false, true)) { "+45° angle diff must press W + D" }
-    // Target 90° to the right (+90°): D only
-    check(computeWasd(90.0) == listOf(false, false, false, true)) { "+90° angle diff must press D only" }
-    // Target 45° to the left (-45°): W + A
-    check(computeWasd(-45.0) == listOf(true, false, true, false)) { "-45° angle diff must press W + A" }
-    // Target 90° to the left (-90°): A only
-    check(computeWasd(-90.0) == listOf(false, false, true, false)) { "-90° angle diff must press A only" }
-    // Target behind (180°): S only
-    check(computeWasd(180.0) == listOf(false, true, false, false)) { "180° angle diff must press S only" }
+    // Normal pathing with minor camera deviation (-35°): W only, NO sideways crab-walking!
+    check(computeWasd(hasLookNode = false, isAirborne = false, -35.0) == listOf(true, false, false, false)) {
+        "Minor angle deviation during normal pathing must not engage strafe keys"
+    }
+    // Normal pathing on sharp corner (60°): W + D assists turn
+    check(computeWasd(hasLookNode = false, isAirborne = false, 60.0) == listOf(true, false, false, true)) {
+        "Sharp corner on normal pathing must engage strafe assist"
+    }
+    // Airborne jump flight: ALWAYS straight forward, zero sideways drift
+    check(computeWasd(hasLookNode = false, isAirborne = true, -45.0) == listOf(true, false, false, false)) {
+        "Airborne flight must never engage strafe keys"
+    }
+    // Decoupled look node: full WASD vectoring
+    check(computeWasd(hasLookNode = true, isAirborne = false, -45.0) == listOf(true, false, true, false)) {
+        "Look-node decoupled pathing must support full WASD strafing"
+    }
 
-    // 24. Auto-gap jump restricted to WALK nodes
-    fun canAutoGapJump(nodeType: RouteNodeType, onGround: Boolean, isLedge: Boolean): Boolean {
-        return (nodeType == RouteNodeType.WALK) && onGround && isLedge
+    // 24. Auto-gap jump towards distant platform across chasm
+    fun canAutoGapJump(onGround: Boolean, isLedge: Boolean, distH: Double, isCrouch: Boolean): Boolean {
+        return onGround && isLedge && distH > 1.4 && !isCrouch
     }
-    check(canAutoGapJump(RouteNodeType.WALK, onGround = true, isLedge = true)) { "Gap on WALK node must trigger jump" }
-    check(!canAutoGapJump(RouteNodeType.BONZO_STAFF, onGround = true, isLedge = true)) { "Gap on BONZO_STAFF node must NEVER auto-jump" }
-    check(!canAutoGapJump(RouteNodeType.CROUCH, onGround = true, isLedge = true)) { "Gap on CROUCH node must not auto-jump" }
+    // Approaching chasm ledge to distant platform (8.9m, e.g. Node 2 to Node 3): MUST JUMP!
+    check(canAutoGapJump(onGround = true, isLedge = true, distH = 8.9, isCrouch = false)) {
+        "Ledge jump to distant platform across chasm must trigger"
+    }
+    // Already arrived on platform (distH <= 1.4): must NOT jump
+    check(!canAutoGapJump(onGround = true, isLedge = true, distH = 1.0, isCrouch = false)) {
+        "Ledge jump must not trigger when already arrived on platform"
+    }
+
+    // 25. Bonzo Staff launch platform arrival & sprint momentum gating
+    fun canLaunchBonzo(onGround: Boolean, distH: Double, currentBpsH: Double, isAtLaunchLedge: Boolean): Boolean {
+        val isArrived = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
+        val hasSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
+        return onGround && isArrived && hasSpeed
+    }
+    // Airborne descending from jump onto pillar (onGround = false): must NEVER fire mid-air!
+    check(!canLaunchBonzo(onGround = false, distH = 1.2, currentBpsH = 0.0, isAtLaunchLedge = false)) {
+        "Airborne descent onto Bonzo pillar must not fire prematurely"
+    }
+    // Just touched down on pillar with 0 speed (not accelerated yet): must NOT fire yet!
+    check(!canLaunchBonzo(onGround = true, distH = 1.4, currentBpsH = 2.0, isAtLaunchLedge = false)) {
+        "Slow speed touchdown on Bonzo pillar must not fire before accelerating"
+    }
+    // Sprinting across pillar at full speed (12 bps): FIRES WITH FULL MOMENTUM!
+    check(canLaunchBonzo(onGround = true, distH = 1.2, currentBpsH = 12.0, isAtLaunchLedge = false)) {
+        "Sprint momentum on Bonzo pillar must trigger full-power launch"
+    }
+    // Reached launch ledge of pillar: fires before falling off!
+    check(canLaunchBonzo(onGround = true, distH = 1.8, currentBpsH = 5.0, isAtLaunchLedge = true)) {
+        "Reaching launch ledge of Bonzo pillar must trigger launch"
+    }
 }
 
 

@@ -272,21 +272,26 @@ object PathExecutor {
 
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
-            val triggerDist = if (isHighSpeed) 2.2 else 1.5
-            val isAtNodeElev = player.y >= target.y - 0.6 && player.y <= target.y + 1.5
-            val toTargetDx = target.x - player.x
-            val toTargetDz = target.z - player.z
-            val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
-            val isAtLedge = isLedgeOrGapAhead(level, player, targetYaw)
-            val canLaunch = !player.isInLava && !player.isInWater &&
-                            (distH <= triggerDist || (isAtLedge && distH <= 3.0)) &&
-                            isAtNodeElev &&
-                            (player.onGround() || player.deltaMovement.y <= 0.05)
+            val isAtNodeElev = player.y >= target.y - 0.5 && player.y <= target.y + 1.2
+            val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
+            val toNextDx = if (nextTarget != null) nextTarget.x - player.x else target.x - player.x
+            val toNextDz = if (nextTarget != null) nextTarget.z - player.z else target.z - player.z
+            val nextYaw = (-Math.toDegrees(atan2(toNextDx, toNextDz))).toFloat()
+            val isAtLaunchLedge = isLedgeOrGapAhead(level, player, nextYaw)
+
+            // Must be on solid ground (NEVER mid-air while landing from a prior jump)
+            // Must have arrived on the platform (distH <= 1.5 or at launch ledge)
+            // Must have forward sprint speed (bpsH >= 8.0) or be right at the platform edge
+            val isArrivedOnPlatform = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
+            val hasLaunchSpeed = currentBpsH >= 8.0 || isAtLaunchLedge
+            val canLaunch = player.onGround() && !player.isInLava && !player.isInWater &&
+                            isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed
+
             if (canLaunch) {
                 initiateBonzoLaunch(points, isHighSpeed)
                 return
             }
-            // Otherwise, continue walking towards the Bonzo trigger zone
+            // Otherwise, continue walking/sprinting towards the Bonzo launch point
         }
 
         // 3. Handle approaching / arriving at a JUMP node
@@ -415,6 +420,23 @@ object PathExecutor {
         }
 
         // 5. Waypoint Lookahead, Look Node Aiming & Smooth Natural Camera Control
+        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
+            ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
+        } else {
+            0.0
+        }
+
+        val aimX = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.x * (1.0 - lookaheadBlend) + nextTarget.x * lookaheadBlend
+        } else {
+            target.x
+        }
+        val aimZ = if (lookaheadBlend > 0.0 && nextTarget != null) {
+            target.z * (1.0 - lookaheadBlend) + nextTarget.z * lookaheadBlend
+        } else {
+            target.z
+        }
+
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
         } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 2.5) {
@@ -428,23 +450,6 @@ object PathExecutor {
             player.yRot += (deltaYaw * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
             player.xRot += (deltaPitch * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
         } else {
-            val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
-                ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
-            } else {
-                0.0
-            }
-
-            val aimX = if (lookaheadBlend > 0.0 && nextTarget != null) {
-                target.x * (1.0 - lookaheadBlend) + nextTarget.x * lookaheadBlend
-            } else {
-                target.x
-            }
-            val aimZ = if (lookaheadBlend > 0.0 && nextTarget != null) {
-                target.z * (1.0 - lookaheadBlend) + nextTarget.z * lookaheadBlend
-            } else {
-                target.z
-            }
-
             val aimDx = aimX - player.x
             val aimDz = aimZ - player.z
             val aimDistH = sqrt(aimDx * aimDx + aimDz * aimDz)
@@ -508,18 +513,27 @@ object PathExecutor {
             mc.options.keyDown.setDown(true)
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
+        } else if (isAirborne) {
+            // In air during flight/jumps: NEVER strafe sideways (prevents deflecting into lava)
+            mc.options.keyUp.setDown(true)
+            mc.options.keyDown.setDown(false)
+            mc.options.keyLeft.setDown(false)
+            mc.options.keyRight.setDown(false)
+            mc.options.keySprint.setDown(true)
+            player.setSprinting(true)
         } else {
-            // WASD Vectoring: calculate camera-relative movement angles
-            // This allows the camera to smoothly look around while keys guide movement precisely!
-            val moveYaw = (-Math.toDegrees(atan2(target.x - player.x, target.z - player.z))).toFloat()
+            // On ground: calculate movement vector towards target
+            val targetMoveX = if (lookaheadBlend > 0.0 && nextTarget != null) aimX else target.x
+            val targetMoveZ = if (lookaheadBlend > 0.0 && nextTarget != null) aimZ else target.z
+            val moveYaw = (-Math.toDegrees(atan2(targetMoveX - player.x, targetMoveZ - player.z))).toFloat()
             val angleDiff = Mth.wrapDegrees(moveYaw - player.yRot)
             val rad = Math.toRadians(angleDiff.toDouble())
             val forward = cos(rad)
             val strafe = -sin(rad)
 
             // Stationary arrival deceleration (e.g. approaching Simon Says on ground)
-            val isSlowingForStationary = isStationaryDest && player.onGround() && distH < 2.5
-            val isStoppingForStationary = isStationaryDest && player.onGround() && distH < 1.4
+            val isSlowingForStationary = isStationaryDest && distH < 2.5
+            val isStoppingForStationary = isStationaryDest && distH < 1.4
 
             if (isStoppingForStationary) {
                 mc.options.keyUp.setDown(false)
@@ -527,7 +541,8 @@ object PathExecutor {
                 mc.options.keyLeft.setDown(false)
                 mc.options.keyRight.setDown(false)
                 mc.options.keySprint.setDown(false)
-            } else {
+            } else if (target.hasLookNode) {
+                // Explicit look-node: camera is decoupled, full WASD vectoring
                 mc.options.keyUp.setDown(forward > 0.25)
                 mc.options.keyDown.setDown(forward < -0.25)
                 mc.options.keyLeft.setDown(strafe > 0.25)
@@ -538,7 +553,25 @@ object PathExecutor {
                     mc.options.keySprint.setDown(false)
                 } else {
                     mc.options.keyShift.setDown(false)
-                    val wantsSprint = forward > 0.38 && !isSlowingForStationary
+                    val wantsSprint = forward > 0.38
+                    mc.options.keySprint.setDown(wantsSprint)
+                    if (wantsSprint && !player.isSprinting) player.setSprinting(true)
+                }
+            } else {
+                // Normal pathing: forward W dominates to eliminate sideways drift/crab-walking
+                val isSharpTurn = Math.abs(angleDiff) > 50.0
+                mc.options.keyUp.setDown(forward > 0.1 || !isSharpTurn)
+                mc.options.keyDown.setDown(forward < -0.5)
+                // Only assist with strafe keys on very sharp corners (> 50°)
+                mc.options.keyLeft.setDown(isSharpTurn && strafe > 0.5)
+                mc.options.keyRight.setDown(isSharpTurn && strafe < -0.5)
+
+                if (isCrouchNode) {
+                    mc.options.keyShift.setDown(true)
+                    mc.options.keySprint.setDown(false)
+                } else {
+                    mc.options.keyShift.setDown(false)
+                    val wantsSprint = (forward > 0.2 || !isSharpTurn) && !isSlowingForStationary
                     mc.options.keySprint.setDown(wantsSprint)
                     if (wantsSprint && !player.isSprinting) {
                         player.setSprinting(true)
@@ -552,14 +585,14 @@ object PathExecutor {
         val toTargetDz = target.z - player.z
         val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
         val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
-        // Auto gap jump: ONLY on WALK nodes
-        // NEVER on BONZO_STAFF (Bonzo handles its own launch)
-        val canAutoGapJump = (nodeType == RouteNodeType.WALK) && player.onGround() && isLedge
+        // Auto gap jump: trigger whenever there is a chasm/drop ahead of the player leading to target platform
+        // (distH > 1.4 ensures we jump chasms while traveling to any node platform including BONZO_STAFF)
+        val canAutoGapJump = player.onGround() && isLedge && distH > 1.4 && !isCrouchNode
         val isObstacleCollision = player.horizontalCollision && player.onGround()
         val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
         if ((canAutoGapJump || isObstacleCollision || isElevationStep) && jumpTicksRemaining <= 0) {
-            jumpTicksRemaining = 3
+            jumpTicksRemaining = 4
         }
 
         if (jumpTicksRemaining > 0) {
