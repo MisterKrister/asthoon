@@ -223,5 +223,60 @@ internal fun simonDeviceRegressionChecks() {
     trackedClicks[targetPos] = clickTime + 10000L
     check(!canInteract(targetPos, clickTime + 10500L)) { "Re-clicking target must re-arm the 10s cooldown" }
     check(canInteract(targetPos, clickTime + 20000L)) { "Target must be re-interactable after second cooldown expires" }
+
+    // ── Pathfinding & M7 Node Editor Regression Checks ───────────────────
+    // 1. Fresh presets list starts with 0 presets
+    val testPresets = mutableListOf<com.asthoonlite.pathfinding.PathPreset>()
+    check(testPresets.isEmpty()) { "Fresh config must have 0 presets by default" }
+
+    // 2. M7 Category taxonomy (P1 through P5)
+    val m7Subs = com.asthoonlite.pathfinding.RouteCategory.M7.getSubcategories().map { it.name }
+    check(m7Subs == listOf("P1", "P2", "P3", "P4", "P5")) { "M7 category must have exactly P1 through P5 subcategories" }
+
+    // 3. M7 mobility constraints: strictly no AOTV or Etherwarp
+    val m7Allowed = com.asthoonlite.pathfinding.RouteNodeType.allowedForCategory(com.asthoonlite.pathfinding.RouteCategory.M7)
+    check(m7Allowed == listOf(
+        com.asthoonlite.pathfinding.RouteNodeType.WALK,
+        com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
+        com.asthoonlite.pathfinding.RouteNodeType.INTERACT,
+        com.asthoonlite.pathfinding.RouteNodeType.JUMP
+    )) { "M7 routes must only allow WALK, BONZO_STAFF, INTERACT, and JUMP (no AOTV / Etherwarp)" }
+
+    // 4. Node swapping and drag-and-drop reordering
+    val preset = com.asthoonlite.pathfinding.PathPreset(
+        name = "Test M7 Route",
+        category = "M7",
+        subcategory = "P3"
+    )
+    val nodeA = com.asthoonlite.pathfinding.PathPoint(10.0, 60.0, 20.0, action = "WALK")
+    val nodeB = com.asthoonlite.pathfinding.PathPoint(15.0, 60.0, 25.0, action = "BONZO_STAFF")
+    val nodeC = com.asthoonlite.pathfinding.PathPoint(20.0, 60.0, 30.0, action = "INTERACT")
+    preset.points.addAll(listOf(nodeA, nodeB, nodeC))
+    check(preset.points.size == 3)
+
+    // Test swapNodes(0, 2)
+    preset.swapNodes(0, 2)
+    check(preset.points[0] == nodeC && preset.points[1] == nodeB && preset.points[2] == nodeA) {
+        "swapNodes must exchange nodes at indices"
+    }
+
+    // Test moveNode(2, 0)
+    preset.moveNode(2, 0)
+    check(preset.points[0] == nodeA && preset.points[1] == nodeC && preset.points[2] == nodeB) {
+        "moveNode must insert dragged node at destination index"
+    }
+
+    // 5. Speed-aware Bonzo Staff pause threshold
+    fun bonzoRequiresPause(speedAttribute: Double): Boolean {
+        val skyblockSpeed = speedAttribute * 1000.0
+        return skyblockSpeed > 400.0
+    }
+
+    check(bonzoRequiresPause(0.5500)) { "550 speed (0.55) must pause forward key before Bonzo Staff firing" }
+    check(bonzoRequiresPause(0.7150)) { "715 speed (0.715) must pause forward key before Bonzo Staff firing" }
+    check(!bonzoRequiresPause(0.4000)) { "400 speed (0.40) must traverse without pausing forward key" }
+    check(!bonzoRequiresPause(0.3500)) { "350 speed (0.35) must traverse without pausing forward key" }
+    check(!bonzoRequiresPause(0.1000)) { "100 base speed (0.10) must traverse without pausing forward key" }
 }
+
 

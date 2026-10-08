@@ -7,6 +7,10 @@ import com.asthoonlite.pathfinding.RouteCategory
 import com.asthoonlite.pathfinding.RouteSubcategory
 import com.asthoonlite.pathfinding.PathPreset
 import com.asthoonlite.pathfinding.PathPresetManager
+import com.asthoonlite.pathfinding.RouteEditor
+import com.asthoonlite.pathfinding.RouteNodeType
+import com.asthoonlite.pathfinding.PathExecutor
+import com.asthoonlite.pathfinding.PathPoint
 import com.asthoonlite.pet.PetHudEditorScreen
 import com.mojang.blaze3d.platform.InputConstants
 import net.minecraft.client.Minecraft
@@ -51,6 +55,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private enum class PathfindingSection(val label: String) {
         USER_PRESETS("User Presets"),
         CREATE_PRESET("Create Preset"),
+        ROUTE_EDITOR("Route Editor"),
         EXPORT_PRESET("Export Preset"),
         IMPORT_PRESET("Import Preset")
     }
@@ -162,6 +167,19 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var createPresetName: String = ""
     private var exportFeedbackMsg: String = ""
     private var importFeedbackMsg: String = ""
+
+    // Route Editor state
+    private var editorInputX: String = ""
+    private var editorInputY: String = ""
+    private var editorInputZ: String = ""
+    private var editorSelectedType: RouteNodeType = RouteNodeType.WALK
+    private var mouseDownNodeIdx: Int = -1
+    private var mouseClickStartX: Double = 0.0
+    private var mouseClickStartY: Double = 0.0
+    private var isDraggingNode: Boolean = false
+    private var draggingNodeFromIdx: Int = -1
+    private var draggingNodeHoverIdx: Int = -1
+    private val nodeItemBounds = mutableListOf<Triple<Int, Int, Int>>() // (index, topY, bottomY)
 
     // Scrollbar drag state
     private var isDraggingScrollbar = false
@@ -963,34 +981,40 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 val presets = PathPresetManager.getPresets()
                 items.add(SectionHeader("Saved User Presets (${presets.size})"))
                 if (presets.isEmpty()) {
-                    items.add(NoteRow("No presets found. Click 'Create Preset' above or import a preset."))
+                    items.add(NoteRow("0 Presets found. Click '+ Create New Route Preset' above to create one."))
                 } else {
                     for (preset in presets) {
                         val cat = preset.routeCategory()
                         val isActive = Config.activePathfindingPresetId == preset.id
 
                         items.add(SectionHeader("${cat.displayName} ✦ ${preset.name}"))
-                        items.add(NoteRow("Category: ${preset.category}  •  Subcategory: ${preset.subcategory}  •  Points: ${preset.points.size}"))
+                        items.add(NoteRow("Category: ${preset.category}  •  Subcategory: ${preset.subcategory}  •  Nodes: ${preset.points.size}"))
 
-                        val btnW = (subW - 8) / 3
-                        val selectBtnText = if (isActive) "Active ✓" else "Select Route"
+                        val btnW = (subW - 12) / 4
+                        val selectBtnText = if (isActive) "Active ✓" else "Select"
                         val selectBtnAccent = if (isActive) 0xFF10B981.toInt() else cat.color
                         val btnSelect = ModernButton(subX, 0, btnW, 22, Component.literal(selectBtnText), selectBtnAccent) {
                             Config.activePathfindingPresetId = if (isActive) "" else preset.id
                             rebuildTab(Tab.PATHFINDING)
                         }
-                        val btnExport = ModernButton(subX + btnW + 4, 0, btnW, 22, Component.literal("Export JSON"), 0xFF38BDF8.toInt()) {
+                        val btnEdit = ModernButton(subX + btnW + 4, 0, btnW, 22, Component.literal("Edit Route"), 0xFFEAB308.toInt()) {
+                            RouteEditor.activePreset = preset
+                            activePathfindingSection = PathfindingSection.ROUTE_EDITOR
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                        val btnExport = ModernButton(subX + (btnW + 4) * 2, 0, btnW, 22, Component.literal("Export JSON"), 0xFF38BDF8.toInt()) {
                             val json = PathPresetManager.exportToJson(preset)
                             PathPresetManager.copyToClipboard(json)
                             minecraft.player?.sendSystemMessage(Component.literal("§a[AsthoonLite] §fCopied preset §e\"${preset.name}\" §fto clipboard!"))
                             exportFeedbackMsg = "Copied \"${preset.name}\" to clipboard!"
                         }
-                        val btnDelete = ModernButton(subX + (btnW + 4) * 2, 0, btnW, 22, Component.literal("Delete"), 0xFFEF4444.toInt()) {
+                        val btnDelete = ModernButton(subX + (btnW + 4) * 3, 0, btnW, 22, Component.literal("Delete"), 0xFFEF4444.toInt()) {
                             PathPresetManager.deletePreset(preset.id)
                             if (Config.activePathfindingPresetId == preset.id) Config.activePathfindingPresetId = ""
+                            if (RouteEditor.activePreset?.id == preset.id) RouteEditor.activePreset = null
                             rebuildTab(Tab.PATHFINDING)
                         }
-                        items.add(MultiWidgetRow(listOf(btnSelect, btnExport, btnDelete), 22))
+                        items.add(MultiWidgetRow(listOf(btnSelect, btnEdit, btnExport, btnDelete), 22))
                     }
                 }
             }
@@ -1063,8 +1087,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 items.add(WidgetRow(nameBox))
                 items.add(NoteRow("Category: §e${createCategory.displayName} §7• Subcategory: §6${if (createSubcategory.isBlank()) "None" else createSubcategory}"))
 
-                items.add(SectionHeader("4. Save & Finalize"))
-                items.add(WidgetRow(ModernButton(subX, 0, subW, 26, Component.literal("✦ Save Preset to User Presets"), 0xFF10B981.toInt()) {
+                items.add(SectionHeader("4. Save & Open Route Editor"))
+                items.add(WidgetRow(ModernButton(subX, 0, subW, 26, Component.literal("✦ Save & Configure Route Nodes"), 0xFF10B981.toInt()) {
                     val finalName = createPresetName.ifBlank { "${createCategory.displayName} Route" }
                     val newPreset = PathPreset(
                         name = finalName,
@@ -1074,10 +1098,184 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     )
                     PathPresetManager.addPreset(newPreset)
                     Config.activePathfindingPresetId = newPreset.id
-                    minecraft.player?.sendSystemMessage(Component.literal("§a[AsthoonLite] §fCreated and saved preset §e\"$finalName\" §fto User Presets!"))
-                    activePathfindingSection = PathfindingSection.USER_PRESETS
+                    RouteEditor.activePreset = newPreset
+                    minecraft.player?.sendSystemMessage(Component.literal("§a[AsthoonLite] §fCreated preset §e\"$finalName\"§f! Opening Route Node Editor."))
+                    activePathfindingSection = PathfindingSection.ROUTE_EDITOR
                     rebuildTab(Tab.PATHFINDING)
                 }))
+            }
+
+            PathfindingSection.ROUTE_EDITOR -> {
+                val preset = RouteEditor.activePreset
+                if (preset == null) {
+                    items.add(SectionHeader("Route Node Editor"))
+                    items.add(NoteRow("No active route selected to edit. Select a preset below or create a new route."))
+                    val presets = PathPresetManager.getPresets()
+                    if (presets.isEmpty()) {
+                        items.add(NoteRow("0 Presets available. Click '+ Create New Preset' to begin."))
+                        items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("+ Create New Route Preset"), 0xFF10B981.toInt()) {
+                            activePathfindingSection = PathfindingSection.CREATE_PRESET
+                            rebuildTab(Tab.PATHFINDING)
+                        }))
+                    } else {
+                        for (p in presets) {
+                            items.add(WidgetRow(ModernButton(subX, 0, subW, 22, Component.literal("Edit: ${p.name} (${p.category} - ${p.subcategory})"), p.subcategoryColor()) {
+                                RouteEditor.activePreset = p
+                                rebuildTab(Tab.PATHFINDING)
+                            }))
+                        }
+                    }
+                } else {
+                    val cat = preset.routeCategory()
+                    val allowedTypes = RouteNodeType.allowedForCategory(cat)
+                    if (editorSelectedType !in allowedTypes) {
+                        editorSelectedType = allowedTypes.first()
+                    }
+
+                    items.add(SectionHeader("Route: ${preset.name}"))
+                    items.add(NoteRow("Category: ${preset.category}  •  Subcategory: ${preset.subcategory}  •  Nodes: ${preset.points.size}"))
+
+                    // Controls: Run Route / Stop, and In-World Crosshair Pick Mode
+                    val btnHalfW = (subW - 4) / 2
+                    val isRunning = PathExecutor.isActive && PathExecutor.activePreset?.id == preset.id
+                    val runBtnText = if (isRunning) "■ Stop Path Execution" else "▶ Run Route in World"
+                    val runBtnCol = if (isRunning) 0xFFEF4444.toInt() else 0xFF10B981.toInt()
+                    val btnRun = ModernButton(subX, 0, btnHalfW, 24, Component.literal(runBtnText), runBtnCol) {
+                        if (isRunning) PathExecutor.stop() else PathExecutor.start(preset)
+                        rebuildTab(Tab.PATHFINDING)
+                    }
+
+                    val pickText = if (RouteEditor.pickBlockMode) "Pick Crosshair: ON (LMB block)" else "Pick with Crosshair"
+                    val pickCol = if (RouteEditor.pickBlockMode) 0xFF06B6D4.toInt() else 0xFF38BDF8.toInt()
+                    val btnPick = ModernButton(subX + btnHalfW + 4, 0, btnHalfW, 24, Component.literal(pickText), pickCol) {
+                        RouteEditor.pickBlockMode = !RouteEditor.pickBlockMode
+                        minecraft.player?.sendSystemMessage(
+                            Component.literal(if (RouteEditor.pickBlockMode) "§a[AsthoonLite] §fPick Block Mode §2ENABLED§f. Look at a block and left click to add node." else "§e[AsthoonLite] §fPick Block Mode §cDISABLED§f.")
+                        )
+                        rebuildTab(Tab.PATHFINDING)
+                    }
+                    items.add(MultiWidgetRow(listOf(btnRun, btnPick), 24))
+
+                    // Node Creation Tools
+                    items.add(SectionHeader("Add Waypoint Node"))
+                    val btnAddPos = ModernButton(subX, 0, subW, 22, Component.literal("+ Add Node at Current Player Position"), 0xFF38BDF8.toInt()) {
+                        val player = minecraft.player
+                        if (player != null) {
+                            val node = PathPoint(
+                                x = Math.round(player.x * 100.0) / 100.0,
+                                y = Math.round(player.y * 100.0) / 100.0,
+                                z = Math.round(player.z * 100.0) / 100.0,
+                                yaw = player.yRot,
+                                pitch = player.xRot,
+                                action = editorSelectedType.name
+                            )
+                            preset.points.add(node)
+                            PathPresetManager.savePresets()
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                    }
+                    items.add(WidgetRow(btnAddPos))
+
+                    // Coordinate manual inputs: X, Y, Z, and Type Selector
+                    val fieldW = (subW - 12) / 4
+                    val editX = EditBox(font, subX, 0, fieldW, 20, Component.literal("X"))
+                    editX.setHint(Component.literal("X coord"))
+                    editX.value = editorInputX
+                    editX.setResponder { editorInputX = it }
+
+                    val editY = EditBox(font, subX + fieldW + 4, 0, fieldW, 20, Component.literal("Y"))
+                    editY.setHint(Component.literal("Y coord"))
+                    editY.value = editorInputY
+                    editY.setResponder { editorInputY = it }
+
+                    val editZ = EditBox(font, subX + (fieldW + 4) * 2, 0, fieldW, 20, Component.literal("Z"))
+                    editZ.setHint(Component.literal("Z coord"))
+                    editZ.value = editorInputZ
+                    editZ.setResponder { editorInputZ = it }
+
+                    val btnTypeCycle = ModernButton(subX + (fieldW + 4) * 3, 0, fieldW, 20, Component.literal("Type: ${editorSelectedType.displayName}"), editorSelectedType.badgeColor) {
+                        val nextIdx = (allowedTypes.indexOf(editorSelectedType) + 1) % allowedTypes.size
+                        editorSelectedType = allowedTypes[nextIdx]
+                        rebuildTab(Tab.PATHFINDING)
+                    }
+                    items.add(MultiWidgetRow(listOf(editX, editY, editZ, btnTypeCycle), 20))
+
+                    val btnAddCoords = ModernButton(subX, 0, subW, 22, Component.literal("+ Add Node from Specified Coords"), 0xFF10B981.toInt()) {
+                        val xVal = editorInputX.toDoubleOrNull()
+                        val yVal = editorInputY.toDoubleOrNull()
+                        val zVal = editorInputZ.toDoubleOrNull()
+                        if (xVal != null && yVal != null && zVal != null) {
+                            val node = PathPoint(
+                                x = xVal,
+                                y = yVal,
+                                z = zVal,
+                                action = editorSelectedType.name
+                            )
+                            preset.points.add(node)
+                            PathPresetManager.savePresets()
+                            editorInputX = ""
+                            editorInputY = ""
+                            editorInputZ = ""
+                            rebuildTab(Tab.PATHFINDING)
+                        }
+                    }
+                    items.add(WidgetRow(btnAddCoords))
+
+                    // Numbered Route Nodes
+                    items.add(SectionHeader("Route Nodes (${preset.points.size}) - Hold LMB to Drag & Reorder"))
+                    if (preset.points.isEmpty()) {
+                        items.add(NoteRow("Route is empty. Click '+ Add Node at Current Player Position' or use Crosshair Pick."))
+                    } else {
+                        val infoW = subW - 104
+                        val btnMiniW = 24
+
+                        for (idx in preset.points.indices) {
+                            val node = preset.points[idx]
+                            val nType = node.nodeType()
+                            val isExecCurrent = PathExecutor.isActive && PathExecutor.currentNodeIndex == idx
+                            val prefix = if (isExecCurrent) "▶ #${idx + 1}" else "#${idx + 1}"
+                            val label = "$prefix [${nType.displayName}] (${String.format("%.1f", node.x)}, ${String.format("%.1f", node.y)}, ${String.format("%.1f", node.z)})"
+
+                            val btnInfo = ModernButton(subX, 0, infoW, 20, Component.literal(label), nType.badgeColor) {
+                                editorInputX = node.x.toString()
+                                editorInputY = node.y.toString()
+                                editorInputZ = node.z.toString()
+                                editorSelectedType = nType
+                                RouteEditor.editingNodeIndex = idx
+                                rebuildTab(Tab.PATHFINDING)
+                            }
+
+                            val btnUp = ModernButton(subX + infoW + 2, 0, btnMiniW, 20, Component.literal("▲"), 0xFF38BDF8.toInt()) {
+                                if (preset.moveNode(idx, idx - 1)) {
+                                    PathPresetManager.savePresets()
+                                    rebuildTab(Tab.PATHFINDING)
+                                }
+                            }
+
+                            val btnDown = ModernButton(subX + infoW + 2 + btnMiniW + 2, 0, btnMiniW, 20, Component.literal("▼"), 0xFF38BDF8.toInt()) {
+                                if (preset.moveNode(idx, idx + 1)) {
+                                    PathPresetManager.savePresets()
+                                    rebuildTab(Tab.PATHFINDING)
+                                }
+                            }
+
+                            val btnCycle = ModernButton(subX + infoW + 2 + (btnMiniW + 2) * 2, 0, btnMiniW, 20, Component.literal("⇄"), nType.badgeColor) {
+                                val nextTypeIdx = (allowedTypes.indexOf(nType) + 1) % allowedTypes.size
+                                node.action = allowedTypes[nextTypeIdx].name
+                                PathPresetManager.savePresets()
+                                rebuildTab(Tab.PATHFINDING)
+                            }
+
+                            val btnDelete = ModernButton(subX + infoW + 2 + (btnMiniW + 2) * 3, 0, btnMiniW, 20, Component.literal("✕"), 0xFFEF4444.toInt()) {
+                                preset.points.removeAt(idx)
+                                PathPresetManager.savePresets()
+                                rebuildTab(Tab.PATHFINDING)
+                            }
+
+                            items.add(MultiWidgetRow(listOf(btnInfo, btnUp, btnDown, btnCycle, btnDelete), 20))
+                        }
+                    }
+                }
             }
 
             PathfindingSection.EXPORT_PRESET -> {
@@ -1233,6 +1431,19 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return super.keyPressed(event)
     }
 
+    private fun getNodeIndexAtY(mouseY: Double): Int {
+        for (entry in nodeItemBounds) {
+            if (mouseY >= entry.second && mouseY <= entry.third) {
+                return entry.first
+            }
+        }
+        if (nodeItemBounds.isNotEmpty()) {
+            if (mouseY < nodeItemBounds.first().second) return nodeItemBounds.first().first
+            if (mouseY > nodeItemBounds.last().third) return nodeItemBounds.last().first
+        }
+        return -1
+    }
+
     override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
         if (listeningForQuietModeKey && event.button() != 0) {
             Config.quietModeKey = event.button()
@@ -1257,6 +1468,17 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 btnInventoryAutoClickerKey.message = Component.literal(inventoryAutoClickerKeyLabel())
             }
             return true
+        }
+
+        // Track potential node drag start in Route Editor
+        if (event.button() == 0 && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+            val idx = getNodeIndexAtY(event.y())
+            if (idx >= 0) {
+                mouseDownNodeIdx = idx
+                mouseClickStartX = event.x()
+                mouseClickStartY = event.y()
+                isDraggingNode = false
+            }
         }
 
         // First allow child widgets (buttons, sliders) to handle clicks
@@ -1352,10 +1574,36 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             updateWidgetPositions()
             return true
         }
+
+        // LMB drag-to-reorder node handling in Route Editor
+        if (mouseDownNodeIdx >= 0 && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+            val dy = Math.abs(event.y() - mouseClickStartY)
+            if (dy > 4.0 || isDraggingNode) {
+                isDraggingNode = true
+                draggingNodeFromIdx = mouseDownNodeIdx
+                draggingNodeHoverIdx = getNodeIndexAtY(event.y())
+                return true
+            }
+        }
+
         return super.mouseDragged(event, dragX, dragY)
     }
 
     override fun mouseReleased(event: MouseButtonEvent): Boolean {
+        if (isDraggingNode && draggingNodeFromIdx >= 0) {
+            val targetIdx = draggingNodeHoverIdx
+            val preset = RouteEditor.activePreset
+            if (preset != null && targetIdx >= 0 && targetIdx != draggingNodeFromIdx) {
+                preset.moveNode(draggingNodeFromIdx, targetIdx)
+                PathPresetManager.savePresets()
+                rebuildTab(Tab.PATHFINDING)
+            }
+            isDraggingNode = false
+            draggingNodeFromIdx = -1
+            draggingNodeHoverIdx = -1
+            mouseDownNodeIdx = -1
+        }
+        mouseDownNodeIdx = -1
         isDraggingScrollbar = false
         return super.mouseReleased(event)
     }
@@ -1434,6 +1682,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         val bottom = contentBottom()
         context.enableScissor(px + 8, top, px + PANEL_W - 8, bottom)
 
+        if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+            nodeItemBounds.clear()
+        }
+
         var curRelY = 0
         for (item in currentItems) {
             val itemY = top - scrollOffset + curRelY
@@ -1463,6 +1715,21 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         for (w in item.widgets) {
                             w.extractRenderState(context, mouseX, mouseY, delta)
                         }
+                        if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+                            val firstWidget = item.widgets.firstOrNull() as? ModernButton
+                            if (firstWidget != null) {
+                                val str = firstWidget.message.string
+                                if (str.startsWith("#") || str.startsWith("▶ #")) {
+                                    val hashIdx = str.indexOf('#')
+                                    val spaceIdx = str.indexOf(' ', hashIdx)
+                                    val numStr = if (spaceIdx > hashIdx) str.substring(hashIdx + 1, spaceIdx) else ""
+                                    val nodeNum = numStr.toIntOrNull()
+                                    if (nodeNum != null) {
+                                        nodeItemBounds.add(Triple(nodeNum - 1, itemY, itemY + itemH))
+                                    }
+                                }
+                            }
+                        }
                     }
                     is NoteRow -> {
                         context.text(font, item.text, px + 20, itemY + 3, COL_TEXT_SUB)
@@ -1473,6 +1740,24 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
 
         context.disableScissor()
+
+        // ── Route Node Drag-and-Drop Indicator & Tooltip ─────────────────────
+        if (isDraggingNode && draggingNodeFromIdx >= 0 && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+            val hoverEntry = nodeItemBounds.firstOrNull { it.first == draggingNodeHoverIdx }
+            if (hoverEntry != null) {
+                val cardX = px + 28
+                val cardW = PANEL_W - 44
+                context.fill(cardX - 2, hoverEntry.second - 2, cardX + cardW + 2, hoverEntry.third + 2, 0x5538BDF8)
+                context.fill(cardX - 2, hoverEntry.second - 2, cardX + cardW + 2, hoverEntry.second, 0xFF38BDF8.toInt())
+            }
+            val tip = "Moving Node #${draggingNodeFromIdx + 1} ➔ #${draggingNodeHoverIdx + 1}"
+            val tipW = font.width(tip)
+            val tipX = mouseX + 12
+            val tipY = mouseY - 14
+            context.fill(tipX - 4, tipY - 3, tipX + tipW + 4, tipY + 11, 0xEE0C1322.toInt())
+            context.fill(tipX - 4, tipY - 3, tipX + tipW + 4, tipY - 2, 0xFF38BDF8.toInt())
+            context.text(font, tip, tipX, tipY, 0xFFFFFFFF.toInt())
+        }
 
         // ── Scrollbar ────────────────────────────────────────────────────────
         val maxScroll = maxScroll()

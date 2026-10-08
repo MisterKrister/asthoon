@@ -51,18 +51,46 @@ data class RouteSubcategory(
 )
 
 /**
- * Coordinate, orientation, and action point within a recorded path.
+ * Node type classification for movement and actions in pathfinding.
+ * For M7 (P1-P5), mobility is restricted: no AOTV or Etherwarp, only WALK, BONZO_STAFF, INTERACT, JUMP.
+ */
+enum class RouteNodeType(
+    val displayName: String,
+    val badgeColor: Int,
+    val description: String
+) {
+    WALK("Walk", 0xFF10B981.toInt(), "Traverse on foot towards waypoint"),
+    BONZO_STAFF("Bonzo Staff", 0xFFEC4899.toInt(), "Fires Bonzo's Staff explosive recoil to launch forward"),
+    INTERACT("Interact", 0xFF38BDF8.toInt(), "Clicks or triggers lever, terminal, button, or device"),
+    JUMP("Jump", 0xFFF59E0B.toInt(), "Jumps while moving towards waypoint");
+
+    companion object {
+        fun fromString(name: String): RouteNodeType =
+            entries.firstOrNull { it.name.equals(name, ignoreCase = true) || it.displayName.equals(name, ignoreCase = true) } ?: WALK
+
+        fun allowedForCategory(category: RouteCategory): List<RouteNodeType> = when (category) {
+            RouteCategory.M7 -> listOf(WALK, BONZO_STAFF, INTERACT, JUMP) // Strictly no AOTV/Etherwarp in M7
+            else -> entries
+        }
+    }
+}
+
+/**
+ * Coordinate, orientation, and action point within a recorded path or route.
  */
 data class PathPoint(
-    val x: Double,
-    val y: Double,
-    val z: Double,
-    val yaw: Float = 0f,
-    val pitch: Float = 0f,
-    val action: String = "MOVE",
-    val speedBps: Double = 0.0,
-    val delayMs: Long = 0L
-)
+    var x: Double,
+    var y: Double,
+    var z: Double,
+    var yaw: Float = 0f,
+    var pitch: Float = 0f,
+    var action: String = "WALK",
+    var speedBps: Double = 0.0,
+    var delayMs: Long = 0L,
+    var note: String = ""
+) {
+    fun nodeType(): RouteNodeType = RouteNodeType.fromString(action)
+}
 
 /**
  * User-created pathfinding route preset.
@@ -81,5 +109,20 @@ data class PathPreset(
     fun subcategoryColor(): Int {
         val cat = routeCategory()
         return cat.getSubcategories().firstOrNull { it.name.equals(subcategory, ignoreCase = true) }?.color ?: cat.color
+    }
+
+    fun swapNodes(i: Int, j: Int): Boolean {
+        if (i !in points.indices || j !in points.indices || i == j) return false
+        val temp = points[i]
+        points[i] = points[j]
+        points[j] = temp
+        return true
+    }
+
+    fun moveNode(fromIndex: Int, toIndex: Int): Boolean {
+        if (fromIndex !in points.indices || toIndex !in points.indices || fromIndex == toIndex) return false
+        val item = points.removeAt(fromIndex)
+        points.add(toIndex, item)
+        return true
     }
 }

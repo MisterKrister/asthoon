@@ -71,11 +71,7 @@ object PathPresetManager {
                     AsthoonLite.LOGGER.error("[AsthoonLite] Failed to load presets.json", e)
                 }
             }
-
-            if (presets.isEmpty()) {
-                seedDefaultPresets()
-                savePresets()
-            }
+            // Fresh config has 0 presets by default
         }
     }
 
@@ -92,69 +88,16 @@ object PathPresetManager {
         }
     }
 
-    private fun seedDefaultPresets() {
-        presets.add(
-            PathPreset(
-                name = "Dwarven Mithril Macro Route",
-                category = "Mining",
-                subcategory = "Macro",
-                description = "Optimized vein pathing for Dwarven Mines mithril nodes",
-                points = mutableListOf(
-                    PathPoint(0.0, 70.0, 0.0, 0f, 0f, "MOVE", 5.0),
-                    PathPoint(4.0, 70.0, 3.0, 45f, 10f, "MOVE", 5.0),
-                    PathPoint(8.0, 71.0, 8.0, 60f, -5f, "AOTE", 12.0)
-                )
-            )
-        )
-        presets.add(
-            PathPreset(
-                name = "Crystal Hollows Powder Route",
-                category = "Mining",
-                subcategory = "Powder",
-                description = "Chest opening and powder spiral route",
-                points = mutableListOf(
-                    PathPoint(250.0, 100.0, 320.0, 90f, 0f, "MOVE", 6.0),
-                    PathPoint(265.0, 100.0, 335.0, 135f, 15f, "ETHERWARP", 0.0)
-                )
-            )
-        )
-        presets.add(
-            PathPreset(
-                name = "Zealot Bruiser Farm",
-                category = "Combat",
-                subcategory = "Mob",
-                description = "Dragons Nest perimeter sweep targeting Bruisers",
-                points = mutableListOf(
-                    PathPoint(-650.0, 10.0, -280.0, -90f, 0f, "MOVE", 7.0),
-                    PathPoint(-620.0, 10.0, -280.0, -45f, 5f, "MOVE", 7.0)
-                )
-            )
-        )
-        presets.add(
-            PathPreset(
-                name = "M7 P3 Terminal Rush Route",
-                category = "M7",
-                subcategory = "P3",
-                description = "Goldor section 2 to 3 gate sprint with etherwarp skips",
-                points = mutableListOf(
-                    PathPoint(100.0, 120.0, 90.0, 0f, 0f, "MOVE", 8.0),
-                    PathPoint(105.0, 120.0, 95.0, 90f, 0f, "ETHERWARP", 0.0),
-                    PathPoint(108.0, 121.0, 100.0, 180f, -20f, "BONZO", 14.0)
-                )
-            )
-        )
-        presets.add(
-            PathPreset(
-                name = "M7 P5 Dragon Platform Setup",
-                category = "M7",
-                subcategory = "P5",
-                description = "Wither King arena spawn to green dragon pillar",
-                points = mutableListOf(
-                    PathPoint(50.0, 20.0, 50.0, 45f, 0f, "MOVE", 6.5),
-                    PathPoint(75.0, 25.0, 75.0, 45f, -30f, "SPRING_BOOTS", 10.0)
-                )
-            )
-        )
+    fun updatePreset(preset: PathPreset) {
+        synchronized(presets) {
+            val idx = presets.indexOfFirst { it.id == preset.id }
+            if (idx >= 0) {
+                presets[idx] = preset
+            } else {
+                presets.add(preset)
+            }
+        }
+        savePresets()
     }
 
     fun exportToJson(singlePreset: PathPreset? = null): String {
