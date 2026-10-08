@@ -113,7 +113,12 @@ object TerminalCursor {
         // positioned first so shouldHideRealCursor agrees, but leave
         // tipKnown set: x/y are still the pointer's last tip, and that is
         // where the real cursor has to reappear.
-        syncOsCursor(false)
+        // Resetting the click driver during an open terminal must not release Normal's OS cursor.
+        val terminalOpen = if (Config.autoTerminalCursorStyle == 1) {
+            val screen = Minecraft.getInstance().screen as? AbstractContainerScreen<*>
+            screen != null && TerminalSolver.isTerminalTitle(screen.title.string)
+        } else false
+        syncOsCursor(holdNormalCursor(Config.autoTerminalCursorStyle, terminalOpen, Config.autoTerminalCursorGlide))
         tipKnown = false
         trail.clear()
     }
@@ -123,6 +128,9 @@ object TerminalCursor {
      * Tracks intent, not the window: one transition in, one out.
      */
     private var osCursorHidden = false
+
+    internal fun holdNormalCursor(style: Int, terminalOpen: Boolean, glide: Boolean): Boolean =
+        style == 1 && terminalOpen && glide
 
     /**
      * Whether the real cursor should be out of the way this frame.
@@ -188,12 +196,18 @@ object TerminalCursor {
         // hide behind anyway, and reaching those reads needs a Fabric loader to
         // open a config directory with, which the regression harness does not
         // have behind it when it calls reset().
-        val wanted = pointerVisible && (Config.autoTerminalCursorStyle == 0) && shouldHideRealCursor(
+        val wanted = pointerVisible && shouldHideRealCursor(
             pointerVisible,
             Config.autoTerminalCursorHideReal,
             Config.autoTerminalCursorGlide
         )
-        if (wanted == osCursorHidden) return
+        if (wanted == osCursorHidden) {
+            // A new screen may release the mouse between two Normal-cursor frames.
+            if (wanted && Config.autoTerminalCursorStyle == 1) {
+                GLFW.glfwSetInputMode(Minecraft.getInstance().window.handle(), GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_HIDDEN)
+            }
+            return
+        }
         osCursorHidden = wanted
 
         val mc = Minecraft.getInstance()
@@ -203,7 +217,7 @@ object TerminalCursor {
             GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_HIDDEN)
             return
         }
-        if (tipKnown) {
+        if (tipKnown && Config.autoTerminalCursorStyle == 0) {
             GLFW.glfwSetCursorPos(
                 handle,
                 rawFromScaled(x, win.screenWidth, win.guiScaledWidth),
@@ -647,6 +661,25 @@ object TerminalCursor {
             drawn = false
             return
         }
+        if (Config.autoTerminalCursorStyle == 1) {
+            val mc = Minecraft.getInstance()
+            val screen = mc.screen as? AbstractContainerScreen<*>
+            if (screen == null || !TerminalSolver.isTerminalTitle(screen.title.string)) {
+                syncOsCursor(false)
+                drawn = false
+                return
+            }
+            if (!positioned) seedFromMouse(screen.width / 2f, screen.height / 2f)
+            val pos = positionNow(now) ?: (mc.mouseHandler.getScaledXPos(mc.window).toFloat() to
+                mc.mouseHandler.getScaledYPos(mc.window).toFloat())
+            syncOsCursor(true)
+            drawn = true
+            drawArrowPointer(graphics, pos.first, pos.second, 1f)
+            x = pos.first
+            y = pos.second
+            tipKnown = true
+            return
+        }
         // While the pointer is armed it is drawn every frame and the real
         // cursor stays hidden behind it — the two never share the screen, so
         // no viewer sees one cursor hand over to the other, and never a frame
@@ -665,21 +698,6 @@ object TerminalCursor {
         if (pos == null) {
             syncOsCursor(false)
             drawn = false
-            return
-        }
-
-        if (Config.autoTerminalCursorStyle == 1) {
-            syncOsCursor(false)
-            drawn = false
-            val mc = Minecraft.getInstance()
-            val win = mc.window
-            val handle = win.handle()
-            val rawX = rawFromScaled(pos.first, win.screenWidth, win.guiScaledWidth)
-            val rawY = rawFromScaled(pos.second, win.screenHeight, win.guiScaledHeight)
-            GLFW.glfwSetCursorPos(handle, rawX, rawY)
-            x = pos.first
-            y = pos.second
-            tipKnown = true
             return
         }
 

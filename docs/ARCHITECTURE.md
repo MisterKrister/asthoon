@@ -84,9 +84,10 @@ to `GuiGraphicsExtractor`; `drawString`/`drawCenteredString` are now
 ### 3.3 Outside the game window: `render/MapCanvas.kt` + `overlay/MapOverlayWindow.kt`
 
 A window capture records exactly one window, so anything drawn in the game
-window is in the recording. The dungeon map can be moved into a second,
-always-on-top window that the capture does not see — toggle **External
-Overlay Window** on the Map tab (`dungeonMapExternalWindow`).
+window is in the recording. The legit map always draws in the HUD. **Full
+Map Overlay** (`dungeonMapFullGrid`) adds a second, always-on-top window
+covering the HUD rectangle with the advanced map. The old
+`dungeonMapExternalWindow` key remains serialized for compatibility.
 
 The map's layout is written once against `MapCanvas` and reaches one of two
 painters:
@@ -101,14 +102,17 @@ Contract:
   call goes through the canvas, or the two destinations drift apart.
 - The render thread only ever publishes a finished op list as a single
   reference write. All AWT state is touched on the EDT (`EventQueue.invokeLater`).
-- The window is non-focusable and always-on-top; it sits at the top-left
-  because it is not click-through.
+- The window is non-focusable and always-on-top. Its bounds come from the
+  GLFW content origin and GUI-to-desktop scale, converted to AWT units on
+  the EDT. Native Wayland or a refused position logs once and uses top-left
+  placement. XWayland follows the normal X11 coordinate path.
 - Player skins cannot be read back from the GPU, so a face in the external
   window is a bordered box with the player's initial. Geometry and colours
   still match the in-game map exactly.
-- When the external window is on, quiet mode does not suppress the map —
-  that is the point. When it is off, quiet mode suppresses the map like
-  everything else in the game window.
+- Quiet mode, editor mode and all map early-return gates hide the external
+  window. Editor mode uses `DungeonMapEditorScreen` and saves the clamped
+  position on drop. One `dungeonMapStyle` selects Devonian or Noamm geometry
+  for both layers; both use the existing scanner and room graph.
 
 ## 4. State and lifecycle
 
@@ -153,8 +157,8 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   128×128 colour buffer and derives the room grid (dimensions, origin,
   room types) using the documented map-colour byte IDs.
 - `dungeon/map/DungeonScanner.kt` — scan orchestration used by the above.
-- `dungeon/DungeonMap.kt` — renders the map: either the vanilla pixel blit
-  or the full 6×6 grid, depending on `dungeonMapFullGrid`. Draws through
+- `dungeon/DungeonMap.kt` + `DungeonMapStyles.kt` — render the explored HUD
+  layer and optional advanced external layer, using Devonian or Noamm style. Draw through
   `render/MapCanvas.kt` so the same layout feeds the in-game HUD and the
   external overlay window — see §3.3.
 - `dungeon/api/` — room model (`DungeonRoom`, `Coordinates`, `FloorType`,
@@ -183,12 +187,14 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   shorter practice chest, draw at all, and the same requirement gates
   `AutoTerminal.tick` and `TerminalSolver.clickCandidates` so the grid and the
   clicker open on the same screen or not at all. A screen that still does not
-  draw prints one line per screen type through `TermGui.register()` naming
-  which gate refused. Clicks leave
+  draw remains subject to the same title, slot-count and quiet-mode gates. Clicks leave
   through `dungeon/TerminalInput.kt`: the player's window sends packets, a
   screen holding a menu of its own is driven through `slotClicked`, the door
-  a hand's click uses there. `MixinContainerScreen` replaces the chest
-  background, while `MixinHandledScreen` replaces contents and input without
+  a hand's click uses there. `MixinScreen` owns the terminal frame at
+  `extractRenderStateWithTooltipAndSubtitles`, before competing render
+  cancellations. Fabric's GameRenderer wrapper retains the extraction events,
+  input clock and pointer; the replacement dispatches only the background event.
+  `MixinHandledScreen` routes input without
   replacing the live menu. Odin's BSD notice ships in `META-INF/licenses`.
   **Click Flash** (on by default) marks the pane a click was for and fades over
   220 ms — the mark that ties the pointer to the pane rather than leaving two

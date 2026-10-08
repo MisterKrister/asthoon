@@ -9,7 +9,6 @@
     "MixinTerminalCaptureMouseHandler",
     "MixinTerminalCaptureKeyboardHandler",
     "MixinTerminalCaptureMenu",
-    "MixinContainerScreen",
     "MixinScreen",
     "MixinGameRenderer",
     "MixinClientPacketListener",

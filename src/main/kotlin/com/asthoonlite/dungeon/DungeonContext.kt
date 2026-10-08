@@ -7,6 +7,8 @@ import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.ChatFormatting
 import net.minecraft.client.Minecraft
+import net.minecraft.client.multiplayer.PlayerInfo
+import net.minecraft.world.entity.player.PlayerSkin
 import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket
 import net.minecraft.network.protocol.game.ClientboundSetPlayerTeamPacket
 import net.minecraft.world.scores.DisplaySlot
@@ -26,9 +28,9 @@ object DungeonContext {
         private set
 
     enum class PlayerClass(val displayName: String, val color: Int) {
-        ARCHER("Archer", 0xFFFF3333.toInt()),
-        MAGE("Mage", 0xFF3388FF.toInt()),
-        TANK("Tank", 0xFF33CC33.toInt()),
+        ARCHER("Archer", 0xFFAA0000.toInt()),
+        MAGE("Mage", 0xFF00AAAA.toInt()),
+        TANK("Tank", 0xFF00AA00.toInt()),
         BERSERK("Berserk", 0xFFFFAA00.toInt()),
         HEALER("Healer", 0xFFAA00AA.toInt()),
         UNKNOWN("Unknown", 0xFFFFFFFF.toInt());
@@ -46,6 +48,12 @@ object DungeonContext {
     }
 
     val playerClasses = java.util.concurrent.ConcurrentHashMap<String, PlayerClass>()
+    private val party = LinkedHashMap<String, PartyMember>()
+    private data class PartyMember(var dead: Boolean, var skin: PlayerSkin?)
+
+    fun playerSkin(name: String?): PlayerSkin? = name?.let { party[it]?.skin }
+
+    fun rememberSkin(name: String, skin: PlayerSkin) { party[name]?.skin = skin }
 
     fun classColor(playerName: String?): Int {
         if (playerName == null) return PlayerClass.UNKNOWN.color
@@ -58,22 +66,25 @@ object DungeonContext {
     fun getTeammateNames(): List<String> {
         val mc = Minecraft.getInstance()
         val localName = mc.player?.gameProfile?.name ?: ""
-        val fromClasses = playerClasses.keys.filter { !it.equals(localName, ignoreCase = true) }
-        if (fromClasses.isNotEmpty()) return fromClasses.distinctBy { it.lowercase() }
-        val online = mc.connection?.onlinePlayers ?: return emptyList()
-        return online.map { it.profile.name }.filter { name ->
-            !name.equals(localName, ignoreCase = true) &&
-                name.length in 3..16 &&
-                !name.startsWith("!") &&
-                !name.startsWith("[") &&
-                name.all { it.isLetterOrDigit() || it == '_' }
-        }.distinctBy { it.lowercase() }
+        return party.filter { (name, member) -> !member.dead && !name.equals(localName, true) }.keys.toList()
     }
 
     private var scoreboardMissingTicks = 0
     private var lastLoggedLines: List<String> = emptyList()
     private val floorPattern = Regex("The Catacombs \\(([FM][1-7]|E)\\)", RegexOption.IGNORE_CASE)
-    private val tabClassPattern = Regex("""(?:\[\d+\]\s+)?(?:\[[^\]]+\]\s+)*([A-Za-z0-9_]{1,16})\s+(?:.*?\s+)?\((\w+)(?:\s+[0-9IVXLCDM]+)?\)""")
+    // Noamm's DungeonListener: the displayed row owns the name; its profile may be a tab placeholder.
+    private val tabClassPattern = Regex("""^\[\d+] (?:\[[^]]+] )*([A-Za-z0-9_]{1,16}) .*\((\w+)(?: (\w+))?\)$""")
+    internal data class PartyRow(val name: String, val role: PlayerClass, val dead: Boolean)
+
+    internal fun parsePartyRow(text: String): PartyRow? {
+        val line = (ChatFormatting.stripFormatting(text) ?: text).trim()
+        val match = tabClassPattern.matchEntire(line) ?: return null
+        val role = match.groupValues[2]
+        val dead = role.equals("DEAD", true)
+        val clazz = PlayerClass.from(role)
+        if (!dead && clazz == PlayerClass.UNKNOWN) return null
+        return PartyRow(match.groupValues[1], clazz, dead)
+    }
 
     fun register() {
         ClientReceiveMessageEvents.ALLOW_GAME.register { text, overlay ->
@@ -189,35 +200,23 @@ object DungeonContext {
         updateFromSidebar(lines)
 
         // Parse player classes from tab list
-        val onlinePlayers = mc.connection?.onlinePlayers ?: emptyList()
+        if (!inDungeon) return
+        val onlinePlayers = mc.connection?.onlinePlayers.orEmpty().sortedWith(
+            compareBy<PlayerInfo> { it.gameMode == net.minecraft.world.level.GameType.SPECTATOR }
+                .thenBy { it.team?.name.orEmpty() }.thenBy { it.profile.name }
+        )
         for (info in onlinePlayers) {
             val displayName = info.tabListDisplayName?.string
             val text = (if (displayName != null) ChatFormatting.stripFormatting(displayName) else null) ?: ""
             if (text.isNotBlank()) {
-                parseTabPlayerClass(info.profile.name, text)
-            }
-        }
-    }
-
-    private fun parseTabPlayerClass(playerName: String, text: String) {
-        val upper = text.uppercase()
-        val detected = when {
-            upper.contains("(ARCHER") || upper.contains(" ARCHER") || upper.contains("ARCHER)") -> PlayerClass.ARCHER
-            upper.contains("(MAGE") || upper.contains(" MAGE") || upper.contains("MAGE)") -> PlayerClass.MAGE
-            upper.contains("(TANK") || upper.contains(" TANK") || upper.contains("TANK)") -> PlayerClass.TANK
-            upper.contains("(BERSERK") || upper.contains(" BERSERK") || upper.contains("BERSERK)") -> PlayerClass.BERSERK
-            upper.contains("(HEALER") || upper.contains(" HEALER") || upper.contains("HEALER)") -> PlayerClass.HEALER
-            else -> {
-                val match = tabClassPattern.find(text)
-                val role = match?.groupValues?.getOrNull(2)
-                if (role == null || role.equals("DEAD", ignoreCase = true)) null else PlayerClass.from(role)
-            }
-        }
-        if (detected != null && detected != PlayerClass.UNKNOWN) {
-            playerClasses[playerName] = detected
-            val match = tabClassPattern.find(text)
-            if (match != null) {
-                playerClasses[match.groupValues[1]] = detected
+                val row = parsePartyRow(text) ?: continue
+                if (!row.dead) playerClasses[row.name] = row.role
+                val member = party.getOrPut(row.name) { PartyMember(row.dead, null) }
+                member.dead = row.dead
+                // Resolve the actual profile first, as in Noamm's DungeonListener.
+                val actual = mc.connection?.getPlayerInfo(row.name)
+                    ?: info.takeIf { it.profile.name == row.name }
+                if (actual != null) member.skin = actual.skin
             }
         }
     }
@@ -277,5 +276,6 @@ object DungeonContext {
         scoreboardMissingTicks = 0
         lastLoggedLines = emptyList()
         playerClasses.clear()
+        party.clear()
     }
 }

@@ -179,16 +179,11 @@ object DungeonMapScanner {
             type === MapDecorationTypes.PLAYER_OFF_LIMITS.value()
 
     /**
-     * The decoration key when — and only when — it is a bare index ("0",
-     * "+3"). Hypixel has used both index-style and opaque keys for player
-     * markers over the years, so anything else (a UUID, a name, "mob-2")
-     * returns null rather than guessing: a key that only *ends* in a digit
-     * would otherwise bind a mob marker to whichever teammate that digit
-     * happened to index. The ordered-name fallback in [updatePlayerIcons]
-     * covers the opaque-key case.
+     * Bare indices and Minecraft's received icon-N keys bind party markers.
+     * Opaque keys and unrelated suffixes do not identify a player index.
      */
     internal fun indexKeyFrom(key: String): Int? {
-        val body = key.removePrefix("+")
+        val body = key.removePrefix("icon-").removePrefix("+")
         if (body.isEmpty() || !body.all { it in '0'..'9' }) return null
         return body.toIntOrNull()
     }
@@ -209,99 +204,26 @@ object DungeonMapScanner {
      */
     private fun updatePlayerIcons(decorations: Map<String, MapDecoration>) {
         if (roomGap <= 0 || roomSize <= 0) return
-        val mc = Minecraft.getInstance()
-        val localPlayer = mc.player ?: return
-        val localName = localPlayer.gameProfile.name
-
-        val selfGx = (localPlayer.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize.toDouble()
-        val selfGz = (localPlayer.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize.toDouble()
-
-        val teammates = com.asthoonlite.dungeon.DungeonContext.getTeammateNames()
-
-        data class DecCandidate(val key: String, val dec: MapDecoration, val gx: Double, val gz: Double, val rot: Double, val explicitName: String?)
-
-        val candidates = mutableListOf<DecCandidate>()
-        for ((key, dec) in decorations) {
-            if (dec.type().value() == MapDecorationTypes.FRAME.value()) continue
+        val teammates = DungeonContext.getTeammateNames()
+        val localName = Minecraft.getInstance().player?.gameProfile?.name
+        // Noamm MapUpdater binds indexed icons to living party members in tab order.
+        // MapItemSavedData.addClientSideDecorations names received entries icon-N (verified with javap).
+        playerIcons = decorations.mapNotNull { (key, dec) ->
+            val type = dec.type().value()
+            if (type == MapDecorationTypes.FRAME.value()) return@mapNotNull null
+            val explicit = dec.name().map { it.string }.orElse(null)
+            val name = teammates.firstOrNull { it.equals(explicit, true) }
+                ?: teammates.getOrNull(indexKeyFrom(key) ?: -1)
+            if (!isPlayerDecoration(type) && !Config.dungeonMapAllDecorations) return@mapNotNull null
+            if (name == null && !Config.dungeonMapAllDecorations) return@mapNotNull null
+            if (name != null && name.equals(localName, true)) return@mapNotNull null
             val pixelX = (dec.x().toDouble() + 128.0) * 0.5
             val pixelZ = (dec.y().toDouble() + 128.0) * 0.5
-            val gx = (pixelX - (mapOffsetX + roomSize / 2.0)) / roomGap.toDouble()
-            val gz = (pixelZ - (mapOffsetZ + roomSize / 2.0)) / roomGap.toDouble()
-            val rot = Math.toRadians((dec.rot().toDouble() * 22.5 + 180.0) % 360.0)
-            val explicitName = dec.name().map { it.string }.orElse(null)
-            candidates.add(DecCandidate(key, dec, gx, gz, rot, explicitName))
-        }
-
-        // Identify local player marker (candidate closest to selfGx, selfGz)
-        val selfCandidate = candidates.minByOrNull { kotlin.math.hypot(it.gx - selfGx, it.gz - selfGz) }
-        val remaining = if (selfCandidate != null && kotlin.math.hypot(selfCandidate.gx - selfGx, selfCandidate.gz - selfGz) < 0.9) {
-            candidates.filter { it !== selfCandidate }.toMutableList()
-        } else {
-            candidates.toMutableList()
-        }
-
-        val boundIcons = mutableListOf<PlayerIcon>()
-        val assignedTeammates = mutableSetOf<String>()
-        val unassignedCandidates = mutableListOf<DecCandidate>()
-
-        // 1. Explicit name if provided
-        for (cand in remaining) {
-            val name = cand.explicitName
-            if (name != null && teammates.any { it.equals(name, ignoreCase = true) }) {
-                val realName = teammates.first { it.equals(name, ignoreCase = true) }
-                boundIcons.add(PlayerIcon(cand.gx, cand.gz, cand.rot, realName))
-                assignedTeammates.add(realName.lowercase())
-            } else {
-                unassignedCandidates.add(cand)
-            }
-        }
-
-        // 2. Index key if available
-        val keyIter = unassignedCandidates.iterator()
-        while (keyIter.hasNext()) {
-            val cand = keyIter.next()
-            val idx = indexKeyFrom(cand.key)
-            if (idx != null) {
-                val name = teammates.getOrNull(idx)
-                if (name != null && !assignedTeammates.contains(name.lowercase())) {
-                    boundIcons.add(PlayerIcon(cand.gx, cand.gz, cand.rot, name))
-                    assignedTeammates.add(name.lowercase())
-                    keyIter.remove()
-                }
-            }
-        }
-
-        // 3. Match world teammates in render distance by proximity
-        val worldPlayers = mc.level?.players() ?: emptyList()
-        for (mate in worldPlayers) {
-            val mName = mate.gameProfile.name
-            if (mName.equals(localName, ignoreCase = true) || mate.isSpectator) continue
-            if (assignedTeammates.contains(mName.lowercase())) continue
-            if (!teammates.any { it.equals(mName, ignoreCase = true) }) continue
-
-            val mateGx = (mate.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize.toDouble()
-            val mateGz = (mate.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize.toDouble()
-
-            val nearest = unassignedCandidates.minByOrNull { kotlin.math.hypot(it.gx - mateGx, it.gz - mateGz) }
-            if (nearest != null && kotlin.math.hypot(nearest.gx - mateGx, nearest.gz - mateGz) < 0.9) {
-                boundIcons.add(PlayerIcon(nearest.gx, nearest.gz, nearest.rot, mName))
-                assignedTeammates.add(mName.lowercase())
-                unassignedCandidates.remove(nearest)
-            }
-        }
-
-        // 4. For any remaining candidates (distant), bind remaining teammates in party order
-        val remainingTeammates = teammates.filter { !assignedTeammates.contains(it.lowercase()) }
-        unassignedCandidates.forEachIndexed { i, cand ->
-            val name = remainingTeammates.getOrNull(i)
-            if (name != null || Config.dungeonMapAllDecorations) {
-                boundIcons.add(PlayerIcon(cand.gx, cand.gz, cand.rot, name))
-            }
-        }
-
-        playerIcons = boundIcons
+            PlayerIcon((pixelX - mapOffsetX - roomSize / 2.0) / roomGap,
+                (pixelZ - mapOffsetZ - roomSize / 2.0) / roomGap,
+                Math.toRadians(dec.rot().toDouble() * 22.5), name ?: explicit)
+        }.toMutableList()
     }
-
     internal fun colorAt(colors: ByteArray, x: Int, z: Int): Byte? =
         if (x in 0 until SCAN && z in 0 until SCAN) colors.getOrNull(x + z * SCAN) else null
 

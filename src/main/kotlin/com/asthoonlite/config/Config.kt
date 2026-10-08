@@ -330,10 +330,26 @@ object Config {
         // ── Triggerbot Cooldowns ─────────────────────────────────────────────
         var secretTriggerBotCooldown   : Double  = 10.0,
         var terminalTriggerBotCooldown : Double  = 10.0,
+
+        var dungeonMapStyle: Int = 0, // 0 = Devonian, 1 = Noamm
+        var dungeonMapEditMode: Boolean = false,
+        var starMobRenderMode: Int = 0, // 0 = Fill, 1 = Box
     )
 
     var data = Data()
         private set
+
+    var dungeonMapStyle: Int
+        get() = data.dungeonMapStyle
+        set(v) { data.dungeonMapStyle = if (v == 1) 1 else 0; save() }
+
+    var dungeonMapEditMode: Boolean
+        get() = data.dungeonMapEditMode
+        set(v) { data.dungeonMapEditMode = v; save() }
+
+    var starMobRenderMode: Int
+        get() = data.starMobRenderMode
+        set(v) { data.starMobRenderMode = if (v == 1) 1 else 0; save() }
 
     var etherwarpEnabled: Boolean
         get() = data.etherwarpEnabled

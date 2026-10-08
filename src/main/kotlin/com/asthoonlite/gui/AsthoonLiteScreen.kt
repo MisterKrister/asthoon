@@ -527,17 +527,23 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 SectionHeader("Map Display"),
                 ToggleRow("Dungeon Map", "On-screen dungeon map HUD",
                     { Config.dungeonMapEnabled }, { Config.dungeonMapEnabled = it }),
+                WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("Map Style: " + if (Config.dungeonMapStyle == 1) "Noamm" else "Devonian")) {
+                    Config.dungeonMapStyle = if (Config.dungeonMapStyle == 1) 0 else 1
+                    init()
+                }),
+                ToggleRow("Edit Map Position", "Drag the map in game; saves on drop",
+                    { Config.dungeonMapEditMode }, {
+                        Config.dungeonMapEditMode = it
+                        if (it) minecraft.setScreen(com.asthoonlite.dungeon.DungeonMapEditorScreen())
+                    }),
                 ToggleRow("  ↳ Always Show", "Show map without holding map item",
                     { Config.dungeonMapAlwaysShow }, { Config.dungeonMapAlwaysShow = it }),
-                ToggleRow("  ↳ Full Map / Unopened", "Show unopened rooms from map packet",
+                ToggleRow("  ↳ Full Map Overlay", "Cover the HUD map with an external map showing unopened rooms",
                     { Config.dungeonMapFullGrid }, { Config.dungeonMapFullGrid = it }),
                 ToggleRow("  ↳ Legit Base", "Draw only what the held map item shows: explored rooms, cleared-room checkmarks, no names or counters",
                     { Config.dungeonMapLegitBase }, { Config.dungeonMapLegitBase = it }),
                 ToggleRow("  ↳ Hide Map in Boss", "Automatically hide map during boss fights",
                     { Config.dungeonMapHideInBoss }, { Config.dungeonMapHideInBoss = it }),
-                ToggleRow("  ↳ External Overlay Window",
-                    "Draw the map in its own always-on-top window, outside the game window, so a window capture never sees it",
-                    { Config.dungeonMapExternalWindow }, { Config.dungeonMapExternalWindow = it }),
                 WidgetRow(IntSlider(subX, 0, subW, 24, 1, 6, Config.dungeonMapScale.toInt(), "Map Scale: ", "x") {
                     Config.dungeonMapScale = it.toFloat()
                     Config.save()
@@ -556,7 +562,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 WidgetRow(IntSlider(subX, 0, subW, 24, 5, 30, (Config.dungeonMapPlayerHeadScale * 10).toInt(), "Player Head Scale: ", "0.1x") {
                     Config.dungeonMapPlayerHeadScale = it / 10.0f
                 }),
-                ToggleRow("    ↳ Arrow for Self", "Render directional arrow instead of head for self",
+                ToggleRow("    ↳ Direction for Self", "Show a direction marker on your head",
                     { Config.dungeonMapMarkerSelf }, { Config.dungeonMapMarkerSelf = it }),
                 WidgetRow(IntSlider(subX + 12, 0, subW - 12, 24, 5, 30, (Config.dungeonMapMarkerScale * 10).toInt(), "Marker Arrow Scale: ", "0.1x") {
                     Config.dungeonMapMarkerScale = it / 10.0f
@@ -785,6 +791,10 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     SectionHeader("Starred Mob ESP"),
                     ToggleRow("Starred Mob ESP", "Highlights all starred mobs and minibosses",
                         { Config.starMobEspEnabled }, { Config.starMobEspEnabled = it }),
+                    WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("Star Mob Mode: " + if (Config.starMobRenderMode == 1) "Box" else "Fill")) {
+                        Config.starMobRenderMode = if (Config.starMobRenderMode == 1) 0 else 1
+                        init()
+                    }),
                     ToggleRow("  ↳ Through Walls", "Show starred mob boxes through blocks",
                         { Config.starMobEspThroughWalls }, { Config.starMobEspThroughWalls = it }),
                     ToggleRow("  ↳ Color By Mob Type", "Color-code starred mob categories",

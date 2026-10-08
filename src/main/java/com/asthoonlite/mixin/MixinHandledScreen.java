@@ -104,18 +104,6 @@ public abstract class MixinHandledScreen {
         }
     }
 
-    @Inject(
-        method = "extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;IIF)V",
-        at = @At("HEAD"),
-        cancellable = true
-    )
-    private void asthoonlite_customTerminal(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float delta, CallbackInfo ci) {
-        AbstractContainerScreen<?> self = (AbstractContainerScreen<?>) (Object) this;
-        if (!TermGui.INSTANCE.active(self)) return;
-        TermGui.INSTANCE.render(self, graphics, mouseX, mouseY);
-        ci.cancel();
-    }
-
     @Inject(method = "mouseReleased(Lnet/minecraft/client/input/MouseButtonEvent;)Z", at = @At("HEAD"), cancellable = true)
     private void asthoonlite_customRelease(MouseButtonEvent event, CallbackInfoReturnable<Boolean> cir) {
         if (TermGui.INSTANCE.active((AbstractContainerScreen<?>) (Object) this)) cir.setReturnValue(true);

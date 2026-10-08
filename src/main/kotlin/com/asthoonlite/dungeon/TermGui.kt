@@ -1,14 +1,11 @@
 package com.asthoonlite.dungeon
 
-import com.asthoonlite.AsthoonLite
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.TerminalSolver.Kind
 import com.asthoonlite.render.fillRoundedRect
-import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphicsExtractor
-import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
 import net.minecraft.client.input.KeyEvent
 import net.minecraft.world.inventory.ContainerInput
@@ -145,8 +142,11 @@ object TermGui {
         if (!Config.termGuiEnabled || QuietMode.suppressing()) return false
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return false
         val slots = screen.menu.slots.size
-        return slots >= requiredSlotsFor(kind, items(screen, kind))
+        return renderGate(Config.termGuiEnabled, QuietMode.suppressing(), kind, slots, requiredSlotsFor(kind, items(screen, kind)))
     }
+
+    internal fun renderGate(enabled: Boolean, quiet: Boolean, kind: Kind?, slots: Int, required: Int): Boolean =
+        enabled && !quiet && kind != null && slots >= required
 
     /** Melody's rows as the menu currently shows them; nothing else asks. */
     private fun liveMelodyRows(screen: AbstractContainerScreen<*>, kind: Kind): List<Int> =
@@ -168,16 +168,7 @@ object TermGui {
 
     fun render(screen: AbstractContainerScreen<*>, graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val grid = gridFor(screen) ?: return
-        // No dim of our own, and the reason is the extraction order rather
-        // than taste: extractRenderStateWithTooltipAndSubtitles calls
-        // extractBackground *before* extractRenderState, and
-        // AbstractContainerScreen.isInGameUi() is true, so every container
-        // screen — chest or otherwise — has already been dimmed by
-        // extractTransparentBackground by the time the mixin up here fires.
-        // A chest is the one case where that did not happen, because
-        // MixinContainerScreen cancels extractBackground to trim its texture
-        // and puts its own dim back. Filling here too would draw a second
-        // layer over the first and take the grid down with the background.
+        // MixinScreen owns the background once, before the grid and screen events.
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
         val all = items(screen, kind)
         val title = TerminalSolver.cleanTitle(screen.title.string)
@@ -378,47 +369,4 @@ object TermGui {
         }
     }
 
-    /**
-     * One line, once per screen type, saying which of the gates refused.
-     *
-     * A grid that does not appear is otherwise indistinguishable from a grid
-     * that was never asked for: four separate conditions have to be true at
-     * once and they all fail the same way, silently. This prints the answer
-     * into the log where it can be read after one run, instead of guessed at.
-     */
-    fun register() {
-        val seen = HashSet<String>()
-        ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
-            val title = screen.title.string
-            val kind = TerminalSolver.kindOf(title)
-            if (kind == null && !looksLikeTerminal(title, screen)) return@register
-            if (!seen.add(screen.javaClass.simpleName + "|" + title)) return@register
-            val container = screen as? AbstractContainerScreen<*> ?: return@register
-            AsthoonLite.LOGGER.info("[AsthoonLite] TermGui {} {} -> {}",
-                screen.javaClass.simpleName, "'$title'", diagnose(container, kind))
-        }
-    }
-
-    /** Title or class that reads like a terminal even when kindOf does not match it. */
-    private fun looksLikeTerminal(title: String, screen: Screen): Boolean {
-        val t = title.lowercase()
-        val cls = screen.javaClass.simpleName.lowercase()
-        return "p3" in t || "terminal" in t || "sim" in t || "sim" in cls || "terminal" in cls
-    }
-
-    internal fun diagnose(screen: AbstractContainerScreen<*>, kind: Kind?): String {
-        val slots = screen.menu.slots.size
-        val quiet = QuietMode.suppressing()
-        val enabled = Config.termGuiEnabled
-        if (kind == null) return "kind=null slots=$slots termGui=$enabled quiet=$quiet reason=no kind for this title"
-        val required = requiredSlotsFor(kind, items(screen, kind))
-        val reason = when {
-            !enabled -> "termGuiEnabled is off"
-            quiet -> "quiet mode is on"
-            slots < required -> "menu has $slots slots, grid needs $required"
-            else -> "open"
-        }
-        return "kind=$kind slots=$slots need=$required termGui=$enabled quiet=$quiet active=" +
-            "${active(screen)} reason=$reason"
-    }
 }
