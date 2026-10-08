@@ -122,13 +122,11 @@ object DungeonMapScanner {
     }
 
     fun onMapPacket(packet: ClientboundMapItemDataPacket) {
+        if (!DungeonContext.inDungeon) return
         val mapId = packet.mapId()
         val invMapId = inventoryMapId()
-        if (invMapId != null && mapId != invMapId) {
-            if (mapId.id() and 1000 != 0) {
-                return
-            }
-        }
+        if (invMapId != null && mapId != invMapId) return
+        lastMapId = mapId
         updateMap(mapId)
     }
 
@@ -210,8 +208,7 @@ object DungeonMapScanner {
      * name the packet carried, or none at all.
      */
     private fun updatePlayerIcons(decorations: Map<String, MapDecoration>) {
-        if (roomGap <= 0) return
-        val icons = mutableListOf<PlayerIcon>()
+        if (roomGap <= 0 || roomSize <= 0) return
         val mc = Minecraft.getInstance()
         val localPlayer = mc.player ?: return
         val localName = localPlayer.gameProfile.name
@@ -219,93 +216,91 @@ object DungeonMapScanner {
         val selfGx = (localPlayer.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize.toDouble()
         val selfGz = (localPlayer.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize.toDouble()
 
-        val teammates = mc.connection?.onlinePlayers
-            ?.filter { !it.profile.name.equals(localName, ignoreCase = true) }
-            ?.map { it.profile.name }
-            ?: emptyList()
+        val teammates = com.asthoonlite.dungeon.DungeonContext.getTeammateNames()
 
-        // The self marker is identified by position, not by key: it is the
-        // decoration sitting in the grid cell the player is standing in.
-        var selfKey: String? = null
-        var minSelfDist = Double.MAX_VALUE
+        data class DecCandidate(val key: String, val dec: MapDecoration, val gx: Double, val gz: Double, val rot: Double, val explicitName: String?)
+
+        val candidates = mutableListOf<DecCandidate>()
         for ((key, dec) in decorations) {
             if (dec.type().value() == MapDecorationTypes.FRAME.value()) continue
-            // /2.0: rescale lands in the map's 0..12 half-cell space, selfGx is
-            // in 0..6 grid cells — same conversion the icon draw path applies.
-            val gx = rescaleDecX(dec) / 2.0
-            val gz = rescaleDecZ(dec) / 2.0
-            val dist = kotlin.math.hypot(gx - selfGx, gz - selfGz)
-            if (dist < minSelfDist) {
-                minSelfDist = dist
-                selfKey = key
-            }
-        }
-        val dropSelf = minSelfDist < 0.8
-
-        // Naming, in order of authority: the name Hypixel attached to the
-        // decoration, then the teammate its index key points at, then the next
-        // unused name from the tab list (for opaque keys). Each name is claimed
-        // exactly once, so two markers can never wear the same player's face —
-        // and a marker that cannot claim one is not a player, so it is dropped.
-        val namePool = ArrayDeque(teammates)
-        val usedNames = HashSet<String>()
-
-        fun claim(candidate: String?): String? {
-            if (candidate == null) return null
-            return if (usedNames.add(candidate.lowercase(java.util.Locale.ROOT))) candidate else null
-        }
-
-        fun claimFromPool(): String? {
-            while (namePool.isNotEmpty()) {
-                val claimed = claim(namePool.removeFirst())
-                if (claimed != null) return claimed
-            }
-            return null
-        }
-
-        for ((key, dec) in decorations) {
-            if (dec.type().value() == MapDecorationTypes.FRAME.value()) continue
-            if (dropSelf && key == selfKey) continue
-
-            val playerType = isPlayerDecoration(dec.type().value())
+            val pixelX = (dec.x().toDouble() + 128.0) * 0.5
+            val pixelZ = (dec.y().toDouble() + 128.0) * 0.5
+            val gx = (pixelX - (mapOffsetX + roomSize / 2.0)) / roomGap.toDouble()
+            val gz = (pixelZ - (mapOffsetZ + roomSize / 2.0)) / roomGap.toDouble()
+            val rot = Math.toRadians((dec.rot().toDouble() * 22.5 + 180.0) % 360.0)
             val explicitName = dec.name().map { it.string }.orElse(null)
-
-            var name: String? = null
-            if (explicitName != null) name = claim(explicitName)
-            if (name == null) name = claim(indexKeyFrom(key)?.let { teammates.getOrNull(it) })
-            if (name == null && playerType) name = claimFromPool()
-
-            when {
-                // A player marker we could name: the normal case.
-                playerType && name != null -> Unit
-                // Opt-in dump of everything else on the map (mob and waypoint
-                // markers): keep it, with whatever name the packet carried.
-                Config.dungeonMapAllDecorations -> Unit
-                // No player behind this marker: leave it off the map.
-                else -> continue
-            }
-
-            icons.add(PlayerIcon(rescaleDecX(dec), rescaleDecZ(dec), decRot(dec), name))
+            candidates.add(DecCandidate(key, dec, gx, gz, rot, explicitName))
         }
-        playerIcons = icons
+
+        // Identify local player marker (candidate closest to selfGx, selfGz)
+        val selfCandidate = candidates.minByOrNull { kotlin.math.hypot(it.gx - selfGx, it.gz - selfGz) }
+        val remaining = if (selfCandidate != null && kotlin.math.hypot(selfCandidate.gx - selfGx, selfCandidate.gz - selfGz) < 0.9) {
+            candidates.filter { it !== selfCandidate }.toMutableList()
+        } else {
+            candidates.toMutableList()
+        }
+
+        val boundIcons = mutableListOf<PlayerIcon>()
+        val assignedTeammates = mutableSetOf<String>()
+        val unassignedCandidates = mutableListOf<DecCandidate>()
+
+        // 1. Explicit name if provided
+        for (cand in remaining) {
+            val name = cand.explicitName
+            if (name != null && teammates.any { it.equals(name, ignoreCase = true) }) {
+                val realName = teammates.first { it.equals(name, ignoreCase = true) }
+                boundIcons.add(PlayerIcon(cand.gx, cand.gz, cand.rot, realName))
+                assignedTeammates.add(realName.lowercase())
+            } else {
+                unassignedCandidates.add(cand)
+            }
+        }
+
+        // 2. Index key if available
+        val keyIter = unassignedCandidates.iterator()
+        while (keyIter.hasNext()) {
+            val cand = keyIter.next()
+            val idx = indexKeyFrom(cand.key)
+            if (idx != null) {
+                val name = teammates.getOrNull(idx)
+                if (name != null && !assignedTeammates.contains(name.lowercase())) {
+                    boundIcons.add(PlayerIcon(cand.gx, cand.gz, cand.rot, name))
+                    assignedTeammates.add(name.lowercase())
+                    keyIter.remove()
+                }
+            }
+        }
+
+        // 3. Match world teammates in render distance by proximity
+        val worldPlayers = mc.level?.players() ?: emptyList()
+        for (mate in worldPlayers) {
+            val mName = mate.gameProfile.name
+            if (mName.equals(localName, ignoreCase = true) || mate.isSpectator) continue
+            if (assignedTeammates.contains(mName.lowercase())) continue
+            if (!teammates.any { it.equals(mName, ignoreCase = true) }) continue
+
+            val mateGx = (mate.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize.toDouble()
+            val mateGz = (mate.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize.toDouble()
+
+            val nearest = unassignedCandidates.minByOrNull { kotlin.math.hypot(it.gx - mateGx, it.gz - mateGz) }
+            if (nearest != null && kotlin.math.hypot(nearest.gx - mateGx, nearest.gz - mateGz) < 0.9) {
+                boundIcons.add(PlayerIcon(nearest.gx, nearest.gz, nearest.rot, mName))
+                assignedTeammates.add(mName.lowercase())
+                unassignedCandidates.remove(nearest)
+            }
+        }
+
+        // 4. For any remaining candidates (distant), bind remaining teammates in party order
+        val remainingTeammates = teammates.filter { !assignedTeammates.contains(it.lowercase()) }
+        unassignedCandidates.forEachIndexed { i, cand ->
+            val name = remainingTeammates.getOrNull(i)
+            if (name != null || Config.dungeonMapAllDecorations) {
+                boundIcons.add(PlayerIcon(cand.gx, cand.gz, cand.rot, name))
+            }
+        }
+
+        playerIcons = boundIcons
     }
-
-    private fun rescaleDecX(dec: MapDecoration): Double =
-        MathUtils.rescale(
-            (dec.x().toDouble() + 128.0) * 0.5,
-            mapOffsetX.toDouble(), (mapOffsetX + roomGap * 6).toDouble(),
-            0.0, 12.0
-        )
-
-    private fun rescaleDecZ(dec: MapDecoration): Double =
-        MathUtils.rescale(
-            (dec.y().toDouble() + 128.0) * 0.5,
-            mapOffsetZ.toDouble(), (mapOffsetZ + roomGap * 6).toDouble(),
-            0.0, 12.0
-        )
-
-    private fun decRot(dec: MapDecoration): Double =
-        -(dec.rot() / 16.0 * 360.0 + 90.0) / 180.0 * PI
 
     internal fun colorAt(colors: ByteArray, x: Int, z: Int): Byte? =
         if (x in 0 until SCAN && z in 0 until SCAN) colors.getOrNull(x + z * SCAN) else null
@@ -430,7 +425,21 @@ object DungeonMapScanner {
     fun register() {
         // Map data can arrive before dungeon detection or before the map inventory slot.
         ClientTickEvents.END_CLIENT_TICK.register {
-            if (DungeonContext.inDungeon && ++scanTicks % 10 == 0) (lastMapId ?: inventoryMapId())?.let(::updateMap)
+            if (DungeonContext.inDungeon) {
+                if (++scanTicks % 10 == 0) {
+                    (lastMapId ?: inventoryMapId())?.let(::updateMap)
+                } else {
+                    val id = lastMapId ?: inventoryMapId()
+                    if (id != null) {
+                        val level = Minecraft.getInstance().level
+                        val mapState = level?.getMapData(id)
+                        val keyed = (mapState as? IMapState)?.`asthoonlite$getDecorations`()
+                        if (keyed != null) {
+                            updatePlayerIcons(keyed)
+                        }
+                    }
+                }
+            }
         }
         ClientPlayConnectionEvents.JOIN.register { _, _, _ -> reset() }
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> reset() }

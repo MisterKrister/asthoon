@@ -55,6 +55,21 @@ object DungeonContext {
         return match?.value?.color ?: PlayerClass.UNKNOWN.color
     }
 
+    fun getTeammateNames(): List<String> {
+        val mc = Minecraft.getInstance()
+        val localName = mc.player?.gameProfile?.name ?: ""
+        val fromClasses = playerClasses.keys.filter { !it.equals(localName, ignoreCase = true) }
+        if (fromClasses.isNotEmpty()) return fromClasses.distinctBy { it.lowercase() }
+        val online = mc.connection?.onlinePlayers ?: return emptyList()
+        return online.map { it.profile.name }.filter { name ->
+            !name.equals(localName, ignoreCase = true) &&
+                name.length in 3..16 &&
+                !name.startsWith("!") &&
+                !name.startsWith("[") &&
+                name.all { it.isLetterOrDigit() || it == '_' }
+        }.distinctBy { it.lowercase() }
+    }
+
     private var scoreboardMissingTicks = 0
     private var lastLoggedLines: List<String> = emptyList()
     private val floorPattern = Regex("The Catacombs \\(([FM][1-7]|E)\\)", RegexOption.IGNORE_CASE)

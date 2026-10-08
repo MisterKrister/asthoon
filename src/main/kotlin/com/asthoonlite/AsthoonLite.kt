@@ -100,6 +100,7 @@ object AsthoonLite : ClientModInitializer {
         ArrowAlignSolver.register()
         SecretHitboxes.register()
         SecretAura.register()
+        com.asthoonlite.dungeon.SecretTriggerBot.register()
         RelicAura.register()
         com.asthoonlite.dungeon.solvers.TicTacToeSolver.register()
         com.asthoonlite.dungeon.solvers.IceFillSolver.register()

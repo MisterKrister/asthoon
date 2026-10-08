@@ -131,20 +131,37 @@ object StarMobESP {
             }
 
             // Bats (Starred / secret bats)
-            for (bat in level.getEntitiesOfClass(net.minecraft.world.entity.ambient.Bat::class.java, localPlayer.boundingBox.inflate(64.0))) {
-                if (!bat.isInvisible && !bat.isPassenger && bat.health > 0f && !starMobs.containsKey(bat.id)) {
-                    starMobs[bat.id] = MobCategory.REGULAR
+            if (Config.starMobEspBats) {
+                for (bat in level.getEntitiesOfClass(net.minecraft.world.entity.ambient.Bat::class.java, localPlayer.boundingBox.inflate(64.0))) {
+                    if (!bat.isInvisible && !bat.isPassenger && bat.health > 0f && !starMobs.containsKey(bat.id)) {
+                        if (!isRoomCleared(bat.position())) {
+                            starMobs[bat.id] = MobCategory.REGULAR
+                        }
+                    }
                 }
             }
         }
 
-        // Purge dead or removed entities every tick
+        // Purge dead, invalid, bat-disabled, or cleared-room entities every tick
         val iterator = starMobs.iterator()
         while (iterator.hasNext()) {
             val (id, _) = iterator.next()
             val entity = level.getEntity(id)
-            if (entity != null && (entity.isRemoved || (entity is LivingEntity && (entity.isDeadOrDying || entity.health <= 0f)))) {
+            if (entity == null || entity.isRemoved || (entity is LivingEntity && (entity.isDeadOrDying || entity.health <= 0f))) {
                 iterator.remove()
+                continue
+            }
+            if (entity !is LivingEntity || entity is ArmorStand) {
+                iterator.remove()
+                continue
+            }
+            if (entity is net.minecraft.world.entity.ambient.Bat && !Config.starMobEspBats) {
+                iterator.remove()
+                continue
+            }
+            if (isRoomCleared(entity.position())) {
+                iterator.remove()
+                continue
             }
         }
     }
@@ -169,9 +186,9 @@ object StarMobESP {
         else -> MobCategory.REGULAR
     }
 
-    private fun categorizePlayer(name: String): MobCategory? = when (name) {
+    fun categorizePlayer(name: String): MobCategory? = when (name) {
         "Shadow Assassin" -> MobCategory.SHADOW_ASSASSIN
-        "Lost Adventurer", "Diamond Guy", "King Midas" -> MobCategory.MINIBOSS
+        "Lost Adventurer", "Diamond Guy", "King Midas", "Bonzo", "Scarf", "The Professor", "Livid" -> MobCategory.MINIBOSS
         else -> null
     }
 
@@ -192,10 +209,31 @@ object StarMobESP {
         else -> 2.0
     }
 
+    private fun isRoomCleared(pos: net.minecraft.world.phys.Vec3): Boolean {
+        val comp = com.asthoonlite.dungeon.api.WorldPosition(pos.x.toInt(), pos.z.toInt()).toComponent()
+        val mobRoom = if (comp.isInBounds()) com.asthoonlite.dungeon.map.DungeonScanner.rooms.getOrNull(comp.getRoomIdx()) else null
+        if (mobRoom != null && (mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.WHITE ||
+                mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.GREEN ||
+                mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.FAILED)) {
+            return true
+        }
+        val currentRoom = com.asthoonlite.dungeon.map.DungeonScanner.currentRoom
+        if (currentRoom != null && (currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.WHITE ||
+                currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.GREEN ||
+                currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.FAILED)) {
+            val player = Minecraft.getInstance().player
+            if (player != null && isInSameRoom(pos, player.position())) {
+                return true
+            }
+        }
+        return false
+    }
+
     fun shouldForceGlow(entity: Entity): Boolean {
         if (!Config.starMobEspEnabled || !DungeonContext.inDungeon || !starMobs.containsKey(entity.id)) return false
         val player = Minecraft.getInstance().player ?: return false
         if (!Config.starMobEspThroughWalls && !player.hasLineOfSight(entity)) return false
+        if (isRoomCleared(entity.position())) return false
         return isInSameRoom(entity.position(), player.position())
     }
 
@@ -237,6 +275,7 @@ object StarMobESP {
             val entity = level.getEntity(id) ?: continue
             if (entity.isRemoved || (entity is LivingEntity && (entity.isDeadOrDying || entity.health <= 0f))) continue
             val pos = entity.position()
+            if (isRoomCleared(pos)) continue
             // Restrict ESP to only mobs in the current room as the player
             if (!isInSameRoom(pos, player.position())) continue
             // If through-walls is off, skip mobs blocked by geometry

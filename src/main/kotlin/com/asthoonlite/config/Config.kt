@@ -305,6 +305,12 @@ object Config {
 
         // ── Simon Says Fast Mode ─────────────────────────────────────────────
         var autoSimonSaysFast: Boolean = false,
+
+        // ── ESP Toggles ──────────────────────────────────────────────────────
+        var starMobEspBats: Boolean = false,
+
+        // ── Secret Triggerbot ────────────────────────────────────────────────
+        var secretTriggerBotEnabled: Boolean = false,
     )
 
     var data = Data()
@@ -409,6 +415,10 @@ object Config {
     var starMobEspThroughWalls: Boolean
         get() = data.starMobEspThroughWalls
         set(v) { data.starMobEspThroughWalls = v; save() }
+
+    var starMobEspBats: Boolean
+        get() = data.starMobEspBats
+        set(v) { data.starMobEspBats = v; save() }
 
     /** Off = flat starMobColor for everything. On = per-category colors. */
     var starMobEspByType: Boolean
@@ -958,6 +968,10 @@ object Config {
     var secretAuraEnabled: Boolean
         get() = data.secretAuraEnabled
         set(v) { data.secretAuraEnabled = v; save() }
+
+    var secretTriggerBotEnabled: Boolean
+        get() = data.secretTriggerBotEnabled
+        set(v) { data.secretTriggerBotEnabled = v; save() }
 
     var secretAuraRange: Int
         get() = data.secretAuraRange

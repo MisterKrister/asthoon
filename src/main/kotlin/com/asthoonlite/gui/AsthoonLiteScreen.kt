@@ -663,6 +663,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         { Config.starMobEspByType }, { Config.starMobEspByType = it }),
                     ToggleRow("  ↳ Show Full Shadow", "Show full hitbox of invisible Shadow Assassins",
                         { Config.starMobShowFullShadow }, { Config.starMobShowFullShadow = it }),
+                    ToggleRow("  ↳ Bat ESP", "Highlight secret and dungeon bats",
+                        { Config.starMobEspBats }, { Config.starMobEspBats = it }),
                     WidgetRow(IntSlider(subX, 0, subW, 24, 1, 10, Config.starMobLineWidth.toInt(), "Star Mob Line Width: ", " px") {
                         Config.starMobLineWidth = it.toDouble()
                     }),
@@ -760,6 +762,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     ToggleRow("Item Secret Pickup Sound", "Light chime when floor secret is collected",
                         { Config.secretItemPickupSoundEnabled }, { Config.secretItemPickupSoundEnabled = it }),
                     SectionHeader("Secret Interaction & Aura"),
+                    ToggleRow("Secret Triggerbot", "Auto-click levers, buttons, skulls, and secrets when looking at them",
+                        { Config.secretTriggerBotEnabled }, { Config.secretTriggerBotEnabled = it }),
                     ToggleRow("Auto-Close Secret Chest", "Instantly closes secret chest GUI on open",
                         { Config.autoCloseSecretChest }, { Config.autoCloseSecretChest = it }),
                     ToggleRow("Secret Aura", "Auto-interact with secrets in configured range and FOV",

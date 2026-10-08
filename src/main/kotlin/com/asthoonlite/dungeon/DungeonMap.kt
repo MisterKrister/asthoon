@@ -121,6 +121,9 @@ object DungeonMap : HudElement {
         fun cellX(gx: Int): Float = cellX(gx.toFloat())
         fun cellY(gz: Int): Float = cellY(gz.toFloat())
 
+        fun toScreenX(gx: Float): Float = cellX(gx) + cellW * 0.5f
+        fun toScreenY(gz: Float): Float = cellY(gz) + cellH * 0.5f
+
         // Every map toggle below used to be declared in the GUI and read by
         // nobody — the renderer just drew everything unconditionally. These
         // are the flags that actually gate it now, declared up front because
@@ -359,8 +362,8 @@ object DungeonMap : HudElement {
         // 4. Draw Teammate & Self Player Icons
         val selfGx = ((player.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize).toFloat().coerceIn(0f, 5f)
         val selfGz = ((player.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize).toFloat().coerceIn(0f, 5f)
-        val selfPx = cellX(0) + selfGx * (cellW + cellGap) + cellW * 0.5f
-        val selfPz = cellY(0) + selfGz * (cellH + cellGap) + cellH * 0.5f
+        val selfPx = toScreenX(selfGx)
+        val selfPz = toScreenY(selfGz)
 
         val showNames = Config.dungeonMapPlayerNames && (!Config.dungeonMapNamesOnlyLeap || isHoldingLeap(player))
 
@@ -377,16 +380,19 @@ object DungeonMap : HudElement {
 
         // 1. Live world teammates (render distance)
         val worldPlayers = mc.level?.players() ?: emptyList()
+        val teammates = DungeonContext.getTeammateNames()
         for (mate in worldPlayers) {
             val mateName = mate.gameProfile.name
             if (mateName.equals(player.gameProfile.name, ignoreCase = true) || mate.isSpectator) continue
+            if (mate.uuid.version() == 2 || StarMobESP.categorizePlayer(mateName) != null) continue
+            if (teammates.isNotEmpty() && !teammates.any { it.equals(mateName, ignoreCase = true) }) continue
             renderedNames.add(mateName.lowercase())
 
             val gx = ((mate.x - cornerStart.x - halfRoomSize) / roomDoorCombinedSize).toFloat()
             val gz = ((mate.z - cornerStart.z - halfRoomSize) / roomDoorCombinedSize).toFloat()
             if (gx < -0.5f || gx > 5.5f || gz < -0.5f || gz > 5.5f) continue
-            val tx = cellX(0) + gx * (cellW + cellGap) + cellW * 0.5f
-            val tz = cellY(0) + gz * (cellH + cellGap) + cellH * 0.5f
+            val tx = toScreenX(gx)
+            val tz = toScreenY(gz)
             val yawDeg = mate.yRot.toDouble()
             val skin = mate.skin
             val mateColor = DungeonContext.classColor(mateName)
@@ -408,19 +414,12 @@ object DungeonMap : HudElement {
             val iconName = icon.name
             if (iconName != null && renderedNames.contains(iconName.lowercase())) continue
 
-            val iconGx = icon.x.toFloat() / 2f
-            val iconGz = icon.z.toFloat() / 2f
+            val iconGx = icon.x.toFloat()
+            val iconGz = icon.z.toFloat()
             if (kotlin.math.hypot(iconGx - selfGx, iconGz - selfGz) < 0.4f) continue
 
-            // Cell corner convention, not cell centre: an icon coordinate is
-            // (mapPixel - mapOffset) / roomGap, and 0 there is the *left edge* of
-            // cell 0 (mapOffset is a lattice corner, see scanMapDimensions).
-            // cellX already maps that straight onto the panel — adding half a cell
-            // on top, as this used to, pushed every distant teammate's marker half
-            // a cell down-right of the pixel the server reported. Self gets the
-            // +cellW/2 below because selfGx is measured from the room's centre.
-            val tx = cellX(iconGx)
-            val tz = cellY(iconGz)
+            val tx = toScreenX(iconGx)
+            val tz = toScreenY(iconGz)
             val yawDeg = Math.toDegrees(icon.rot)
             val skin = getPlayerSkin(iconName)
             val mateColor = DungeonContext.classColor(iconName)
