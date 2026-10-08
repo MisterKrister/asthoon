@@ -52,6 +52,9 @@ object F7Devices {
     private var startClicksDone = 0
     private var nextStartClickAt = 0L
     private val ssSequence = ArrayList<BlockPos>()
+    private var clickIndex = 0
+    private var brokenButton: BlockPos? = null
+    private var startingButton: BlockPos? = null
     private val ssButtonCheck = BlockPos(110, 120, 93)
     private val simonLifecycle = SimonDeviceLifecycle()
 
@@ -218,11 +221,12 @@ object F7Devices {
                     return
                 }
             } else if (target in ssButtons) {
-                if (level.getBlockState(target).block != Blocks.STONE_BUTTON) {
+                if (target == brokenButton) {
                     cancelSimonAim()
                     return
                 }
-                if (isSkipping && !skipOver) {
+                val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
+                if (boardReady && aimState != AimState.TURNING && level.getBlockState(target).block != Blocks.STONE_BUTTON) {
                     cancelSimonAim()
                     return
                 }
@@ -369,15 +373,23 @@ object F7Devices {
         if (pos in ssObsidians && block == Blocks.SEA_LANTERN) {
             simonLifecycle.observeRun(System.nanoTime())
             val button = pos.west()
-            if (isSkipping && !skipOver && ssSequence.size == 2) {
-                ssSequence.removeAt(0)
-            }
-            if (ssSequence.size < 5 && !ssSequence.contains(button)) {
-                ssSequence.add(button)
+            if (isSkipping && brokenButton == null) {
+                // The very first lantern in skip mode is the button that breaks off
+                brokenButton = button
+            } else if (button != brokenButton && !ssSequence.contains(button)) {
+                if (startingButton == null) {
+                    startingButton = button
+                    skipOver = true
+                }
+                if (ssSequence.size < 5) {
+                    ssSequence.add(button)
+                }
             }
         } else if (pos == ssButtonCheck) {
-            if (block == Blocks.STONE_BUTTON) {
-                if (!isSkipping || ssSequence.size >= 2) {
+            if (block == Blocks.AIR) {
+                clickIndex = 0
+            } else if (block == Blocks.STONE_BUTTON) {
+                if (!isSkipping || ssSequence.isNotEmpty()) {
                     skipOver = true
                 }
             }
@@ -388,6 +400,7 @@ object F7Devices {
         if (simonLifecycle.completed || player.distanceToSqr(ssDeviceCenter) > 36.0) return
 
         if (level.getBlockState(ssButtonCheck).block == Blocks.AIR) {
+            clickIndex = 0
             if (ssSequence.isEmpty()) {
                 lastSSState = BooleanArray(ssObsidians.size)
                 // An empty board also appears between rounds. A new local
@@ -395,12 +408,15 @@ object F7Devices {
                 if (!simonLifecycle.active) {
                     ssStartClicked = false
                     isSkipping = false
+                    skipOver = false
+                    brokenButton = null
+                    startingButton = null
                 }
             }
             return
         }
         if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON) {
-            if (!isSkipping || ssSequence.size >= 2) {
+            if (!isSkipping || ssSequence.isNotEmpty()) {
                 skipOver = true
             }
         }
@@ -413,13 +429,16 @@ object F7Devices {
         now.forEachIndexed { index, active ->
             if (!active || lastSSState[index]) return@forEachIndexed
             val button = ssObsidians[index].west()
-
-            // Direct port of NoammAddons' SS-skip queue behavior.
-            if (isSkipping && !skipOver && ssSequence.size == 2) {
-                ssSequence.removeAt(0)
-            }
-            if (ssSequence.size < 5 && !ssSequence.contains(button)) {
-                ssSequence.add(button)
+            if (isSkipping && brokenButton == null) {
+                brokenButton = button
+            } else if (button != brokenButton && !ssSequence.contains(button)) {
+                if (startingButton == null) {
+                    startingButton = button
+                    skipOver = true
+                }
+                if (ssSequence.size < 5) {
+                    ssSequence.add(button)
+                }
             }
         }
         lastSSState = now
@@ -466,15 +485,15 @@ object F7Devices {
             val targetBlock = aimTargetBlock
             val targetVec = aimTargetVec
             if (targetBlock != null && targetVec != null && level.getBlockState(targetBlock).block == Blocks.STONE_BUTTON) {
-                if (level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON &&
-                    (!isSkipping || skipOver) &&
-                    ssSequence.isNotEmpty() && ssSequence.first() == targetBlock) {
+                val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
+                val expected = ssSequence.getOrNull(clickIndex)
+                if (boardReady && expected != null && targetBlock == expected && targetBlock != brokenButton) {
                     val hit = BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
                     mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
                     lastSSClick = now
                     ssLastClientTick = DungeonServerTick.current
 
-                    ssSequence.removeFirst()
+                    clickIndex++
                     aimState = AimState.POST_CLICK_PAUSE
                     val pause = if (fastMode) Random.nextLong(2L, 8L) else Random.nextLong(12L, 28L)
                     postClickPauseUntil = now + pause
@@ -483,12 +502,13 @@ object F7Devices {
             }
         }
 
-        // Inter-round waiting: smoothly look down towards the start button / sequence base
-        // at a relaxed, human pace arriving well in time before buttons spawn.
-        // If skipping, ignore the first button that breaks off and keep gaze relaxed down near neutral/start.
         val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
+
+        // Inter-round waiting: smoothly look back towards the button at the start of the sequence,
+        // ignoring the one that broke off, arriving well in time before buttons spawn.
         if (!boardReady && (simonLifecycle.active || ssStartClicked) && !simonLifecycle.completed && simonLifecycle.round < 5) {
-            val waitingTarget = if (isSkipping && !skipOver) ssButtonCheck else (ssSequence.firstOrNull() ?: ssButtonCheck)
+            clickIndex = 0
+            val waitingTarget = startingButton ?: ssButtonCheck
             val waitCooldown = if (fastMode) 15L else 30L
             if (aimTargetBlock != waitingTarget && (aimState == AimState.IDLE || aimState == AimState.SETTLED) && now - lastSSClick > waitCooldown) {
                 startAim(player, waitingTarget, slow = true)
@@ -509,18 +529,29 @@ object F7Devices {
         }
 
         // 4. Check if sequence buttons are ready on the wall (priority order)
-        // If skipping, ignore round 1 buttons that spawn on the device (they break off)
-        if (boardReady && (!isSkipping || skipOver)) {
-            val expected = ssSequence.firstOrNull() ?: return
-            if (level.getBlockState(expected).block == Blocks.STONE_BUTTON) {
-                // If button is already pressed / powered, drop and advance
-                if (level.getBlockState(expected).getValue(net.minecraft.world.level.block.ButtonBlock.POWERED)) {
-                    ssSequence.removeFirst()
+        if (boardReady) {
+            val expected = ssSequence.getOrNull(clickIndex)
+            if (expected != null && expected != brokenButton) {
+                if (level.getBlockState(expected).block == Blocks.STONE_BUTTON) {
+                    // If button is already pressed / powered, drop and advance
+                    if (level.getBlockState(expected).getValue(net.minecraft.world.level.block.ButtonBlock.POWERED)) {
+                        clickIndex++
+                        return
+                    }
+                    val minDelay = if (fastMode) 12L else 28L
+                    if (now - lastSSClick > minDelay) {
+                        if (aimTargetBlock != expected) {
+                            startAim(player, expected, slow = false)
+                        }
+                    }
                     return
                 }
-                val minDelay = if (fastMode) 12L else 28L
-                if (now - lastSSClick > minDelay) {
-                    startAim(player, expected, slow = false)
+            } else if (clickIndex >= ssSequence.size && ssSequence.isNotEmpty()) {
+                // All buttons for current sequence clicked; focus back on starting button of sequence
+                val startBtn = startingButton ?: ssSequence.firstOrNull()
+                if (startBtn != null && aimTargetBlock != startBtn && now - lastSSClick > 20L) {
+                    startAim(player, startBtn, slow = true)
+                    return
                 }
             }
         }
@@ -545,21 +576,15 @@ object F7Devices {
         }
         if (simonLifecycle.completed) return
         if (pos !in ssButtons) return
-        if (isSkipping && !skipOver) return
+        if (pos == brokenButton) return
         simonLifecycle.observeRun(System.nanoTime())
-        val expected = ssSequence.firstOrNull() ?: return
+        val expected = ssSequence.getOrNull(clickIndex) ?: return
 
-        if (pos != expected) {
-            if (ssSequence.size == 3 && ssSequence.getOrNull(1) == pos) {
-                ssSequence.removeAt(1)
-                if (ssSequence.isNotEmpty()) ssSequence.removeAt(0)
-            }
-            return
+        if (pos == expected) {
+            if (ssLastClientTick == DungeonServerTick.current) return
+            clickIndex++
+            ssLastClientTick = DungeonServerTick.current
         }
-
-        if (ssLastClientTick == DungeonServerTick.current) return
-        ssSequence.removeFirst()
-        ssLastClientTick = DungeonServerTick.current
     }
 
     /** Exact NoammAddons-style pre-interaction protection. */
@@ -567,8 +592,8 @@ object F7Devices {
         if (!Config.blockWrongDeviceClicks || !DungeonContext.inDungeon || simonLifecycle.completed) return false
         val player = Minecraft.getInstance().player ?: return false
         if (player.isCrouching || pos !in ssButtons) return false
-        if (isSkipping && !skipOver) return true
-        val expected = ssSequence.firstOrNull() ?: return false
+        if (pos == brokenButton) return true
+        val expected = ssSequence.getOrNull(clickIndex) ?: return false
         return pos != expected
     }
 
@@ -590,6 +615,9 @@ object F7Devices {
     private fun resetSimonState(clearCompletion: Boolean = false) {
         if (clearCompletion) simonLifecycle.reset()
         ssSequence.clear()
+        clickIndex = 0
+        brokenButton = null
+        startingButton = null
         lastSSState = BooleanArray(ssObsidians.size)
         isSkipping = false
         skipOver = false
@@ -618,7 +646,9 @@ object F7Devices {
         if (ready || ssObsidians.any { level.getBlockState(it).block == Blocks.SEA_LANTERN }) {
             simonLifecycle.observeRun(System.nanoTime())
         }
-        simonLifecycle.observeBoard(ready)
+        if (simonLifecycle.observeBoard(ready)) {
+            clickIndex = 0
+        }
         if (!ready && aimTargetBlock in ssButtons && (simonLifecycle.completed || !simonLifecycle.active)) cancelSimonAim()
     }
 
