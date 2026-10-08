@@ -146,6 +146,11 @@ object PathExecutor {
         } catch (_: Exception) {}
     }
 
+    fun getTelemetryStatus(): String? {
+        if (!isActive) return null
+        return "preset=${activePreset?.name},node=$currentNodeIndex,bonzoState=${bonzoState.name},bonzoTicks=$bonzoTicksRemaining"
+    }
+
     private fun tick() {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: run { if (isActive) stop(); return }
@@ -553,6 +558,7 @@ object PathExecutor {
         // Fire immediately so projectile hits the platform floor ahead/under player in time
         player.swing(InteractionHand.MAIN_HAND)
         mc.gameMode?.useItem(player, InteractionHand.MAIN_HAND)
+        PathfindCapture.notifyBonzoShot("AUTO_EXECUTOR")
 
         bonzoState = BonzoState.POST_FIRE_PROPEL
         bonzoTicksRemaining = 4

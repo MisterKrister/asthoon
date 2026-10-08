@@ -381,6 +381,23 @@ internal fun simonDeviceRegressionChecks() {
     // Target is diagonally left (e.g. player at (0, 0), target at (-10, 10))
     val diagYaw = computeLaunchYaw(0.0, 0.0, -10.0, 10.0)
     check(diagYaw == 45.0f) { "Bonzo launch yaw must point directly along vector to destination (45° for diagonally left)" }
+
+    // 17. Bonzo Staff projectile telemetry and knockback impulse detection check
+    fun isBonzoKnockbackImpulse(vy: Double, dvy: Double, bpsH: Double, dvH: Double): Boolean {
+        return (vy > 0.22 || dvy > 0.30 || (bpsH > 14.0 && dvH > 4.0))
+    }
+    // High-speed floor blast impulse: vertical launch spike
+    check(isBonzoKnockbackImpulse(vy = 0.42, dvy = 0.45, bpsH = 22.0, dvH = 6.0)) {
+        "High-speed Bonzo explosion knockback must be recognized"
+    }
+    // Subtle floor explosion with forward acceleration
+    check(isBonzoKnockbackImpulse(vy = 0.15, dvy = 0.10, bpsH = 26.5, dvH = 5.2)) {
+        "Bonzo horizontal acceleration boost must be recognized"
+    }
+    // Ordinary walking at steady speed
+    check(!isBonzoKnockbackImpulse(vy = -0.07, dvy = 0.0, bpsH = 11.0, dvH = 0.1)) {
+        "Steady walking must not trigger knockback detection"
+    }
 }
 
 
