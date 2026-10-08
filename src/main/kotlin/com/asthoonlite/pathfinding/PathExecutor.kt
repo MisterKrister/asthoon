@@ -282,19 +282,19 @@ object PathExecutor {
 
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
-            val isAtNodeElev = player.y >= target.y - 0.5 && player.y <= target.y + 1.2
+            val isAtNodeElev = player.y >= target.y - 1.2 && player.y <= target.y + 1.8
             val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
             val toNextDx = if (nextTarget != null) nextTarget.x - player.x else target.x - player.x
             val toNextDz = if (nextTarget != null) nextTarget.z - player.z else target.z - player.z
             val nextYaw = (-Math.toDegrees(atan2(toNextDx, toNextDz))).toFloat()
             val isAtLaunchLedge = isLedgeOrGapAhead(level, player, nextYaw)
 
-            // Must be on solid ground (NEVER mid-air while landing from a prior jump)
-            // Must have arrived on the platform (distH <= 2.2 or at launch ledge, or distH <= 2.8 if at starting node)
-            // Must have forward sprint speed (bpsH >= 6.0, or at ledge, or if close to start node)
-            val isArrivedOnPlatform = distH <= 2.2 || (isAtLaunchLedge && distH <= 2.8) || (currentNodeIndex == 0 && distH <= 2.8)
-            val hasLaunchSpeed = currentBpsH >= 6.0 || isAtLaunchLedge || (currentNodeIndex == 0 && (currentBpsH >= 4.5 || distH <= 0.8))
-            val canLaunch = player.onGround() && !player.isInLava && !player.isInWater &&
+            // At 500-550 speed (15+ bps, ~0.8m/tick), distH <= 3.2m triggers while on the solid platform
+            // before sprinting off the edge into the chasm.
+            val isArrivedOnPlatform = distH <= 3.2 || isAtLaunchLedge
+            val hasLaunchSpeed = currentBpsH >= 5.0 || isAtLaunchLedge || distH <= 1.0
+            val isGroundedOrStepping = player.onGround() || (player.fallDistance < 0.6 && player.deltaMovement.y > -0.40)
+            val canLaunch = isGroundedOrStepping && !player.isInLava && !player.isInWater &&
                             isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed
 
             if (canLaunch) {
@@ -431,7 +431,7 @@ object PathExecutor {
 
         // 5. Waypoint Lookahead, Look Node Aiming & Smooth Natural Camera Control
         val isClimbingToNode = target.y > player.y + 0.4
-        val arrivalThreshold = if (isClimbingToNode) 1.2 else if (isHighSpeed) 2.2 else 1.2
+        val arrivalThreshold = if (isClimbingToNode) 1.5 else if (isHighSpeed) 2.5 else 1.5
 
         val lookaheadBlend = if (distH < 2.8 && nextTarget != null && nodeType == RouteNodeType.WALK) {
             ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
@@ -492,24 +492,12 @@ object PathExecutor {
                                 currentNodeIndex == points.size - 1)
 
         // In-Air Braking & Deceleration:
-        // When airborne and heading towards any destination:
-        // - If destination is stationary (e.g. Simon Says) and distH < 3.8: brake hard to drop onto platform!
-        // - If descending and projected flight distance overshoots platform target: tap S and release sprint!
+        // Only brake hard when arriving at stationary puzzle stations (e.g. Simon Says, Arrows Align, final stop)
+        // NEVER brake or tap S mid-air on normal movement waypoints or chasm flights!
         var inAirBrakeActive = false
         if (isAirborne && bonzoState == BonzoState.IDLE) {
-            val vy = player.deltaMovement.y
-            val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
             if (isStationaryDest && distH < 3.8) {
                 inAirBrakeActive = true
-            } else if (vy < 0.1 && distH < 6.0 && currentBpsH > 5.0) {
-                val heightAboveTarget = (player.y - target.y).coerceAtLeast(0.2)
-                val fallSpeed = Math.abs(vy).coerceAtLeast(0.18)
-                val ticksToLand = (heightAboveTarget / fallSpeed).coerceIn(1.0, 12.0)
-                val predictedTravelH = (currentBpsH / 20.0) * ticksToLand
-                val overshoot = predictedTravelH - distH
-                if (overshoot > 0.8) {
-                    inAirBrakeActive = true
-                }
             }
         }
 
@@ -628,7 +616,7 @@ object PathExecutor {
         }
 
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
-        val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.4 else distY < 2.2
+        val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.6 else distY < 2.5
 
         if (nodeType != RouteNodeType.BONZO_STAFF && nodeType != RouteNodeType.JUMP &&
             distH < arrivalThreshold && canArriveElevation) {
@@ -685,11 +673,13 @@ object PathExecutor {
                 goalPitch = 10.0f
                 isFastAim = true
             }
-            nodeType == RouteNodeType.BONZO_STAFF && distH < 2.8 -> {
+            nodeType == RouteNodeType.BONZO_STAFF && distH < 3.2 -> {
                 goalYaw = if (target.hasLookNode) {
                     val ldx = target.lookX - predX
                     val ldz = target.lookZ - predZ
                     (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+                } else if (target.yaw != 0f) {
+                    target.yaw
                 } else if (nextTarget != null) {
                     val bDx = nextTarget.x - predX
                     val bDz = nextTarget.z - predZ
@@ -697,7 +687,7 @@ object PathExecutor {
                 } else {
                     target.yaw
                 }
-                goalPitch = if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
+                goalPitch = if (target.pitch != 0f) target.pitch else 79.0f
                 isFastAim = true
             }
             nodeType == RouteNodeType.SIMON_SAYS && distH < 3.0 -> {
@@ -921,12 +911,14 @@ object PathExecutor {
             val ldx = currentNode.lookX - player.x
             val ldz = currentNode.lookZ - player.z
             (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
+        } else if (currentNode.yaw != 0f) {
+            currentNode.yaw
         } else {
             calculatedYaw
         }
         bonzoLaunchYaw = launchYaw
 
-        val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
+        val launchPitch = if (currentNode.pitch != 0f) currentNode.pitch else 79.0f
 
         player.yRotO = launchYaw
         player.xRotO = launchPitch
@@ -954,7 +946,7 @@ object PathExecutor {
         PathfindCapture.notifyBonzoShot("AUTO_EXECUTOR")
 
         bonzoState = BonzoState.POST_FIRE_PROPEL
-        bonzoTicksRemaining = 8
+        bonzoTicksRemaining = 12
     }
 
     private fun handleActiveBonzoState(points: List<PathPoint>, isHighSpeed: Boolean) {
