@@ -211,6 +211,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         val px = px()
         val py = py()
 
+        // If a route is currently opened in the route editor, stay on Route Editor until the user hits Done
+        if (RouteEditor.activePreset != null && activeTab == Tab.QOL) {
+            activeTab = Tab.PATHFINDING
+            activePathfindingSection = PathfindingSection.ROUTE_EDITOR
+        }
+
         // ── Header Search Box ────────────────────────────────────────────────
         val searchX = px + 145
         val searchW = PANEL_W - 145 - 34
@@ -261,7 +267,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         tabButtons.forEach { addRenderableWidget(it) }
 
         // ── Footer Done button ───────────────────────────────────────────────
-        btnDone = ModernButton(px + (PANEL_W - 100) / 2, py + panelH() - 26, 100, 20, Component.literal("Done")) { onClose() }
+        btnDone = ModernButton(px + (PANEL_W - 100) / 2, py + panelH() - 26, 100, 20, Component.literal("Done")) {
+            if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR && RouteEditor.activePreset != null) {
+                RouteEditor.finishEditing()
+            }
+            onClose()
+        }
         addRenderableWidget(btnDone)
 
         rebuildTab(activeTab)
@@ -999,14 +1010,28 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         items.add(NoteRow("Category: ${preset.category}  •  Subcategory: ${preset.subcategory}  •  Nodes: ${preset.points.size}"))
 
                         val btnW = (subW - 12) / 4
-                        val selectBtnText = if (isActive) "Active ✓" else "Select"
-                        val selectBtnAccent = if (isActive) 0xFF10B981.toInt() else cat.color
+                        val selectBtnText = if (isActive) "Active" else "Inactive"
+                        val selectBtnAccent = if (isActive) 0xFF10B981.toInt() else 0xFF475569.toInt()
                         val btnSelect = ModernButton(subX, 0, btnW, 22, Component.literal(selectBtnText), selectBtnAccent) {
-                            Config.activePathfindingPresetId = if (isActive) "" else preset.id
+                            if (isActive) {
+                                Config.activePathfindingPresetId = ""
+                                PathExecutor.stop()
+                                minecraft.player?.sendSystemMessage(
+                                    Component.literal("§e[AsthoonLite] §fRoute §6\"${preset.name}\" §cDEACTIVATED§f.")
+                                )
+                            } else {
+                                Config.activePathfindingPresetId = preset.id
+                                Config.pathfindingEnabled = true
+                                Config.pathfindingDebugRender = true
+                                minecraft.player?.sendSystemMessage(
+                                    Component.literal("§a[AsthoonLite] §fRoute §e\"${preset.name}\" §2ACTIVATED§f. Starting navigation to node #1...")
+                                )
+                            }
                             rebuildTab(Tab.PATHFINDING)
                         }
                         val btnEdit = ModernButton(subX + btnW + 4, 0, btnW, 22, Component.literal("Edit Route"), 0xFFEAB308.toInt()) {
                             RouteEditor.activePreset = preset
+                            RouteEditor.editingNodeIndex = -1
                             activePathfindingSection = PathfindingSection.ROUTE_EDITOR
                             rebuildTab(Tab.PATHFINDING)
                         }
@@ -1018,8 +1043,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         }
                         val btnDelete = ModernButton(subX + (btnW + 4) * 3, 0, btnW, 22, Component.literal("Delete"), 0xFFEF4444.toInt()) {
                             PathPresetManager.deletePreset(preset.id)
-                            if (Config.activePathfindingPresetId == preset.id) Config.activePathfindingPresetId = ""
-                            if (RouteEditor.activePreset?.id == preset.id) RouteEditor.activePreset = null
+                            if (Config.activePathfindingPresetId == preset.id) {
+                                Config.activePathfindingPresetId = ""
+                                PathExecutor.stop()
+                            }
+                            if (RouteEditor.activePreset?.id == preset.id) {
+                                RouteEditor.finishEditing()
+                            }
                             rebuildTab(Tab.PATHFINDING)
                         }
                         items.add(MultiWidgetRow(listOf(btnSelect, btnEdit, btnExport, btnDelete), 22))
@@ -1116,8 +1146,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             PathfindingSection.ROUTE_EDITOR -> {
                 val preset = RouteEditor.activePreset
                 if (preset == null) {
-                    items.add(SectionHeader("Route Node Editor"))
-                    items.add(NoteRow("No active route selected to edit. Select a preset below or create a new route."))
+                    items.add(SectionHeader("Route Node Editor - Select Route"))
+                    items.add(NoteRow("Select a route preset below to open in the node editor, or create a new route."))
                     val presets = PathPresetManager.getPresets()
                     if (presets.isEmpty()) {
                         items.add(NoteRow("0 Presets available. Click '+ Create New Preset' to begin."))
@@ -1127,8 +1157,12 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         }))
                     } else {
                         for (p in presets) {
-                            items.add(WidgetRow(ModernButton(subX, 0, subW, 22, Component.literal("Edit: ${p.name} (${p.category} - ${p.subcategory})"), p.subcategoryColor()) {
+                            val cat = p.routeCategory()
+                            items.add(SectionHeader("${cat.displayName} ✦ ${p.name}"))
+                            items.add(NoteRow("Category: ${p.category}  •  Subcategory: ${p.subcategory}  •  Nodes: ${p.points.size}"))
+                            items.add(WidgetRow(ModernButton(subX, 0, subW, 22, Component.literal("✎ Open in Route Editor"), p.subcategoryColor()) {
                                 RouteEditor.activePreset = p
+                                RouteEditor.editingNodeIndex = -1
                                 rebuildTab(Tab.PATHFINDING)
                             }))
                         }
@@ -1146,13 +1180,26 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     items.add(SectionHeader("Route: ${preset.name}"))
                     items.add(NoteRow("Category: ${preset.category}  •  Subcategory: ${preset.subcategory}  •  Nodes: ${preset.points.size}"))
 
+                    val btnDoneRoute = ModernButton(subX, 0, subW, 24, Component.literal("✔ Done Editing (Close Route Editor)"), 0xFF10B981.toInt()) {
+                        RouteEditor.finishEditing()
+                        rebuildTab(Tab.PATHFINDING)
+                    }
+                    items.add(WidgetRow(btnDoneRoute))
+
                     // Controls: Run Route / Stop, and In-World Crosshair Pick Mode
                     val btnHalfW = (subW - 4) / 2
                     val isRunning = PathExecutor.isActive && PathExecutor.activePreset?.id == preset.id
                     val runBtnText = if (isRunning) "■ Stop Path Execution" else "▶ Run Route in World"
                     val runBtnCol = if (isRunning) 0xFFEF4444.toInt() else 0xFF10B981.toInt()
                     val btnRun = ModernButton(subX, 0, btnHalfW, 24, Component.literal(runBtnText), runBtnCol) {
-                        if (isRunning) PathExecutor.stop() else PathExecutor.start(preset)
+                        if (isRunning) {
+                            PathExecutor.stop()
+                            Config.activePathfindingPresetId = ""
+                        } else {
+                            Config.activePathfindingPresetId = preset.id
+                            Config.pathfindingEnabled = true
+                            PathExecutor.start(preset)
+                        }
                         rebuildTab(Tab.PATHFINDING)
                     }
 
@@ -1396,6 +1443,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                             items.add(MultiWidgetRow(listOf(btnInfo, btnUp, btnDown, btnCycle, btnDelete), 20))
                         }
                     }
+
+                    items.add(WidgetRow(ModernButton(subX, 0, subW, 24, Component.literal("✔ Done Editing Route"), 0xFF10B981.toInt()) {
+                        RouteEditor.finishEditing()
+                        rebuildTab(Tab.PATHFINDING)
+                    }))
                 }
             }
 

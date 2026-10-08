@@ -308,6 +308,25 @@ internal fun simonDeviceRegressionChecks() {
     }
     check(arrivalDistance(0.55) == 2.2) { "High speed (550) must use 2.2 block arrival threshold for non-stop sprinting" }
     check(arrivalDistance(0.10) == 1.2) { "Normal speed (100) must use 1.2 block arrival threshold" }
+
+    // 9. RouteEditor finishEditing lifecycle check
+    com.asthoonlite.pathfinding.RouteEditor.activePreset = insertPreset
+    com.asthoonlite.pathfinding.RouteEditor.editingNodeIndex = 1
+    com.asthoonlite.pathfinding.RouteEditor.pickBlockMode = true
+    com.asthoonlite.pathfinding.RouteEditor.finishEditing()
+    check(com.asthoonlite.pathfinding.RouteEditor.activePreset == null) { "finishEditing must clear activePreset to null" }
+    check(com.asthoonlite.pathfinding.RouteEditor.editingNodeIndex == -1) { "finishEditing must reset editingNodeIndex to -1" }
+    check(!com.asthoonlite.pathfinding.RouteEditor.pickBlockMode) { "finishEditing must disable pickBlockMode" }
+
+    // 10. Preset Active/Inactive toggle check
+    var activeId = ""
+    fun togglePreset(presetId: String) {
+        activeId = if (activeId == presetId) "" else presetId
+    }
+    togglePreset("test-preset-1")
+    check(activeId == "test-preset-1") { "Toggling inactive preset must activate it" }
+    togglePreset("test-preset-1")
+    check(activeId.isEmpty()) { "Toggling active preset must deactivate it" }
 }
 
 

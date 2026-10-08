@@ -115,18 +115,62 @@ object PathExecutor {
     }
 
     private fun tick() {
-        if (!isActive) return
         val mc = Minecraft.getInstance()
-        val player = mc.player ?: run { stop(); return }
-        val level = mc.level ?: run { stop(); return }
-        val preset = activePreset ?: run { stop(); return }
+        val player = mc.player ?: run { if (isActive) stop(); return }
+        val level = mc.level ?: run { if (isActive) stop(); return }
 
-        // Stop if any menu (except chat) is opened or pathfinding toggled off
+        // Stop if player died
+        if (player.isDeadOrDying) {
+            if (isActive) {
+                stop()
+                Config.activePathfindingPresetId = ""
+            }
+            return
+        }
+
+        // Emergency stop if user opened PauseScreen (ESC in world)
+        if (mc.screen is net.minecraft.client.gui.screens.PauseScreen) {
+            if (isActive) {
+                stop()
+                Config.activePathfindingPresetId = ""
+                player.sendSystemMessage(
+                    Component.literal("§e[AsthoonLite] §fPath execution §cSTOPPED§f.")
+                )
+            }
+            return
+        }
+
+        // Release movement keys while any other screen/menu is open (e.g. settings screen, container)
         if (mc.screen != null && mc.screen !is net.minecraft.client.gui.screens.ChatScreen) {
+            releaseAllMovementKeys()
+            return
+        }
+
+        // Check if an active route preset is configured in Config
+        val activePresetId = Config.activePathfindingPresetId
+        if (Config.pathfindingEnabled && activePresetId.isNotBlank()) {
+            val preset = PathPresetManager.getPresetById(activePresetId)
+            if (preset != null && preset.points.isNotEmpty()) {
+                if (!isActive || activePreset?.id != preset.id) {
+                    start(preset)
+                }
+            } else {
+                if (isActive) {
+                    stop()
+                    Config.activePathfindingPresetId = ""
+                }
+                return
+            }
+        } else if (RouteEditor.activePreset == null && !isActive) {
+            return
+        } else if (Config.activePathfindingPresetId.isBlank() && isActive && RouteEditor.activePreset == null) {
             stop()
             return
         }
-        if (!Config.pathfindingEnabled) {
+
+        if (!isActive) return
+        val preset = activePreset ?: run { stop(); return }
+        if (!Config.pathfindingEnabled && RouteEditor.activePreset == null) {
             stop()
             return
         }
@@ -353,6 +397,10 @@ object PathExecutor {
         val mc = Minecraft.getInstance()
         val player = mc.player
         stop()
+        if (Config.activePathfindingPresetId == preset.id) {
+            Config.activePathfindingPresetId = ""
+            Config.save()
+        }
 
         player?.sendSystemMessage(
             Component.literal("§a[AsthoonLite] §fRoute §e\"${preset.name}\" §fcompleted successfully!")

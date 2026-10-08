@@ -56,11 +56,18 @@ object RouteEditor {
             }
         }
         ClientPlayConnectionEvents.DISCONNECT.register { _, _ ->
-            pickBlockMode = false
-            targetedBlock = null
-            editingNodeIndex = -1
-            draggedNodeIndex = -1
+            finishEditing()
         }
+    }
+
+    fun finishEditing() {
+        activePreset = null
+        editingNodeIndex = -1
+        pickBlockMode = false
+        targetedBlock = null
+        draggedNodeIndex = -1
+        dragHoverIndex = -1
+        PathPresetManager.savePresets()
     }
 
     private fun tick() {

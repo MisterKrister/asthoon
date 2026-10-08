@@ -18,7 +18,10 @@ object PathPresetManager {
     private val presets = mutableListOf<PathPreset>()
 
     private val presetsDir: File by lazy {
-        val dir = File(Minecraft.getInstance().gameDirectory, "asthoonlite/pathfinding")
+        val baseDir = runCatching { Minecraft.getInstance().gameDirectory }.getOrNull()
+            ?: runCatching { net.fabricmc.loader.api.FabricLoader.getInstance()?.gameDir?.toFile() }.getOrNull()
+            ?: File(System.getProperty("java.io.tmpdir", "."))
+        val dir = File(baseDir, "asthoonlite/pathfinding")
         if (!dir.exists()) dir.mkdirs()
         dir
     }

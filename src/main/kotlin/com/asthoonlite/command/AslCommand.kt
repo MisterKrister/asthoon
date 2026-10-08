@@ -92,6 +92,15 @@ object AslCommand {
                                             1
                                         }
                                 )
+                                .then(
+                                    ClientCommands.literal("stop")
+                                        .executes { ctx ->
+                                            com.asthoonlite.pathfinding.PathExecutor.stop()
+                                            com.asthoonlite.config.Config.activePathfindingPresetId = ""
+                                            ctx.source.sendFeedback(Component.literal("§e[AsthoonLite] §fPath execution §cSTOPPED§f."))
+                                            1
+                                        }
+                                )
                         )
                         .executes { _ ->
                             openConfigScreen()
