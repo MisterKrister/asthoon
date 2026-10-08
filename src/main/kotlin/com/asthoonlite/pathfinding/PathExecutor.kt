@@ -10,6 +10,7 @@ import net.minecraft.client.DeltaTracker
 import net.minecraft.client.Minecraft
 import net.minecraft.client.player.LocalPlayer
 import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.network.chat.Component
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
@@ -19,6 +20,7 @@ import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.entity.decoration.ArmorStand
 import net.minecraft.world.entity.decoration.ItemFrame
 import net.minecraft.world.level.Level
+import net.minecraft.world.level.ClipContext
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.BlockHitResult
@@ -275,8 +277,7 @@ object PathExecutor {
         val isDeviceNode = nodeType == RouteNodeType.SIMON_SAYS || nodeType == RouteNodeType.ARROWS_ALIGN
         val isStationaryDest = isDeviceNode || nodeType == RouteNodeType.TIMEOUT || currentNodeIndex == points.size - 1
         val isSettled = isSettledAtNode(distH, distY, player.onGround(), player.deltaMovement.horizontalDistance())
-        val isBonzoRunway = nodeType == RouteNodeType.BONZO_STAFF && player.onGround() && !player.isInLava && !player.isInWater &&
-            distH <= 2.5 && player.y >= target.y - 0.5 && player.y <= target.y + 1.2 && nextTarget != null
+        var isBonzoRunway = false
 
         // Read player speed (Hypixel Skyblock speed = attribute * 1000)
         val speedAttr = player.getAttributeValue(Attributes.MOVEMENT_SPEED)
@@ -299,11 +300,22 @@ object PathExecutor {
 
             // Must be on solid ground (NEVER mid-air while landing from a prior jump)
             // Must have arrived on the platform (distH <= 1.5 or at launch ledge)
-            // Require forward sprint momentum along the launch runway, including at the ledge.
+            // Initial and uphill launches need the full runway speed. A later downward launch
+            // can use the short platform's available momentum, while still checking alignment.
             val isArrivedOnPlatform = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
-            val hasLaunchSpeed = hasBonzoRunwayVelocity(Vec3(toNextDx, 0.0, toNextDz), player.deltaMovement)
+            val downwardFollowup = nextTarget != null && nextTarget.y < target.y &&
+                points.take(currentNodeIndex).any { it.nodeType() == RouteNodeType.BONZO_STAFF }
+            val hasLaunchSpeed = hasBonzoRunwayVelocity(Vec3(toNextDx, 0.0, toNextDz), player.deltaMovement, downwardFollowup)
+            val launchPitch = if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
+            val hasGroundImpact = player.onGround() && !player.isInLava && !player.isInWater && isAtNodeElev && isArrivedOnPlatform &&
+                isBonzoGroundImpact(player.y, level.clip(ClipContext(
+                    player.eyePosition, player.eyePosition.add(Vec3.directionFromRotation(launchPitch, nextYaw).scale(3.0)),
+                    ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player
+                )))
+            // Reserve the jump only once on the launch platform, not while climbing its approach.
+            isBonzoRunway = nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
             val canLaunch = player.onGround() && !player.isInLava && !player.isInWater &&
-                            isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed
+                            isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed && hasGroundImpact
 
             if (canLaunch) {
                 initiateBonzoLaunch(points, isHighSpeed)
@@ -498,7 +510,7 @@ object PathExecutor {
         } else if (isAirborne) {
             moveInDirection(player, airborneMovement(offset, player.deltaMovement), true)
         } else if (isBonzoRunway && nextTarget != null) {
-            // Build launch momentum along the runway, even after passing the recorded launch point.
+            // Build launch momentum along the verified platform floor.
             moveInDirection(player, Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z), true)
         } else {
             // On ground: calculate movement vector towards target
@@ -562,8 +574,9 @@ object PathExecutor {
 
         if (!isApproaching || isBonzoRunway) {
             jumpTicksRemaining = 0
-        } else if (canStartAutoJump(canAutoGapJump || isObstacleCollision || isElevationStep, jumpTicksRemaining, mc.options.keyJump.isDown)) {
-            jumpTicksRemaining = 4
+        } else {
+            jumpTicksRemaining = nextAutoJumpPulse(canAutoGapJump || isObstacleCollision || isElevationStep,
+                jumpTicksRemaining, mc.options.keyJump.isDown)
         }
 
         if (jumpTicksRemaining > 0) {
@@ -623,17 +636,23 @@ object PathExecutor {
         return heading.subtract(sideways.scale(8.0))
     }
 
-    internal fun hasBonzoRunwayVelocity(offset: Vec3, velocity: Vec3): Boolean {
+    internal fun hasBonzoRunwayVelocity(offset: Vec3, velocity: Vec3, downwardFollowup: Boolean = false): Boolean {
         val heading = offset.normalize()
         val horizontalVelocity = Vec3(velocity.x, 0.0, velocity.z)
         val forwardSpeed = horizontalVelocity.dot(heading)
         val sideways = horizontalVelocity.subtract(heading.scale(forwardSpeed))
-        // 12 bps forward, at most 3 bps sideways.
-        return forwardSpeed >= 0.6 && sideways.horizontalDistance() <= 0.15
+        // 12 bps initially/uphill; 8 bps on a later downward launch, at most 3 bps sideways.
+        return forwardSpeed >= (if (downwardFollowup) 0.4 else 0.6) && sideways.horizontalDistance() <= 0.15
     }
 
-    internal fun canStartAutoJump(requested: Boolean, ticksRemaining: Int, wasJumpDown: Boolean): Boolean =
-        requested && ticksRemaining <= 0 && !wasJumpDown
+    internal fun isBonzoGroundImpact(feetY: Double, hit: BlockHitResult): Boolean =
+        hit.type == HitResult.Type.BLOCK && hit.direction == Direction.UP && hit.location.y in feetY - 1.0..feetY + 0.1
+
+    internal fun canReserveBonzoJump(heightAboveNode: Double, groundImpact: Boolean): Boolean =
+        groundImpact && abs(heightAboveNode) <= 0.2
+
+    internal fun nextAutoJumpPulse(requested: Boolean, ticksRemaining: Int, wasJumpDown: Boolean): Int =
+        if (requested && ticksRemaining <= 0 && !wasJumpDown) 1 else ticksRemaining
 
     private fun moveInDirection(player: LocalPlayer, motion: Vec3, sprint: Boolean, crouch: Boolean = false) {
         val options = Minecraft.getInstance().options
@@ -958,8 +977,7 @@ object PathExecutor {
         // In Hypixel SkyBlock, to launch yourself across a chasm, the balloon MUST impact
         // the solid platform floor right at the player's feet (78°–82°).
         // If pitch is shallow (e.g. 30°–60°), the projectile flies off the platform into the void.
-        // A steep pitch of 79° guarantees the projectile hits the solid platform block 0.3 blocks
-        // under the player's feet in 1 tick, giving maximum forward and upward knockback boost.
+        // Verify the launch ray reaches the nearby platform floor before entering this state.
         val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
 
         player.yRotO = launchYaw

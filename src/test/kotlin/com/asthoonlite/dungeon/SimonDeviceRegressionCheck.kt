@@ -8,6 +8,9 @@ import com.asthoonlite.pathfinding.GoldorRouteShortcut
 import com.asthoonlite.config.Config
 import com.google.gson.Gson
 import com.google.gson.JsonParser
+import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
+import net.minecraft.world.phys.BlockHitResult
 import net.minecraft.world.phys.Vec3
 import java.util.Locale
 
@@ -574,9 +577,52 @@ internal fun simonDeviceRegressionChecks() {
     check(PathExecutor.hasBonzoRunwayVelocity(Vec3(93.5 - 98.471, 0.0, 66.5 - 49.3798), Vec3(-0.2446, -0.0784, 0.6636))) {
         "The recorded aligned first launch must remain available"
     }
-    check(!PathExecutor.canStartAutoJump(true, 0, true)) { "Repeated jump pulses need a released tick to clear vanilla's cooldown" }
-    check(PathExecutor.canStartAutoJump(true, 0, false)) { "A released jump key must permit the next runway jump" }
-    check(!PathExecutor.canStartAutoJump(true, 2, false) && !PathExecutor.canStartAutoJump(false, 0, false)) { "Only a new requested jump starts a pulse" }
+
+    // The 837-tick capture lands on the short second platform at tick 544. Waiting
+    // for 12 bps moves the shot past its floor at tick 545, into the lava below.
+    val shortRunwayOffset = Vec3(101.0 - 101.3721, 0.0, 94.0 - 72.9418)
+    val shortRunwayVelocity = Vec3(-0.0146, -0.0784, 0.4415)
+    check(PathExecutor.hasBonzoRunwayVelocity(shortRunwayOffset, shortRunwayVelocity, downwardFollowup = true)) {
+        "A later downward launch must use the available 8.83 bps before leaving the short platform"
+    }
+    check(!PathExecutor.hasBonzoRunwayVelocity(shortRunwayOffset, shortRunwayVelocity)) {
+        "The first launch must still require 12 bps"
+    }
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.0, 0.0, 0.39), downwardFollowup = true)) {
+        "Even short downward launches require 8 bps of forward speed"
+    }
+    check(!PathExecutor.hasBonzoRunwayVelocity(Vec3(0.0, 0.0, 1.0), Vec3(0.5, 0.0, 0.6), downwardFollowup = true)) {
+        "Short platforms must retain the lateral alignment check"
+    }
+    val platformHit = BlockHitResult(Vec3(101.3721, 113.0, 73.257), Direction.UP, BlockPos(101, 112, 73), false)
+    val lavaFloorHit = BlockHitResult(Vec3(101.324, 106.0, 75.257), Direction.UP, BlockPos(101, 105, 75), false)
+    check(PathExecutor.isBonzoGroundImpact(113.0, platformHit)) { "A launch ray hitting the platform floor may fire" }
+    check(!PathExecutor.isBonzoGroundImpact(113.0, lavaFloorHit)) { "The captured ray into the lava floor must not fire" }
+    check(!PathExecutor.isBonzoGroundImpact(113.0, platformHit.withDirection(Direction.NORTH))) { "A wall hit cannot replace the launch floor" }
+    check(!PathExecutor.isBonzoGroundImpact(113.0, BlockHitResult.miss(platformHit.location, Direction.UP, platformHit.blockPos))) {
+        "A missed ray near the platform must not permit a shot"
+    }
+    check(PathExecutor.canReserveBonzoJump(0.0625, true)) { "Reserve the launch jump on the platform floor" }
+    check(!PathExecutor.canReserveBonzoJump(-0.5, true) && !PathExecutor.canReserveBonzoJump(0.0, false)) {
+        "Climbing a half-block approach or crossing a floor gap must retain automatic jumps"
+    }
+
+    // At ticks 52-56 the four-tick hold reaches the next ledge with jump still
+    // pressed. Drive the production pulse helper through a step, release and ledge.
+    var remainingJumpTicks = 0
+    var jumpWasDown = false
+    val jumpInputs = listOf(true, false, true, true, true).map { requested ->
+        remainingJumpTicks = PathExecutor.nextAutoJumpPulse(requested, remainingJumpTicks, jumpWasDown)
+        jumpWasDown = remainingJumpTicks > 0
+        if (jumpWasDown) remainingJumpTicks--
+        jumpWasDown
+    }
+    check(jumpInputs == listOf(true, false, true, false, true)) {
+        "Automatic jumps must release after one tick so the next ledge can jump without vanilla's ten-tick cooldown"
+    }
+    check(PathExecutor.nextAutoJumpPulse(true, 0, true) == 0 && PathExecutor.nextAutoJumpPulse(false, 0, false) == 0) {
+        "Only a requested jump after a released input tick starts a new pulse"
+    }
 
     val legacyRouteConfig = Gson().fromJson("""{"pathfindingEnabled":true,"activePathfindingPresetId":"existing-route"}""", Config.Data::class.java)
     check(legacyRouteConfig.goldorRouteKey == -1 && legacyRouteConfig.lastPathfindingPresetId == "" && legacyRouteConfig.activePathfindingPresetId == "existing-route") {
