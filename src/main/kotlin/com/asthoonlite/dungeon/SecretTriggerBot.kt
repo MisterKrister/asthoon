@@ -24,6 +24,8 @@ object SecretTriggerBot {
 
     private val lastClicked = ConcurrentHashMap<BlockPos, Long>()
     private var lastAction = 0L
+    private var ssStartClicksDone = 0
+    private var nextSSStartClickAt = 0L
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
@@ -51,6 +53,54 @@ object SecretTriggerBot {
 
         // Cooldown cleanup
         lastClicked.entries.removeIf { now - it.value > 3000L }
+
+        // Simon Says start button:
+        // When looking over the start button, click it 3 times at ~7 CPS with humanized jitter to skip
+        if (pos == F7Devices.ssStart) {
+            val state = level.getBlockState(pos)
+            if (state.block != Blocks.STONE_BUTTON) return
+            if (F7Devices.ssStartClicked || ssStartClicksDone >= 3) return
+            if (now < nextSSStartClickAt) return
+
+            player.swing(InteractionHand.MAIN_HAND)
+            mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+            lastClicked[pos] = now
+            lastAction = now
+            SecretSounds.onSecretInteract(pos, state.block)
+            F7Devices.onSimonClick(pos)
+
+            ssStartClicksDone++
+            if (ssStartClicksDone >= 3) {
+                F7Devices.ssStartClicked = true
+                F7Devices.isSkipping = true
+                F7Devices.skipOver = false
+                ssStartClicksDone = 0
+            } else {
+                // ~7 CPS human cadence (130-155ms per click) with randomized jitter
+                val delay = kotlin.random.Random.nextLong(130L, 155L)
+                nextSSStartClickAt = now + delay
+            }
+            return
+        }
+
+        // Simon Says sequence buttons:
+        // Never click wrong or premature buttons; click expected button and advance sequence
+        if (pos in F7Devices.ssButtons) {
+            if (F7Devices.shouldBlockSimonClick(pos) || !F7Devices.isExpectedSimonButton(pos)) return
+            if (now - (lastClicked[pos] ?: 0L) < 200L) return
+
+            val state = level.getBlockState(pos)
+            if (state.block != Blocks.STONE_BUTTON) return
+
+            player.swing(InteractionHand.MAIN_HAND)
+            mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+            lastClicked[pos] = now
+            lastAction = now
+            F7Devices.onSimonClick(pos)
+            SecretSounds.onSecretInteract(pos, state.block)
+            return
+        }
+
         if (now - (lastClicked[pos] ?: 0L) < 400L) return
 
         val state = level.getBlockState(pos)
@@ -59,6 +109,9 @@ object SecretTriggerBot {
         // Only levers, buttons, or recognized secret blocks
         val isSecret = SecretAura.isSecretBlock(block) || block is LeverBlock || block is ButtonBlock
         if (!isSecret) return
+
+        // Don't click blacklisted levers
+        if (block is LeverBlock && !SecretHitboxes.isValidLever(pos)) return
 
         // Don't click already-powered levers or buttons
         if (block is LeverBlock && state.getValue(LeverBlock.POWERED)) return
@@ -80,8 +133,14 @@ object SecretTriggerBot {
         }
     }
 
+    fun resetSimon() {
+        ssStartClicksDone = 0
+        nextSSStartClickAt = 0L
+    }
+
     fun reset() {
         lastClicked.clear()
         lastAction = 0L
+        resetSimon()
     }
 }

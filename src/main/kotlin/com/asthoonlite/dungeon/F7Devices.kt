@@ -33,9 +33,9 @@ object F7Devices {
         BlockPos(68, 126, 50), BlockPos(66, 126, 50), BlockPos(64, 126, 50)
     )
 
-    private val ssObsidians = (120..123).flatMap { y -> (92..95).map { z -> BlockPos(111, y, z) } }
-    private val ssButtons = (120..123).flatMap { y -> (92..95).map { z -> BlockPos(110, y, z) } }
-    private val ssStart = BlockPos(110, 121, 91)
+    internal val ssObsidians = (120..123).flatMap { y -> (92..95).map { z -> BlockPos(111, y, z) } }
+    internal val ssButtons = (120..123).flatMap { y -> (92..95).map { z -> BlockPos(110, y, z) } }
+    internal val ssStart = BlockPos(110, 121, 91)
     private val ssDeviceCenter = Vec3(110.5, 121.5, 93.5)
 
     private var stormStarted = false
@@ -46,9 +46,9 @@ object F7Devices {
     private var lastSSClick = 0L
     private var lastSSState = BooleanArray(ssObsidians.size)
     private var ssLastClientTick = -1L
-    private var isSkipping = false
-    private var skipOver = false
-    private var ssStartClicked = false
+    internal var isSkipping = false
+    internal var skipOver = false
+    internal var ssStartClicked = false
     private var startClicksDone = 0
     private var nextStartClickAt = 0L
     private val ssSequence = ArrayList<BlockPos>()
@@ -509,9 +509,12 @@ object F7Devices {
         if (aimTargetBlock == ssStart && aimState == AimState.SETTLED) {
             if (now >= nextStartClickAt && level.getBlockState(ssStart).block == Blocks.STONE_BUTTON) {
                 val targetVec = aimTargetVec ?: Vec3(110.875, ssStart.y + 0.52, ssStart.z + 0.52)
-                val hit = BlockHitResult(targetVec, Direction.WEST, ssStart, false)
+                val hit = (mc.hitResult as? BlockHitResult)?.takeIf { it.blockPos == ssStart }
+                    ?: BlockHitResult(targetVec, Direction.WEST, ssStart, false)
                 if (!simonLifecycle.active) simonLifecycle.start(System.nanoTime())
+                player.swing(InteractionHand.MAIN_HAND)
                 mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+                SecretSounds.onSecretInteract(ssStart, Blocks.STONE_BUTTON)
                 lastSSClick = now
                 startClicksDone++
                 if (startClicksDone >= 3) {
@@ -541,8 +544,11 @@ object F7Devices {
                 val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
                 val expected = ssSequence.getOrNull(clickIndex)
                 if (boardReady && expected != null && targetBlock == expected && targetBlock != brokenButton) {
-                    val hit = BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
+                    val hit = (mc.hitResult as? BlockHitResult)?.takeIf { it.blockPos == targetBlock }
+                        ?: BlockHitResult(targetVec, Direction.WEST, targetBlock, false)
+                    player.swing(InteractionHand.MAIN_HAND)
                     mc.gameMode?.useItemOn(player, InteractionHand.MAIN_HAND, hit)
+                    SecretSounds.onSecretInteract(targetBlock, Blocks.STONE_BUTTON)
                     lastSSClick = now
                     ssLastClientTick = DungeonServerTick.current
 
@@ -633,12 +639,20 @@ object F7Devices {
             val player = mc.player ?: return
             if (player.distanceToSqr(ssDeviceCenter) > 36.0 || mc.level?.getBlockState(pos)?.block != Blocks.STONE_BUTTON) return
             startClicksDone++
-            if (startClicksDone >= 2) {
+            if (startClicksDone >= 3) {
+                ssStartClicked = true
+                isSkipping = true
+                skipOver = false
+                startClicksDone = 0
+            } else if (startClicksDone >= 2) {
                 isSkipping = true
                 skipOver = false
             }
-            if (!simonLifecycle.startFromInput(System.nanoTime(), activatesButton)) return
-            resetSimonState()
+            if (!simonLifecycle.active) simonLifecycle.startFromInput(System.nanoTime(), activatesButton)
+            ssSequence.clear()
+            clickIndex = 0
+            brokenButton = null
+            startingButton = null
             return
         }
         if (simonLifecycle.completed) return
@@ -654,14 +668,22 @@ object F7Devices {
         }
     }
 
+    fun isExpectedSimonButton(pos: BlockPos): Boolean {
+        if (!DungeonContext.inDungeon || simonLifecycle.completed) return false
+        if (pos !in ssButtons || pos == brokenButton) return false
+        val level = Minecraft.getInstance().level ?: return false
+        val boardReady = level.getBlockState(ssButtonCheck).block == Blocks.STONE_BUTTON
+        if (!boardReady) return false
+        val expected = ssSequence.getOrNull(clickIndex) ?: return false
+        return pos == expected
+    }
+
     /** Exact NoammAddons-style pre-interaction protection. */
     fun shouldBlockSimonClick(pos: BlockPos): Boolean {
         if (!Config.blockWrongDeviceClicks || !DungeonContext.inDungeon || simonLifecycle.completed) return false
         val player = Minecraft.getInstance().player ?: return false
         if (player.isCrouching || pos !in ssButtons) return false
-        if (pos == brokenButton) return true
-        val expected = ssSequence.getOrNull(clickIndex) ?: return false
-        return pos != expected
+        return !isExpectedSimonButton(pos)
     }
 
     private fun lookAtDirect(player: net.minecraft.client.player.LocalPlayer, target: Vec3) {
@@ -694,6 +716,7 @@ object F7Devices {
         ssLastClientTick = -1L
         skipWaitTargetVec = null
         cancelSimonAim()
+        SecretTriggerBot.resetSimon()
     }
 
     private fun cancelSimonAim() {

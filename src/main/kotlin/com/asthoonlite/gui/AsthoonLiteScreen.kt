@@ -743,6 +743,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                         { Config.autoSimonSaysEnabled }, { Config.autoSimonSaysEnabled = it }),
                     ToggleRow("  ↳ Fast Mode", "Increases rotation speed and click cadence for Simon Says",
                         { Config.autoSimonSaysFast }, { Config.autoSimonSaysFast = it }),
+                    ToggleRow("Block Wrong Device Clicks", "Prevents clicking incorrect Simon Says buttons or completed/wrong arrows",
+                        { Config.blockWrongDeviceClicks }, { Config.blockWrongDeviceClicks = it }),
                     ToggleRow("Mask Display", "Bonzo, Spirit, and Phoenix mask cooldown HUD",
                         { Config.maskDisplayEnabled }, { Config.maskDisplayEnabled = it }),
                 )
@@ -764,6 +766,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     SectionHeader("Secret Interaction & Aura"),
                     ToggleRow("Secret Triggerbot", "Auto-click levers, buttons, skulls, and secrets when looking at them",
                         { Config.secretTriggerBotEnabled }, { Config.secretTriggerBotEnabled = it }),
+                    ToggleRow("  ↳ Block Wrong Simon Clicks", "Prevents clicking or triggerbot from failing Simon Says on wrong buttons",
+                        { Config.blockWrongDeviceClicks }, { Config.blockWrongDeviceClicks = it }),
                     ToggleRow("Auto-Close Secret Chest", "Instantly closes secret chest GUI on open",
                         { Config.autoCloseSecretChest }, { Config.autoCloseSecretChest = it }),
                     ToggleRow("Secret Aura", "Auto-interact with secrets in configured range and FOV",

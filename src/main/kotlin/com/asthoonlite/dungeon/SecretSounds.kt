@@ -61,7 +61,7 @@ object SecretSounds {
 
     private fun isSecretBlock(block: Block): Boolean =
         block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST || block == Blocks.LEVER ||
-            block == Blocks.PLAYER_HEAD || block == Blocks.PLAYER_WALL_HEAD
+            block == Blocks.WITHER_SKELETON_SKULL || block == Blocks.WITHER_SKELETON_WALL_SKULL
 
     fun tick() {
         val now = System.currentTimeMillis()

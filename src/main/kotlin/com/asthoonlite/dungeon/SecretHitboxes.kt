@@ -14,6 +14,8 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.ButtonBlock
 import net.minecraft.world.level.block.FaceAttachedHorizontalDirectionalBlock
 import net.minecraft.world.level.block.LeverBlock
+import net.minecraft.world.level.block.WitherSkullBlock
+import net.minecraft.world.level.block.WitherWallSkullBlock
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.properties.AttachFace
 import net.minecraft.world.phys.shapes.Shapes
@@ -134,15 +136,15 @@ object SecretHitboxes {
         return made
     }
 
-    /** Fast classifier. `AbstractSkullBlock` rather than `SkullBlock` because
-     *  `WallSkullBlock` is a sibling, not a subclass, of `SkullBlock`. */
+    /** Fast classifier. Only Wither Skeleton skulls (Wither Essence) count as secret skulls. */
     @JvmStatic
     fun kindOf(state: BlockState): Kind? {
         val block = state.block
         return when {
             block is LeverBlock -> Kind.LEVER
             block is ButtonBlock -> Kind.BUTTON
-            block is AbstractSkullBlock -> Kind.SKULL
+            block is WitherSkullBlock || block is WitherWallSkullBlock ||
+                block === Blocks.WITHER_SKELETON_SKULL || block === Blocks.WITHER_SKELETON_WALL_SKULL -> Kind.SKULL
             block === Blocks.RED_MUSHROOM || block === Blocks.BROWN_MUSHROOM ||
                 block === Blocks.RED_MUSHROOM_BLOCK || block === Blocks.BROWN_MUSHROOM_BLOCK -> Kind.MUSHROOM
             else -> null
@@ -161,11 +163,11 @@ object SecretHitboxes {
 
     @JvmStatic
     fun isSkullHitboxEnabled(): Boolean =
-        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled && Config.skullHitboxEnabled
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && !DungeonContext.inBoss && Config.secretHitboxesEnabled && Config.skullHitboxEnabled
 
     @JvmStatic
     fun isMushroomHitboxEnabled(): Boolean =
-        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && Config.secretHitboxesEnabled && Config.mushroomHitboxEnabled
+        (DungeonContext.inDungeon || Config.secretHitboxAnywhere) && !DungeonContext.inBoss && Config.secretHitboxesEnabled && Config.mushroomHitboxEnabled
 
     @JvmStatic
     fun isLeverHitboxEnabled(pos: BlockPos): Boolean = isValidLever(pos)
@@ -445,7 +447,7 @@ object SecretHitboxes {
                     val kind = kindOf(state)
                     if (kind != null) {
                         val pos = mpos.immutable()
-                        val shouldTrack = isKindEnabled(kind, pos) || (Config.moddedHitboxDisplayEnabled && (kind != Kind.LEVER || pos !in blackListedLevers))
+                        val shouldTrack = isKindEnabled(kind, pos) || (Config.moddedHitboxDisplayEnabled && (kind != Kind.LEVER || pos !in blackListedLevers) && (!DungeonContext.inBoss || (kind != Kind.SKULL && kind != Kind.MUSHROOM)))
                         if (shouldTrack) {
                             found.add(SecretBlock(pos, kind, state))
                             live.add(pos)

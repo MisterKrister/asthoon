@@ -106,4 +106,23 @@ internal fun simonDeviceRegressionChecks() {
     check(randTargets.distinctBy { it.y }.size > 10 && randTargets.distinctBy { it.z }.size > 10) {
         "Skip waiting targets must vary across multiple skips instead of moving to the exact same spot"
     }
+
+    // Verify SecretTriggerBot skip CPS cadence (~7 CPS with human jitter)
+    for (i in 1..100) {
+        val delay = kotlin.random.Random.nextLong(130L, 155L)
+        check(delay in 130L..155L) { "Triggerbot Simon skip delay must be 130..155ms (~7 CPS)" }
+        val cps = 1000.0 / delay
+        check(cps in 6.4..7.8) { "Triggerbot Simon skip CPS must stay within ~6.4 to ~7.8 CPS" }
+    }
+
+    // Verify player heads are excluded from SecretHitboxes.kindOf while wither skeleton skulls are included
+    val playerHeadState = net.minecraft.world.level.block.Blocks.PLAYER_HEAD.defaultBlockState()
+    val playerWallHeadState = net.minecraft.world.level.block.Blocks.PLAYER_WALL_HEAD.defaultBlockState()
+    val witherSkullState = net.minecraft.world.level.block.Blocks.WITHER_SKELETON_SKULL.defaultBlockState()
+    val witherWallSkullState = net.minecraft.world.level.block.Blocks.WITHER_SKELETON_WALL_SKULL.defaultBlockState()
+
+    check(SecretHitboxes.kindOf(playerHeadState) == null) { "Player heads (terminal heads) must not be classified as secret skulls" }
+    check(SecretHitboxes.kindOf(playerWallHeadState) == null) { "Player wall heads must not be classified as secret skulls" }
+    check(SecretHitboxes.kindOf(witherSkullState) == SecretHitboxes.Kind.SKULL) { "Wither skeleton skulls must be classified as secret skulls" }
+    check(SecretHitboxes.kindOf(witherWallSkullState) == SecretHitboxes.Kind.SKULL) { "Wither skeleton wall skulls must be classified as secret skulls" }
 }

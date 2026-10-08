@@ -200,7 +200,7 @@ object SecretAura {
 
     fun isRightClickSecret(block: net.minecraft.world.level.block.Block): Boolean =
         block == Blocks.CHEST || block == Blocks.TRAPPED_CHEST || block is ButtonBlock || block is LeverBlock ||
-            block == Blocks.PLAYER_HEAD || block == Blocks.PLAYER_WALL_HEAD
+            block == Blocks.WITHER_SKELETON_SKULL || block == Blocks.WITHER_SKELETON_WALL_SKULL
 
     fun isSecretBlock(block: net.minecraft.world.level.block.Block): Boolean =
         isRightClickSecret(block) || block == Blocks.RED_MUSHROOM || block == Blocks.BROWN_MUSHROOM ||

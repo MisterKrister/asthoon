@@ -1,5 +1,6 @@
 package com.asthoonlite.mixin;
 
+import com.asthoonlite.dungeon.F7Devices;
 import com.asthoonlite.dungeon.SecretSounds;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
@@ -15,8 +16,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(MultiPlayerGameMode.class)
 public class MixinMultiPlayerGameMode {
-    @Inject(method = "useItemOn", at = @At("HEAD"))
+    @Inject(method = "useItemOn", at = @At("HEAD"), cancellable = true)
     private void asthoonlite$onUseItemOn(LocalPlayer player, InteractionHand hand, BlockHitResult hitResult, CallbackInfoReturnable<InteractionResult> cir) {
+        if (hitResult != null && F7Devices.INSTANCE.shouldBlockSimonClick(hitResult.getBlockPos())) {
+            cir.setReturnValue(InteractionResult.PASS);
+            return;
+        }
         Minecraft mc = Minecraft.getInstance();
         if (mc.level != null && hitResult != null) {
             BlockState state = mc.level.getBlockState(hitResult.getBlockPos());
