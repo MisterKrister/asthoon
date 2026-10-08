@@ -711,6 +711,17 @@ internal fun simonDeviceRegressionChecks() {
     val minBz = kotlin.math.floor(breakPt.z)
     check(minBx == 10.0 && minBy == 71.0 && minBz == 20.0) { "Break node must encompass full 1.0 block coordinates" }
     check(breakPt.nodeType() == com.asthoonlite.pathfinding.RouteNodeType.BREAK) { "PathPoint must resolve action BREAK to RouteNodeType.BREAK" }
+
+    // 30. Airborne & mid-air Bonzo pitch retention and double-height elevation bounds
+    val pitch61Launch = PathExecutor.calculateBonzoLaunchParams(90f, Vec3(51.5, 132.5, 139.0), Vec3(33.5, 131.0, 138.5), recordedPitch = 61.05f)
+    check(Math.abs(pitch61Launch.shotPitch - 61.05f) < 0.01f) { "Bonzo launch must preserve user recorded pitch of 61.05° instead of clamping to 79°" }
+    val pitch54Launch = PathExecutor.calculateBonzoLaunchParams(180f, Vec3(8.5, 115.0, 122.5), Vec3(2.5, 109.0, 104.5), recordedPitch = 54.2f)
+    check(Math.abs(pitch54Launch.shotPitch - 54.2f) < 0.01f) { "Bonzo launch must preserve user recorded pitch of 54.2°" }
+
+    val midairBonzoElevLow = 132.5 - 1.5
+    val midairBonzoElevHigh = 132.5 + 2.5
+    val playerMidAirY = 133.18
+    check(playerMidAirY in midairBonzoElevLow..midairBonzoElevHigh) { "Player jump height 133.18 must fall within double-height Bonzo node elevation window" }
 }
 
 

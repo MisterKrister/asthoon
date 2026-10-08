@@ -311,15 +311,42 @@ object PathExecutor {
             return
         }
 
+        val isApproachingBreak = nodeType == RouteNodeType.BREAK ||
+            nextTarget?.nodeType() == RouteNodeType.BREAK ||
+            points.drop(currentNodeIndex).take(3).any { it.nodeType() == RouteNodeType.BREAK && hypot(it.x - player.x, it.z - player.z) <= 7.0 }
+
+        if (isApproachingBreak) {
+            selectDungeonBreaker()
+        }
+
+        if (nextTarget?.nodeType() == RouteNodeType.BONZO_STAFF && distH < 5.0) {
+            selectBonzoStaff()
+        }
+
         // 2. Handle approaching a Bonzo Staff node
         if (nodeType == RouteNodeType.BONZO_STAFF) {
-            // Keep player firmly grounded during approach to Bonzo launch point; clear any lingering jump pulse
-            if (bonzoState == BonzoState.IDLE && jumpTicksRemaining > 0) {
+            val isPrecedingJump = points.getOrNull(currentNodeIndex - 1)?.nodeType() == RouteNodeType.JUMP
+            val isTargetMidAir = level.getBlockState(BlockPos.containing(target.x, target.y - 0.5, target.z)).isAir
+            val isAirborneBonzo = !player.onGround() || isPrecedingJump || isTargetMidAir
+
+            // Auto-select Bonzo's Staff
+            selectBonzoStaff()
+
+            // Keep player firmly grounded during approach to Bonzo launch point ONLY for grounded runs;
+            // never clear jump pulse or force grounding if this is an airborne / jump-initiated launch
+            if (!isAirborneBonzo && bonzoState == BonzoState.IDLE && jumpTicksRemaining > 0) {
                 jumpTicksRemaining = 0
                 mc.options.keyJump.setDown(false)
             }
 
-            val isAtNodeElev = player.y >= target.y - 0.5 && player.y <= target.y + 1.2
+            // Bonzo node vertical elevation check: double height vertically (-1.5 to +2.5)
+            // Allows seamless trigger when jumping through or descending through mid-air node
+            val isAtNodeElev = if (isAirborneBonzo) {
+                player.y >= target.y - 1.5 && player.y <= target.y + 2.5
+            } else {
+                player.y >= target.y - 0.5 && player.y <= target.y + 1.2
+            }
+
             val toNextDx = if (nextTarget != null) nextTarget.x - player.x else target.x - player.x
             val toNextDz = if (nextTarget != null) nextTarget.z - player.z else target.z - player.z
             val destYaw = if (nextTarget != null) (-Math.toDegrees(atan2(toNextDx, toNextDz))).toFloat() else target.yaw
@@ -335,29 +362,42 @@ object PathExecutor {
             val launchParams = calculateBonzoLaunchParams(currentHeadingYaw, Vec3(player.x, player.y, player.z), destinationPos, target.pitch, target.yaw)
 
             val isAtLaunchLedge = isLedgeOrGapAhead(level, player, currentHeadingYaw) || isLedgeOrGapAhead(level, player, destYaw)
-            // Must be on solid ground (NEVER mid-air while landing from a prior jump)
-            // Must have arrived on the platform (distH <= 1.5 or at launch ledge)
-            val isArrivedOnPlatform = distH <= 1.5 || (isAtLaunchLedge && distH <= 2.2)
+            val launchDistanceThreshold = if (isAirborneBonzo) 2.2 else if (isAtLaunchLedge) 2.2 else 1.5
+            val isArrivedOnPlatform = distH <= launchDistanceThreshold
             val isFollowupLaunch = points.take(currentNodeIndex).any { it.nodeType() == RouteNodeType.BONZO_STAFF }
             val downwardFollowup = nextTarget != null && (nextTarget.y < target.y || isFollowupLaunch)
 
             val currentBpsH = player.deltaMovement.horizontalDistance() * 20.0
+            val headingVec = if (abs(toNextDx) > 0.01 || abs(toNextDz) > 0.01) Vec3(toNextDx, 0.0, toNextDz).normalize() else Vec3(0.0, 0.0, 1.0)
+            val forwardSpeed = Vec3(player.deltaMovement.x, 0.0, player.deltaMovement.z).dot(headingVec)
+
             val hasLaunchSpeed = if (launchParams.isRedirection) {
                 currentBpsH in 6.5..10.5 || (currentBpsH >= 6.5 && isAtLaunchLedge && currentBpsH <= 11.5)
+            } else if (isAirborneBonzo) {
+                currentBpsH >= 5.5 && (forwardSpeed >= 0.25 || player.deltaMovement.horizontalDistance() >= 0.20)
             } else {
                 hasBonzoRunwayVelocity(Vec3(toNextDx, 0.0, toNextDz), player.deltaMovement, downwardFollowup)
             }
 
             val launchPitch = launchParams.shotPitch
             val shotYaw = launchParams.shotYaw
-            val hasGroundImpact = player.onGround() && !player.isInLava && !player.isInWater && isAtNodeElev && isArrivedOnPlatform &&
-                isBonzoGroundImpact(player.y, level.clip(ClipContext(
-                    player.eyePosition, player.eyePosition.add(Vec3.directionFromRotation(launchPitch, shotYaw).scale(3.5)),
+            val hasGroundImpact = if (isAirborneBonzo) {
+                val hit = level.clip(ClipContext(
+                    player.eyePosition, player.eyePosition.add(Vec3.directionFromRotation(launchPitch, shotYaw).scale(7.0)),
                     ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player
-                )))
+                ))
+                hit.type == HitResult.Type.BLOCK || launchPitch >= 40.0f
+            } else {
+                player.onGround() && !player.isInLava && !player.isInWater && isAtNodeElev && isArrivedOnPlatform &&
+                    isBonzoGroundImpact(player.y, level.clip(ClipContext(
+                        player.eyePosition, player.eyePosition.add(Vec3.directionFromRotation(launchPitch, shotYaw).scale(3.5)),
+                        ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player
+                    )))
+            }
+
             // Reserve the jump only once on the launch platform, not while climbing its approach.
-            isBonzoRunway = nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
-            val canLaunch = player.onGround() && !player.isInLava && !player.isInWater &&
+            isBonzoRunway = !isAirborneBonzo && nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
+            val canLaunch = (player.onGround() || isAirborneBonzo) && !player.isInLava && !player.isInWater &&
                             isAtNodeElev && isArrivedOnPlatform && hasLaunchSpeed && hasGroundImpact
 
             if (canLaunch) {
@@ -515,7 +555,9 @@ object PathExecutor {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
         } else if (isBreakNode && breakBlockPos != null && isBreakBlockSolid) {
             aimTowardsVec(player, Vec3.atCenterOf(breakBlockPos))
-        } else if (nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5) {
+        } else if (nextTarget?.nodeType() == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)).isAir && distH < 3.5) {
+            aimTowardsVec(player, Vec3.atCenterOf(BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)))
+        } else if (nodeType == RouteNodeType.BONZO_STAFF && distH < 3.0) {
             // Smoothly pre-aim launch yaw and pitch as player approaches Bonzo node
             val approachHeading = if (player.deltaMovement.horizontalDistance() > 0.08) {
                 (-Math.toDegrees(atan2(player.deltaMovement.x, player.deltaMovement.z))).toFloat()
@@ -535,7 +577,7 @@ object PathExecutor {
                 preLaunchParams.shotYaw
             }
             val prePitch = if (target.hasLookNode) {
-                if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
+                if (target.pitch in 35.0f..88.0f) target.pitch else 79.0f
             } else {
                 preLaunchParams.shotPitch
             }
@@ -563,8 +605,8 @@ object PathExecutor {
         val stationaryMotion = if (isStationaryDest) stationaryMovement(offset, player.deltaMovement, player.y - target.y, landingSupport) else null
         val isApproaching = stationaryMotion == null || isApproachingNode(offset, stationaryMotion, player.y - target.y, landingSupport)
         val isApproachingBonzoRunway = nodeType == RouteNodeType.BONZO_STAFF &&
-            player.onGround() && !player.isInLava && !player.isInWater &&
-            distH <= 2.5 && player.y >= target.y - 0.5 && player.y <= target.y + 1.2
+            !player.isInLava && !player.isInWater &&
+            distH <= 2.5 && player.y >= target.y - 1.5 && player.y <= target.y + 2.5
 
         if (stationaryMotion != null) {
             // Steer and brake in world coordinates, even while the camera turns toward a device.
@@ -700,29 +742,34 @@ object PathExecutor {
         }
 
         // 7b. Break Node Handling: break target block with Dungeon Breaker while running
-        if (nodeType == RouteNodeType.BREAK) {
-            val bPos = BlockPos.containing(target.x, target.y, target.z)
-            val state = level.getBlockState(bPos)
-            if (!state.isAir) {
-                selectDungeonBreaker()
-                val center = Vec3.atCenterOf(bPos)
-                val eye = player.eyePosition
-                if (eye.distanceTo(center) <= 4.8) {
-                    val hitResult = mc.hitResult
-                    val dir = if (hitResult is BlockHitResult && hitResult.blockPos == bPos) {
-                        hitResult.direction
-                    } else {
-                        Direction.getApproximateNearest(eye.subtract(center))
-                    }
-                    player.swing(InteractionHand.MAIN_HAND)
-                    mc.gameMode?.startDestroyBlock(bPos, dir)
-                    mc.gameMode?.continueDestroyBlock(bPos, dir)
-                    mc.options.keyAttack.setDown(true)
+        val isCurrentBreakSolid = nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir
+        val isNextBreakSolid = nextTarget?.nodeType() == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)).isAir
+
+        val targetBreakPos = when {
+            isCurrentBreakSolid -> BlockPos.containing(target.x, target.y, target.z)
+            isNextBreakSolid && distH < 3.5 -> BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)
+            else -> null
+        }
+
+        if (targetBreakPos != null) {
+            selectDungeonBreaker()
+            val center = Vec3.atCenterOf(targetBreakPos)
+            val eye = player.eyePosition
+            if (eye.distanceTo(center) <= 5.2) {
+                val hitResult = mc.hitResult
+                val dir = if (hitResult is BlockHitResult && hitResult.blockPos == targetBreakPos) {
+                    hitResult.direction
+                } else {
+                    Direction.getApproximateNearest(eye.subtract(center))
                 }
-            } else {
-                mc.options.keyAttack.setDown(false)
-                mc.gameMode?.stopDestroyBlock()
+                player.swing(InteractionHand.MAIN_HAND)
+                mc.gameMode?.startDestroyBlock(targetBreakPos, dir)
+                mc.gameMode?.continueDestroyBlock(targetBreakPos, dir)
+                mc.options.keyAttack.setDown(true)
             }
+        } else if (nodeType != RouteNodeType.BREAK && nextTarget?.nodeType() != RouteNodeType.BREAK) {
+            mc.options.keyAttack.setDown(false)
+            mc.gameMode?.stopDestroyBlock()
         }
 
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
@@ -741,7 +788,7 @@ object PathExecutor {
             distH < arrivalThreshold && canArriveElevation &&
             (!requiresTouchdown || player.onGround()) &&
             (!isStationaryDest || isSettled)) {
-            if (isBreakNode) {
+            if (isBreakNode && nextTarget?.nodeType() != RouteNodeType.BREAK) {
                 mc.options.keyAttack.setDown(false)
                 mc.gameMode?.stopDestroyBlock()
             }
@@ -827,7 +874,7 @@ object PathExecutor {
                 jumpOnFire = false
             )
         } else {
-            val pitch = if (recordedPitch in 75.0f..88.0f) recordedPitch else 79.0f
+            val pitch = if (recordedPitch in 35.0f..88.0f) recordedPitch else 79.0f
             BonzoLaunchParams(
                 isRedirection = false,
                 shotYaw = destYaw,
@@ -928,8 +975,13 @@ object PathExecutor {
                 goalPitch = 10.0f
                 isFastAim = true
             }
-            nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir -> {
-                val bPos = BlockPos.containing(target.x, target.y, target.z)
+            (nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir) ||
+            (nextTarget?.nodeType() == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)).isAir && distH < 3.5) -> {
+                val bPos = if (nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir) {
+                    BlockPos.containing(target.x, target.y, target.z)
+                } else {
+                    BlockPos.containing(nextTarget!!.x, nextTarget.y, nextTarget.z)
+                }
                 val bCenter = Vec3.atCenterOf(bPos)
                 val bdx = bCenter.x - currentX
                 val bdy = bCenter.y - currentEyeY
@@ -939,7 +991,7 @@ object PathExecutor {
                 goalPitch = (-Math.toDegrees(atan2(bdy, bdistH))).toFloat().coerceIn(-89f, 89f)
                 isFastAim = true
             }
-            nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5 -> {
+            nodeType == RouteNodeType.BONZO_STAFF && distH < 3.0 -> {
                 val renderHeading = if (player.deltaMovement.horizontalDistance() > 0.08) {
                     (-Math.toDegrees(atan2(player.deltaMovement.x, player.deltaMovement.z))).toFloat()
                 } else if (distH > 0.3) {
@@ -957,7 +1009,7 @@ object PathExecutor {
                     params.shotYaw
                 }
                 goalPitch = if (target.hasLookNode) {
-                    if (target.pitch in 75.0f..88.0f) target.pitch else 79.0f
+                    if (target.pitch in 35.0f..88.0f) target.pitch else 79.0f
                 } else {
                     params.shotPitch
                 }
@@ -1217,9 +1269,9 @@ object PathExecutor {
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
             mc.options.keySprint.setDown(true)
-            player.setSprinting(true)
-            jumpTicksRemaining = if (params.jumpOnFire) 3 else 0
-            mc.options.keyJump.setDown(params.jumpOnFire)
+            val shouldJump = params.jumpOnFire && player.onGround()
+            jumpTicksRemaining = if (shouldJump) 3 else 0
+            mc.options.keyJump.setDown(shouldJump)
         }
 
         // Fire immediately so projectile hits the platform floor ahead/under player in time

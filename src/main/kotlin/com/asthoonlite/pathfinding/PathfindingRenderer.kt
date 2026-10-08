@@ -132,6 +132,18 @@ object PathfindingRenderer {
                 val bz = kotlin.math.floor(pt.z)
                 WorldBoxRenderer.queueFilled(bx, by, bz, bx + 1.0, by + 1.0, bz + 1.0, r, g, b, a * 0.45f, throughWalls = true)
                 WorldBoxRenderer.queueOutline(bx, by, bz, bx + 1.0, by + 1.0, bz + 1.0, r, g, b, 0.95f, thickness = 0.04, throughWalls = true)
+            } else if (nodeType == RouteNodeType.BONZO_STAFF) {
+                // Double-height waypoint column: 0.5 x 1.0 x 0.5 (double vertical height)
+                val half = 0.25
+                val x1 = pt.x - half
+                val y1 = pt.y
+                val z1 = pt.z - half
+                val x2 = pt.x + half
+                val y2 = pt.y + 1.0
+                val z2 = pt.z + half
+
+                WorldBoxRenderer.queueFilled(x1, y1, z1, x2, y2, z2, r, g, b, a, throughWalls = true)
+                WorldBoxRenderer.queueOutline(x1, y1, z1, x2, y2, z2, r, g, b, 0.90f, thickness = 0.03, throughWalls = true)
             } else {
                 // Waypoint cube: 0.5 x 0.5 x 0.5 centered at (pt.x, pt.y, pt.z)
                 val half = 0.25
@@ -147,7 +159,7 @@ object PathfindingRenderer {
             }
 
             // In-world label: #1 [WALK] or #1 [BREAK] or #1 [TIMEOUT 2.0s]
-            val labelY = if (nodeType == RouteNodeType.BREAK) kotlin.math.floor(pt.y) + 1.15 else pt.y + 0.70
+            val labelY = if (nodeType == RouteNodeType.BREAK) kotlin.math.floor(pt.y) + 1.15 else if (nodeType == RouteNodeType.BONZO_STAFF) pt.y + 1.20 else pt.y + 0.70
             val label = if (nodeType == RouteNodeType.TIMEOUT) {
                 "#${i + 1} [${nodeType.displayName} ${pt.timeoutSeconds}s]"
             } else {
@@ -196,8 +208,8 @@ object PathfindingRenderer {
             // Tracer line to the next node
             if (i < points.size - 1) {
                 val nextPt = points[i + 1]
-                val fromY = if (nodeType == RouteNodeType.BREAK) kotlin.math.floor(pt.y) + 0.5 else pt.y + 0.25
-                val toY = if (nextPt.nodeType() == RouteNodeType.BREAK) kotlin.math.floor(nextPt.y) + 0.5 else nextPt.y + 0.25
+                val fromY = if (nodeType == RouteNodeType.BREAK) kotlin.math.floor(pt.y) + 0.5 else if (nodeType == RouteNodeType.BONZO_STAFF) pt.y + 0.5 else pt.y + 0.25
+                val toY = if (nextPt.nodeType() == RouteNodeType.BREAK) kotlin.math.floor(nextPt.y) + 0.5 else if (nextPt.nodeType() == RouteNodeType.BONZO_STAFF) nextPt.y + 0.5 else nextPt.y + 0.25
                 WorldBoxRenderer.queueLine(
                     pt.x, fromY, pt.z,
                     nextPt.x, toY, nextPt.z,
@@ -213,9 +225,10 @@ object PathfindingRenderer {
             val player = mc.player
             if (player != null) {
                 val targetPt = points[PathExecutor.currentNodeIndex]
+                val targetY = if (targetPt.nodeType() == RouteNodeType.BREAK) kotlin.math.floor(targetPt.y) + 0.5 else if (targetPt.nodeType() == RouteNodeType.BONZO_STAFF) targetPt.y + 0.5 else targetPt.y + 0.25
                 WorldBoxRenderer.queueLine(
                     player.x, player.y + 0.1, player.z,
-                    targetPt.x, targetPt.y + 0.25, targetPt.z,
+                    targetPt.x, targetY, targetPt.z,
                     0.20f, 0.95f, 0.40f, 0.95f,
                     thickness = 0.06,
                     throughWalls = true
