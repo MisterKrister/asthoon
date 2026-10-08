@@ -439,22 +439,13 @@ object PathExecutor {
 
         if (target.hasLookNode) {
             aimTowardsVec(player, Vec3(target.lookX, target.lookY, target.lookZ))
-        } else if (nodeType == RouteNodeType.BONZO_STAFF && distH < 2.5) {
-            // Smoothly pre-aim launch yaw and ground pitch as player approaches Bonzo node
-            val bYaw = if (target.yaw != 0.0f) {
-                target.yaw
-            } else if (nextTarget != null) {
-                val bDx = nextTarget.x - player.x
-                val bDz = nextTarget.z - player.z
-                (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
-            } else {
-                val bDx = target.x - player.x
-                val bDz = target.z - player.z
-                (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
-            }
-            val destPitch = if (target.pitch in 15.0f..88.0f) target.pitch else 79.0f
+        } else if (nodeType == RouteNodeType.BONZO_STAFF && nextTarget != null && distH < 2.5) {
+            // Smoothly pre-aim launch yaw and downward ground pitch (79°) as player approaches Bonzo node
+            val bDx = nextTarget.x - player.x
+            val bDz = nextTarget.z - player.z
+            val bYaw = (-Math.toDegrees(atan2(bDx, bDz))).toFloat()
             val deltaYaw = Mth.wrapDegrees(bYaw - player.yRot)
-            val deltaPitch = (destPitch - player.xRot)
+            val deltaPitch = (79.0f - player.xRot)
             val maxTurnRate = 18.0f
             player.yRot += (deltaYaw * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
             player.xRot += (deltaPitch * 0.35f).coerceIn(-maxTurnRate, maxTurnRate)
@@ -739,31 +730,23 @@ object PathExecutor {
         // Auto-select Bonzo's Staff
         selectBonzoStaff()
 
-        // Launch towards the next waypoint in the route or custom heading
+        // Launch towards the next waypoint in the route
         val nextIdx = currentNodeIndex + 1
         bonzoTargetNextIndex = nextIdx
         val destination = points.getOrNull(nextIdx) ?: currentNode
 
-        val launchYaw = when {
-            currentNode.hasLookNode -> {
-                val ldx = currentNode.lookX - player.x
-                val ldz = currentNode.lookZ - player.z
-                (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
-            }
-            currentNode.yaw != 0.0f -> {
-                // Respect recorded/configured node yaw (critical for bypassing obstacles/walls)
-                currentNode.yaw
-            }
-            else -> {
-                val launchDx = destination.x - player.x
-                val launchDz = destination.z - player.z
-                (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
-            }
-        }
+        val launchDx = destination.x - player.x
+        val launchDz = destination.z - player.z
+        val launchYaw = (-Math.toDegrees(atan2(launchDx, launchDz))).toFloat()
         bonzoLaunchYaw = launchYaw
 
         // Bonzo ground impact pitch:
-        val launchPitch = if (currentNode.pitch in 15.0f..88.0f) currentNode.pitch else 79.0f
+        // In Hypixel SkyBlock, to launch yourself across a chasm, the balloon MUST impact
+        // the solid platform floor right at the player's feet (78°–82°).
+        // If pitch is shallow (e.g. 30°–60°), the projectile flies off the platform into the void.
+        // A steep pitch of 79° guarantees the projectile hits the solid platform block 0.3 blocks
+        // under the player's feet in 1 tick, giving maximum forward and upward knockback boost.
+        val launchPitch = if (currentNode.pitch in 75.0f..88.0f) currentNode.pitch else 79.0f
 
         player.yRot = launchYaw
         player.xRot = launchPitch
@@ -812,7 +795,7 @@ object PathExecutor {
                     mc.options.keyJump.setDown(false)
                 }
 
-                // Smoothly recover camera pitch from ground back up to eye level (10°)
+                // Smoothly recover camera pitch from ground (79°) back up to eye level (10°)
                 // and keep yaw smoothly aligned with launchYaw
                 val deltaYaw = Mth.wrapDegrees(bonzoLaunchYaw - player.yRot)
                 player.yRot += (deltaYaw * 0.35f).coerceIn(-12.0f, 12.0f)
