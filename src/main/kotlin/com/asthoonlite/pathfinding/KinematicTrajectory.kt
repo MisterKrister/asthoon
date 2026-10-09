@@ -137,7 +137,6 @@ object KinematicTrajectory {
         }
 
         val turnAngle = Mth.wrapDegrees(destYaw - currentHeadingYaw)
-        val isRedirection = abs(turnAngle) >= 45.0f
 
         // Desired horizontal launch velocity vector
         val targetLaunchSpeed = (targetLaunchBps / 20.0).coerceIn(0.9, 1.4)
@@ -149,6 +148,8 @@ object KinematicTrajectory {
         val requiredImpulse = desiredVel.subtract(currentHorizVel)
         val impulseLen = requiredImpulse.horizontalDistance()
         val impulseDir = if (impulseLen > 0.01) requiredImpulse.scale(1.0 / impulseLen) else destDir
+
+        val isRedirection = abs(turnAngle) >= 30.0f || (impulseLen > 0.4 && abs(turnAngle) >= 25.0f)
 
         // Predicted player position at detonation (2 ticks ahead)
         val predDetonationPos = playerPos.add(playerVel.x * BONZO_DETONATION_TICKS, 0.0, playerVel.z * BONZO_DETONATION_TICKS)
@@ -175,12 +176,12 @@ object KinematicTrajectory {
             computedPitch
         }
 
-        val finalYaw = if (recordedYaw != 0f) {
-            recordedYaw
-        } else if (!isRedirection) {
-            destYaw
-        } else {
+        val finalYaw = if (isRedirection) {
             computedYaw
+        } else if (recordedYaw != 0f && abs(Mth.wrapDegrees(recordedYaw - destYaw)) <= 35.0f) {
+            destYaw * 0.7f + recordedYaw * 0.3f
+        } else {
+            destYaw
         }
 
         return BonzoAimPlan(
@@ -215,9 +216,14 @@ object KinematicTrajectory {
         val velDir = Vec3(playerVel.x, 0.0, playerVel.z).normalize()
         var dropDetectedAtTick = -1
 
+        val distToTarget = hypot(targetPos.x - playerPos.x, targetPos.z - playerPos.z)
+        val maxProbe = (distToTarget - 0.4).coerceAtLeast(0.5)
+
         for (step in 1..4) {
-            val probeX = playerPos.x + velDir.x * (step * currentSpeedH)
-            val probeZ = playerPos.z + velDir.z * (step * currentSpeedH)
+            val dist = step * currentSpeedH
+            if (dist > maxProbe) break
+            val probeX = playerPos.x + velDir.x * dist
+            val probeZ = playerPos.z + velDir.z * dist
             val probePos = BlockPos(floor(probeX).toInt(), floorY, floor(probeZ).toInt())
             val stateAtFloor = level.getBlockState(probePos)
             val stateBelow = level.getBlockState(probePos.below())
