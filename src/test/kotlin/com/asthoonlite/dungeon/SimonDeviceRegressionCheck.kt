@@ -823,6 +823,18 @@ internal fun simonDeviceRegressionChecks() {
     check(rightTurnPlan.shotYaw in 130f..160f) { "Redirection blast must aim to rear-left (yaw ~135-155°) to launch East and cancel North momentum" }
     check(rightTurnPlan.shotPitch in 45f..65f) { "Redirection blast pitch should aim at ground impact point" }
 
+    // Bonzo aim plan with user-recorded angles (e.g. niggap3 / niggaS4 runway aim)
+    val userAimPlan = KinematicTrajectory.calculateBonzoAimPlan(
+        playerPos = Vec3(54.5, 115.0, 47.5),
+        playerVel = Vec3(0.0, 0.0, -0.4),
+        playerEyeY = 116.62,
+        destinationPos = Vec3(72.5, 115.0, 46.5),
+        recordedPitch = 28.65f,
+        recordedYaw = 184.5f
+    )
+    check(userAimPlan.shotYaw == 184.5f) { "Kinematic aim plan must preserve user recorded yaw" }
+    check(userAimPlan.shotPitch == 28.65f) { "Kinematic aim plan must preserve user recorded pitch down to 20°" }
+
     // Closed-loop air guidance: lateral drift correction
     val guidanceLeft = KinematicTrajectory.computeAirGuidance(
         playerPos = Vec3(0.0, 75.0, 0.0),
