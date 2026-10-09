@@ -5,6 +5,7 @@ import com.asthoonlite.pathfinding.PathfindCapture
 import com.asthoonlite.pathfinding.PathPoint
 import com.asthoonlite.pathfinding.RouteNodeType
 import com.asthoonlite.pathfinding.GoldorRouteShortcut
+import com.asthoonlite.pathfinding.KinematicTrajectory
 import com.asthoonlite.config.Config
 import com.google.gson.Gson
 import com.google.gson.JsonParser
@@ -774,6 +775,85 @@ internal fun simonDeviceRegressionChecks() {
         isExitingBreakDoorway = false
     )
     check(jumpToDevice) { "Must auto-gap jump across ledge to reach device platforms" }
+
+    // 34. Kinematic Trajectory Engine: forward physics step, flight prediction, aim solver & guidance
+    val initialAir = KinematicTrajectory.State(0.0, 70.0, 0.0, 0.5, 0.42, 0.0, onGround = false)
+    val stepped = KinematicTrajectory.stepAirborne(initialAir, forwardInput = 0.0, strafeInput = 0.0, yaw = 0f)
+    check(stepped.x == 0.5) { "X position should advance by vx" }
+    check(stepped.y == 70.42) { "Y position should advance by vy" }
+    check(Math.abs(stepped.vx - (0.5 * KinematicTrajectory.DRAG_AIR_HORIZONTAL)) < 0.001) { "VX should apply horizontal drag" }
+    val expectedVy = (0.42 - KinematicTrajectory.GRAVITY) * KinematicTrajectory.DRAG_AIR_VERTICAL
+    check(Math.abs(stepped.vy - expectedVy) < 0.001) { "VY should apply gravity and vertical drag" }
+
+    val (landPos, _, ticks) = KinematicTrajectory.predictAirFlight(
+        startPos = Vec3(0.0, 70.0, 0.0),
+        startVel = Vec3(0.5, 0.42, 0.0),
+        targetY = 70.0,
+        forwardInput = 0.0,
+        strafeInput = 0.0,
+        yaw = 0f,
+        maxTicks = 20
+    )
+    check(ticks in 8..12) { "Parabolic jump arc should take ~9-11 ticks to land back at same Y level" }
+    check(landPos.x > 2.0) { "Horizontal flight distance should carry player forward along X" }
+    check(landPos.y == 70.0) { "Landing Y must match targetY" }
+
+    // Bonzo kinematic aim plan: straight launch
+    val straightPlan = KinematicTrajectory.calculateBonzoAimPlan(
+        playerPos = Vec3(0.0, 70.0, 0.0),
+        playerVel = Vec3(0.0, 0.0, 0.4),
+        playerEyeY = 71.62,
+        destinationPos = Vec3(0.0, 70.0, 15.0),
+        recordedPitch = 79f
+    )
+    check(!straightPlan.isRedirection) { "Straight launch must not be redirection" }
+    check(straightPlan.jumpOnFire) { "Straight launch should jump on fire" }
+    check(straightPlan.shotPitch == 79f) { "Straight launch should preserve recorded pitch" }
+    check(Math.abs(straightPlan.shotYaw - 0f) < 0.01f) { "Straight launch shotYaw should be 0°" }
+
+    // Bonzo kinematic aim plan: 90° right redirection
+    val rightTurnPlan = KinematicTrajectory.calculateBonzoAimPlan(
+        playerPos = Vec3(50.0, 114.0, 50.0),
+        playerVel = Vec3(0.0, 0.0, -0.4), // Heading 180° (North)
+        playerEyeY = 115.62,
+        destinationPos = Vec3(70.0, 114.0, 50.0) // Heading -90° (East)
+    )
+    check(rightTurnPlan.isRedirection) { "90° turn must be marked as redirection" }
+    check(!rightTurnPlan.jumpOnFire) { "Redirection launch must not jump on fire" }
+    check(rightTurnPlan.shotYaw in 130f..160f) { "Redirection blast must aim to rear-left (yaw ~135-155°) to launch East and cancel North momentum" }
+    check(rightTurnPlan.shotPitch in 45f..65f) { "Redirection blast pitch should aim at ground impact point" }
+
+    // Closed-loop air guidance: lateral drift correction
+    val guidanceLeft = KinematicTrajectory.computeAirGuidance(
+        playerPos = Vec3(0.0, 75.0, 0.0),
+        playerVel = Vec3(0.0, -0.1, 0.5),
+        playerYaw = 0f,
+        destinationPos = Vec3(2.0, 70.0, 5.0)
+    )
+    check(guidanceLeft.strafe == 1.0) { "Air guidance should output left strafe (+1.0) when destination is to the left (+X) of trajectory" }
+
+    val guidanceRight = KinematicTrajectory.computeAirGuidance(
+        playerPos = Vec3(0.0, 75.0, 0.0),
+        playerVel = Vec3(0.0, -0.1, 0.5),
+        playerYaw = 0f,
+        destinationPos = Vec3(-2.0, 70.0, 5.0)
+    )
+    check(guidanceRight.strafe == -1.0) { "Air guidance should output right strafe (-1.0) when destination is to the right (-X) of trajectory" }
+
+    // 35. Auto-gap jump across small gaps (distH <= 1.2) onto destination platforms
+    val smallGapJump = PathExecutor.shouldAutoJump(
+        nodeType = com.asthoonlite.pathfinding.RouteNodeType.WALK,
+        isStationaryDest = true,
+        onGround = true,
+        isLedge = true,
+        distH = 0.8,
+        isCrouchNode = false,
+        isObstacleCollision = false,
+        isElevationStep = false,
+        isMiningObstacle = false,
+        isExitingBreakDoorway = false
+    )
+    check(smallGapJump) { "Must auto-gap jump across small ledge gap even at distH <= 1.2" }
 }
 
 
