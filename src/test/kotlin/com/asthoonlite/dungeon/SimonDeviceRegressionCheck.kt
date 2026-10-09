@@ -722,6 +722,58 @@ internal fun simonDeviceRegressionChecks() {
     val midairBonzoElevHigh = 132.5 + 2.5
     val playerMidAirY = 133.18
     check(playerMidAirY in midairBonzoElevLow..midairBonzoElevHigh) { "Player jump height 133.18 must fall within double-height Bonzo node elevation window" }
+
+    // 31. Runway motion steering towards target vs nextTarget
+    val targetOffset = Vec3(0.0, 0.0, -5.0)
+    val nextTargetOffset = Vec3(-6.0, 0.0, -10.0)
+    val runwayFar = PathExecutor.bonzoRunwayMotion(targetOffset, nextTargetOffset, distH = 2.0)
+    check(runwayFar.x == 0.0 && runwayFar.z == -5.0) { "Runway motion at distH > 0.3 must steer strictly toward target" }
+    val runwayNear = PathExecutor.bonzoRunwayMotion(targetOffset, nextTargetOffset, distH = 0.2)
+    check(runwayNear.x == -6.0 && runwayNear.z == -10.0) { "Runway motion at distH <= 0.3 must steer toward nextTarget" }
+
+    // 32. Auto-jump suppression while breaking blocks or stepping through doorways
+    val jumpOnBreak = PathExecutor.shouldAutoJump(
+        nodeType = com.asthoonlite.pathfinding.RouteNodeType.BREAK,
+        isStationaryDest = false,
+        onGround = true,
+        isLedge = false,
+        distH = 1.0,
+        isCrouchNode = false,
+        isObstacleCollision = true,
+        isElevationStep = false,
+        isMiningObstacle = true,
+        isExitingBreakDoorway = false
+    )
+    check(!jumpOnBreak) { "Must not auto-jump while mining/breaking blocks" }
+
+    val jumpOnDoorway = PathExecutor.shouldAutoJump(
+        nodeType = com.asthoonlite.pathfinding.RouteNodeType.WALK,
+        isStationaryDest = false,
+        onGround = true,
+        isLedge = false,
+        distH = 1.0,
+        isCrouchNode = false,
+        isObstacleCollision = true,
+        isElevationStep = false,
+        isMiningObstacle = false,
+        isExitingBreakDoorway = true
+    )
+    check(!jumpOnDoorway) { "Must not auto-jump when exiting a broken block doorway" }
+
+    // 33. Device gap jump when approaching stationary platforms across a ledge gap
+    val jumpToDevice = PathExecutor.shouldAutoJump(
+        nodeType = com.asthoonlite.pathfinding.RouteNodeType.SIMON_SAYS,
+        isStationaryDest = true,
+        onGround = true,
+        isLedge = true,
+        distH = 2.0,
+        isCrouchNode = false,
+        isObstacleCollision = false,
+        isElevationStep = false,
+        isMiningObstacle = false,
+        isExitingBreakDoorway = false
+    )
+    check(jumpToDevice) { "Must auto-gap jump across ledge to reach device platforms" }
 }
 
 

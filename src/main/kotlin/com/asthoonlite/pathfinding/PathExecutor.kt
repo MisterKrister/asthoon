@@ -361,8 +361,11 @@ object PathExecutor {
             val destinationPos = if (nextTarget != null) Vec3(nextTarget.x, nextTarget.y, nextTarget.z) else Vec3(target.x, target.y, target.z)
             val launchParams = calculateBonzoLaunchParams(currentHeadingYaw, Vec3(player.x, player.y, player.z), destinationPos, target.pitch, target.yaw)
 
-            val isAtLaunchLedge = isLedgeOrGapAhead(level, player, currentHeadingYaw) || isLedgeOrGapAhead(level, player, destYaw)
-            val launchDistanceThreshold = if (isAirborneBonzo) 2.2 else if (isAtLaunchLedge) 2.2 else 1.5
+            val toTargetHx = target.x - player.x
+            val toTargetHz = target.z - player.z
+            val isMovingTowardsTarget = distH <= 0.4 || (player.deltaMovement.x * toTargetHx + player.deltaMovement.z * toTargetHz) > 0.0
+
+            val launchDistanceThreshold = if (isAirborneBonzo) 2.2 else 1.35
             val isArrivedOnPlatform = distH <= launchDistanceThreshold
             val isFollowupLaunch = points.take(currentNodeIndex).any { it.nodeType() == RouteNodeType.BONZO_STAFF }
             val downwardFollowup = nextTarget != null && (nextTarget.y < target.y || isFollowupLaunch)
@@ -372,9 +375,9 @@ object PathExecutor {
             val forwardSpeed = Vec3(player.deltaMovement.x, 0.0, player.deltaMovement.z).dot(headingVec)
 
             val hasLaunchSpeed = if (launchParams.isRedirection) {
-                currentBpsH in 6.5..10.5 || (currentBpsH >= 6.5 && isAtLaunchLedge && currentBpsH <= 11.5)
+                currentBpsH >= 4.5 && isMovingTowardsTarget
             } else if (isAirborneBonzo) {
-                currentBpsH >= 5.5 && (forwardSpeed >= 0.25 || player.deltaMovement.horizontalDistance() >= 0.20)
+                currentBpsH >= 5.0 && (forwardSpeed >= 0.20 || player.deltaMovement.horizontalDistance() >= 0.18)
             } else {
                 hasBonzoRunwayVelocity(Vec3(toNextDx, 0.0, toNextDz), player.deltaMovement, downwardFollowup)
             }
@@ -600,9 +603,18 @@ object PathExecutor {
         val isCrouchNode = (nodeType == RouteNodeType.CROUCH)
         val isAirborne = !player.onGround() && !player.isInLava && !player.isInWater
         val offset = Vec3(dx, 0.0, dz)
+
+        val toTargetDx = target.x - player.x
+        val toTargetDz = target.z - player.z
+        val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
+        val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
+
         val landingFloor = BlockPos.containing(player.x, target.y - 0.1, player.z)
         val landingSupport = isStationaryDest && player.onGround() && !level.getBlockState(landingFloor).getCollisionShape(level, landingFloor).isEmpty
-        val stationaryMotion = if (isStationaryDest) stationaryMovement(offset, player.deltaMovement, player.y - target.y, landingSupport) else null
+        val isCrossingGapToStationary = isStationaryDest && isLedge && distH > 1.2
+        val stationaryMotion = if (isStationaryDest && !isCrossingGapToStationary) {
+            stationaryMovement(offset, player.deltaMovement, player.y - target.y, landingSupport)
+        } else null
         val isApproaching = stationaryMotion == null || isApproachingNode(offset, stationaryMotion, player.y - target.y, landingSupport)
         val isApproachingBonzoRunway = nodeType == RouteNodeType.BONZO_STAFF &&
             !player.isInLava && !player.isInWater &&
@@ -636,12 +648,20 @@ object PathExecutor {
                     moveInDirection(player, runwayVector, wantsSprint)
                 }
             } else {
-                val motion = if (nextTarget != null) Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z)
-                    else Vec3(target.x - player.x, 0.0, target.z - player.z)
+                val motion = bonzoRunwayMotion(
+                    Vec3(target.x - player.x, 0.0, target.z - player.z),
+                    if (nextTarget != null) Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z) else null,
+                    distH
+                )
                 moveInDirection(player, motion, true)
             }
         } else if (isBonzoRunway && nextTarget != null) {
-            moveInDirection(player, Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z), true)
+            val motion = bonzoRunwayMotion(
+                Vec3(target.x - player.x, 0.0, target.z - player.z),
+                Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z),
+                distH
+            )
+            moveInDirection(player, motion, true)
         } else {
             // On ground: calculate movement vector towards target
             val targetMoveX = if (lookaheadBlend > 0.0 && nextTarget != null) aimX else target.x
@@ -692,23 +712,37 @@ object PathExecutor {
         }
 
         // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection
-        val toTargetDx = target.x - player.x
-        val toTargetDz = target.z - player.z
-        val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
-        val isLedge = isLedgeOrGapAhead(level, player, targetYaw)
-        // Auto gap jump: trigger ONLY on WALK nodes when there is a drop ahead.
+        // Auto gap jump: trigger on WALK nodes or when crossing a gap towards a device platform!
         // BONZO_STAFF nodes must NEVER auto-jump during approach — they must stay grounded for the staff blast!
-        val canAutoGapJump = (nodeType == RouteNodeType.WALK) && player.onGround() && isLedge && distH > 1.4 && !isCrouchNode
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK || isStationaryDest) && player.onGround() && isLedge && distH > 1.2 && !isCrouchNode
         val isObstacleCollision = player.horizontalCollision && player.onGround()
         val isElevationStep = target.y > player.y + 0.35 && distH < 2.5 && player.onGround()
 
-        // BONZO_STAFF nodes must NEVER auto-jump during approach!
-        // The jump must occur strictly on the exact tick of initiateBonzoLaunch while grounded on the platform.
-        val shouldAutoJump = if (nodeType == RouteNodeType.BONZO_STAFF) {
-            false
-        } else {
-            canAutoGapJump || isObstacleCollision || isElevationStep
+        // Break Node handling for jump suppression
+        val isCurrentBreakSolid = nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir
+        val isNextBreakSolid = nextTarget?.nodeType() == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)).isAir
+        val targetBreakPos = when {
+            isCurrentBreakSolid -> BlockPos.containing(target.x, target.y, target.z)
+            isNextBreakSolid && distH < 3.5 -> BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)
+            else -> null
         }
+        val isMiningObstacle = nodeType == RouteNodeType.BREAK || targetBreakPos != null
+        val prevNode = points.getOrNull(currentNodeIndex - 1)
+        val isExitingBreakDoorway = prevNode?.nodeType() == RouteNodeType.BREAK &&
+            hypot(player.x - prevNode.x, player.z - prevNode.z) < 2.0
+
+        val shouldAutoJump = shouldAutoJump(
+            nodeType = nodeType,
+            isStationaryDest = isStationaryDest,
+            onGround = player.onGround(),
+            isLedge = isLedge,
+            distH = distH,
+            isCrouchNode = isCrouchNode,
+            isObstacleCollision = isObstacleCollision,
+            isElevationStep = isElevationStep,
+            isMiningObstacle = isMiningObstacle,
+            isExitingBreakDoorway = isExitingBreakDoorway
+        )
 
         if (!isApproaching || isBonzoRunway || nodeType == RouteNodeType.BONZO_STAFF) {
             jumpTicksRemaining = 0
@@ -742,15 +776,6 @@ object PathExecutor {
         }
 
         // 7b. Break Node Handling: break target block with Dungeon Breaker while running
-        val isCurrentBreakSolid = nodeType == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir
-        val isNextBreakSolid = nextTarget?.nodeType() == RouteNodeType.BREAK && !level.getBlockState(BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)).isAir
-
-        val targetBreakPos = when {
-            isCurrentBreakSolid -> BlockPos.containing(target.x, target.y, target.z)
-            isNextBreakSolid && distH < 3.5 -> BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)
-            else -> null
-        }
-
         if (targetBreakPos != null) {
             selectDungeonBreaker()
             val center = Vec3.atCenterOf(targetBreakPos)
@@ -883,6 +908,31 @@ object PathExecutor {
                 targetBps = 12.0,
                 jumpOnFire = true
             )
+        }
+    }
+
+    internal fun bonzoRunwayMotion(targetOffset: Vec3, nextTargetOffset: Vec3?, distH: Double): Vec3 =
+        if (distH > 0.3 || nextTargetOffset == null) targetOffset else nextTargetOffset
+
+    internal fun shouldAutoJump(
+        nodeType: RouteNodeType,
+        isStationaryDest: Boolean,
+        onGround: Boolean,
+        isLedge: Boolean,
+        distH: Double,
+        isCrouchNode: Boolean,
+        isObstacleCollision: Boolean,
+        isElevationStep: Boolean,
+        isMiningObstacle: Boolean,
+        isExitingBreakDoorway: Boolean
+    ): Boolean {
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK || isStationaryDest) && onGround && isLedge && distH > 1.2 && !isCrouchNode
+        return if (nodeType == RouteNodeType.BONZO_STAFF) {
+            false
+        } else if (isMiningObstacle || isExitingBreakDoorway) {
+            false
+        } else {
+            canAutoGapJump || isObstacleCollision || isElevationStep
         }
     }
 
