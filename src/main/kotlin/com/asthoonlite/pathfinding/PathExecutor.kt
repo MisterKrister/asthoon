@@ -1,6 +1,8 @@
 package com.asthoonlite.pathfinding
 
+import com.asthoonlite.AsthoonLite
 import com.asthoonlite.config.Config
+import java.util.Locale
 import com.asthoonlite.dungeon.ArrowAlignSolver
 import com.asthoonlite.dungeon.F7Devices
 import com.asthoonlite.dungeon.TerminalInteraction
@@ -81,7 +83,8 @@ object PathExecutor {
     private var bonzoLaunchYaw = 0f
     private var jumpTicksRemaining = 0
     private var touchedDownSinceLaunch = true
-    private var bonzoLaunchedAirborne = false
+    private var bonzoAirborneSinceKnockback = false
+    private var lastLoggedNodeIndex = -1
 
     // Smooth camera velocity state
     private var cameraYawVelocity = 0f
@@ -145,7 +148,7 @@ object PathExecutor {
         bonzoState = BonzoState.IDLE
         bonzoTicksRemaining = 0
         bonzoLaunchYaw = 0f
-        bonzoLaunchedAirborne = false
+        bonzoAirborneSinceKnockback = false
         jumpTicksRemaining = 0
         resetSpecialNodeState()
         lastHandledNodeIndex = -1
@@ -161,7 +164,7 @@ object PathExecutor {
         terminalTicks = 0
         timeoutTicksRemaining = -1
         bonzoLaunchYaw = 0f
-        bonzoLaunchedAirborne = false
+        bonzoAirborneSinceKnockback = false
         cameraYawVelocity = 0f
         cameraPitchVelocity = 0f
         aimedThisTick = false
@@ -185,6 +188,113 @@ object PathExecutor {
             mc.options.keyAttack.setDown(false)
             mc.gameMode?.stopDestroyBlock()
         } catch (_: Exception) {}
+    }
+
+    data class RouteOffsetTelemetry(
+        val routeName: String,
+        val nodeIndex: Int,
+        val action: String,
+        val targetX: Double,
+        val targetY: Double,
+        val targetZ: Double,
+        val clientX: Double,
+        val clientY: Double,
+        val clientZ: Double,
+        val dx: Double,
+        val dy: Double,
+        val dz: Double,
+        val distH: Double,
+        val dist3D: Double,
+        val crossTrack: Double,
+        val alongTrack: Double,
+        val yawErr: Float,
+        val pitchErr: Float,
+        val bpsH: Double,
+        val onGround: Boolean
+    )
+
+    internal fun computeRouteOffset(
+        routeName: String,
+        nodeIndex: Int,
+        action: String,
+        target: Vec3,
+        targetYaw: Float,
+        targetPitch: Float,
+        prevTarget: Vec3?,
+        playerPos: Vec3,
+        playerYaw: Float,
+        playerPitch: Float,
+        bpsH: Double,
+        onGround: Boolean
+    ): RouteOffsetTelemetry {
+        val dx = playerPos.x - target.x
+        val dy = playerPos.y - target.y
+        val dz = playerPos.z - target.z
+        val distH = hypot(dx, dz)
+        val dist3D = sqrt(dx * dx + dy * dy + dz * dz)
+
+        var crossTrack = 0.0
+        var alongTrack = 0.0
+        if (prevTarget != null) {
+            val segX = target.x - prevTarget.x
+            val segZ = target.z - prevTarget.z
+            val segLen = hypot(segX, segZ)
+            if (segLen > 0.01) {
+                val vx = playerPos.x - prevTarget.x
+                val vz = playerPos.z - prevTarget.z
+                crossTrack = (segX * vz - segZ * vx) / segLen
+                alongTrack = (vx * segX + vz * segZ) / segLen
+            }
+        }
+
+        val yawErr = Mth.wrapDegrees(playerYaw - targetYaw)
+        val pitchErr = playerPitch - targetPitch
+
+        return RouteOffsetTelemetry(
+            routeName = routeName,
+            nodeIndex = nodeIndex,
+            action = action,
+            targetX = target.x,
+            targetY = target.y,
+            targetZ = target.z,
+            clientX = playerPos.x,
+            clientY = playerPos.y,
+            clientZ = playerPos.z,
+            dx = dx,
+            dy = dy,
+            dz = dz,
+            distH = distH,
+            dist3D = dist3D,
+            crossTrack = crossTrack,
+            alongTrack = alongTrack,
+            yawErr = yawErr,
+            pitchErr = pitchErr,
+            bpsH = bpsH,
+            onGround = onGround
+        )
+    }
+
+    fun getCurrentRouteOffset(player: LocalPlayer): RouteOffsetTelemetry? {
+        val preset = activePreset ?: return null
+        if (currentNodeIndex !in preset.points.indices) return null
+        val target = preset.points[currentNodeIndex]
+        val prevTarget = preset.points.getOrNull(currentNodeIndex - 1)
+        val bpsH = player.deltaMovement.horizontalDistance() * 20.0
+
+        return computeRouteOffset(
+            routeName = preset.name,
+            nodeIndex = currentNodeIndex,
+            action = target.action,
+            target = Vec3(target.x, target.y, target.z),
+            targetYaw = target.yaw,
+            targetPitch = target.pitch,
+            prevTarget = if (prevTarget != null) Vec3(prevTarget.x, prevTarget.y, prevTarget.z) else null,
+            playerPos = Vec3(player.x, player.y, player.z),
+            playerYaw = player.yRot,
+            playerPitch = player.xRot,
+            bpsH = bpsH,
+            onGround = player.onGround()
+        )
     }
 
     fun getTelemetryStatus(): String? {
@@ -324,6 +434,20 @@ object PathExecutor {
         val skyblockSpeed = speedAttr * 1000.0
         val isHighSpeed = skyblockSpeed > 400.0
 
+        if (tickCount % 5L == 0L || lastLoggedNodeIndex != currentNodeIndex) {
+            lastLoggedNodeIndex = currentNodeIndex
+            val off = getCurrentRouteOffset(player)
+            if (off != null) {
+                AsthoonLite.LOGGER.info(
+                    "[ASL-ROUTE-OFFSET] route='${off.routeName}' node=${off.nodeIndex}(${off.action}) " +
+                    "target=[${"%.2f".format(Locale.ROOT, off.targetX)},${"%.2f".format(Locale.ROOT, off.targetY)},${"%.2f".format(Locale.ROOT, off.targetZ)}] " +
+                    "client=[${"%.2f".format(Locale.ROOT, off.clientX)},${"%.2f".format(Locale.ROOT, off.clientY)},${"%.2f".format(Locale.ROOT, off.clientZ)}] " +
+                    "offset=[dx=${"%+.2f".format(Locale.ROOT, off.dx)}, dy=${"%+.2f".format(Locale.ROOT, off.dy)}, dz=${"%+.2f".format(Locale.ROOT, off.dz)}, distH=${"%.2f".format(Locale.ROOT, off.distH)}m] " +
+                    "crossTrack=${"%+.2f".format(Locale.ROOT, off.crossTrack)}m alongTrack=${"%.2f".format(Locale.ROOT, off.alongTrack)}m yawErr=${"%+.1f".format(Locale.ROOT, off.yawErr)}° bpsH=${"%.2f".format(Locale.ROOT, off.bpsH)} ground=${off.onGround}"
+                )
+            }
+        }
+
         // 1. Handle Active Bonzo Staff Execution State Machine
         if (bonzoState != BonzoState.IDLE) {
             handleActiveBonzoState(points, isHighSpeed)
@@ -358,9 +482,8 @@ object PathExecutor {
                 mc.options.keyJump.setDown(false)
             }
 
-            // Bonzo node vertical elevation check: double height vertically (-2.0 to +3.0)
-            // Allows seamless trigger when jumping through or descending through mid-air node
-            val isAtNodeElev = player.y >= target.y - 2.0 && player.y <= target.y + 3.0
+            // Bonzo node vertical elevation check: double height for mid-air/jump nodes, tight (±1.3m) for grounded runs
+            val isAtNodeElev = if (isAirborneBonzo) (player.y >= target.y - 2.0 && player.y <= target.y + 3.0) else (abs(player.y - target.y) <= 1.3)
 
             val toNextDx = if (nextTarget != null) nextTarget.x - player.x else target.x - player.x
             val toNextDz = if (nextTarget != null) nextTarget.z - player.z else target.z - player.z
@@ -392,13 +515,14 @@ object PathExecutor {
             val routeDirZ = if (nextTarget != null) nextTarget.z - target.z else target.z - player.z
             val passedAlongRoute = nextTarget != null && ((player.x - target.x) * routeDirX + (player.z - target.z) * routeDirZ > 0.0)
 
-            val isAirborneDescent = !player.onGround() && (player.deltaMovement.y <= 0.15 || isPrecedingJump || isTargetMidAir)
             val launchDistanceThreshold = when {
-                currentBpsH >= 12.0 -> 3.2
-                isAirborneDescent || currentBpsH >= 7.0 -> 2.6
-                else -> 2.0
+                isAirborneBonzo && currentBpsH >= 12.0 -> 2.0
+                isAirborneBonzo -> 1.5
+                currentBpsH >= 12.0 -> 1.3
+                else -> 1.0
             }
-            val isArrivedOnPlatform = distH <= launchDistanceThreshold || (passedAlongRoute && distH <= 3.2)
+            val isArrivedOnPlatform = distH <= launchDistanceThreshold || (passedAlongRoute && distH <= 1.4)
+            val requiresGrounded = !isAirborneBonzo
 
             val rawLaunchPitch = if (target.pitch in 20.0f..88.0f) target.pitch else launchParams.shotPitch
             val shotYaw = launchParams.shotYaw
@@ -427,6 +551,7 @@ object PathExecutor {
             // Reserve the jump only once on the launch platform, not while climbing its approach.
             isBonzoRunway = player.onGround() && nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
             val canLaunch = !player.isInLava && !player.isInWater &&
+                            (!requiresGrounded || player.onGround()) &&
                             isAtNodeElev && isArrivedOnPlatform && hasGroundImpact
 
             if (canLaunch) {
@@ -876,8 +1001,10 @@ object PathExecutor {
                 mc.options.keyAttack.setDown(false)
                 mc.gameMode?.stopDestroyBlock()
             }
+            val oldIdx = currentNodeIndex
             currentNodeIndex++
             resetSpecialNodeState()
+            AsthoonLite.LOGGER.info("[ASL-ROUTE-OFFSET] Completed node $oldIdx(${points[oldIdx].action}) -> advanced to node $currentNodeIndex")
             while (currentNodeIndex < points.size && points[currentNodeIndex].nodeType() == RouteNodeType.BREAK) {
                 if (isBlockBroken(level, points[currentNodeIndex])) {
                     currentNodeIndex++
@@ -1473,13 +1600,17 @@ object PathExecutor {
         mc.gameMode?.useItem(player, InteractionHand.MAIN_HAND)
         PathfindCapture.notifyBonzoShot("AUTO_EXECUTOR")
 
+        val off = getCurrentRouteOffset(player)
+        val offsetStr = if (off != null) "targetOffset=[dx=${"%+.2f".format(Locale.ROOT, off.dx)}, dy=${"%+.2f".format(Locale.ROOT, off.dy)}, dz=${"%+.2f".format(Locale.ROOT, off.dz)}, distH=${"%.2f".format(Locale.ROOT, off.distH)}m]" else ""
+        AsthoonLite.LOGGER.info("[ASL-ROUTE-OFFSET] BONZO LAUNCH FIRED! $offsetStr shotYaw=${params.shotYaw} shotPitch=${params.shotPitch}")
+
         // Immediately orient camera towards destination for the next tick
         player.yRot = params.destYaw
         player.yRotO = params.destYaw
 
         bonzoState = BonzoState.POST_FIRE_PROPEL
         bonzoTicksRemaining = 18
-        bonzoLaunchedAirborne = false
+        bonzoAirborneSinceKnockback = false
     }
 
     private fun handleActiveBonzoState(points: List<PathPoint>, isHighSpeed: Boolean) {
@@ -1494,12 +1625,11 @@ object PathExecutor {
                 mc.options.keySprint.setDown(true)
                 player.setSprinting(true)
 
-                val currentSpeedH = player.deltaMovement.horizontalDistance()
-                if (!player.onGround() || currentSpeedH > 0.65) {
-                    bonzoLaunchedAirborne = true
+                if (!player.onGround() || player.deltaMovement.y > 0.20) {
+                    bonzoAirborneSinceKnockback = true
                 }
 
-                if (destPoint != null && bonzoLaunchedAirborne && !player.onGround()) {
+                if (destPoint != null && bonzoAirborneSinceKnockback && !player.onGround()) {
                     val airGuidance = KinematicTrajectory.computeAirGuidance(
                         playerPos = Vec3(player.x, player.y, player.z),
                         playerVel = player.deltaMovement,
@@ -1534,13 +1664,14 @@ object PathExecutor {
 
                 bonzoTicksRemaining--
                 val destDistH = if (destPoint != null) hypot(destPoint.x - player.x, destPoint.z - player.z) else 999.0
-                val hasTouchedDown = bonzoLaunchedAirborne && player.onGround()
+                val hasTouchedDown = bonzoAirborneSinceKnockback && player.onGround()
                 val hasArrived = destDistH < 1.8
                 val isTimedOut = bonzoTicksRemaining <= 0
 
                 if (hasTouchedDown || hasArrived || isTimedOut) {
                     bonzoState = BonzoState.IDLE
-                    bonzoLaunchedAirborne = false
+                    bonzoAirborneSinceKnockback = false
+                    AsthoonLite.LOGGER.info("[ASL-ROUTE-OFFSET] Bonzo flight ended: hasTouchedDown=$hasTouchedDown hasArrived=$hasArrived isTimedOut=$isTimedOut destDistH=${"%.2f".format(Locale.ROOT, destDistH)}m")
                     mc.options.keyJump.setDown(false)
                     jumpTicksRemaining = 0
                     mc.options.keyLeft.setDown(false)

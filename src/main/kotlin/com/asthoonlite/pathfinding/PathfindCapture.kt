@@ -258,10 +258,19 @@ object PathfindCapture {
             .filter { it.id != player.id && it.position().distanceTo(bonzoShotEyePos) <= 6.0 }
             .joinToString("; ") { "${it.id}:${it.type.toShortString()}@[${formatNumber(it.x, 2)},${formatNumber(it.y, 2)},${formatNumber(it.z, 2)}]" }
 
-        val logMsg = "[ASL-CAPTURE] [BONZO_SHOT] src=$source, tick=$tickCount, t=${t}ms, pos=[${formatNumber(player.x, 4)},${formatNumber(player.y, 4)},${formatNumber(player.z, 4)}], eye=[${formatNumber(bonzoShotEyePos.x, 4)},${formatNumber(bonzoShotEyePos.y, 4)},${formatNumber(bonzoShotEyePos.z, 4)}], yaw=${formatNumber(bonzoShotYaw, 2)}, pitch=${formatNumber(bonzoShotPitch, 2)}, look=[${formatNumber(bonzoShotLookVec.x, 3)},${formatNumber(bonzoShotLookVec.y, 3)},${formatNumber(bonzoShotLookVec.z, 3)}], vel=[${formatNumber(vx, 4)},${formatNumber(vy, 4)},${formatNumber(vz, 4)}], bpsH=${formatNumber(bpsH, 2)}, ground=${player.onGround()}, speedAttr=${formatNumber(speedAttr, 4)}(${formatNumber(sbSpeed, 0)}), aimedBlock=[$rayBlock, face=$rayFace, dist=${formatNumber(rayDist, 2)}], $routeInfo, nearbyPre=[$nearbyPreStr]"
+        val offsetTelemetry = if (PathExecutor.isActive) PathExecutor.getCurrentRouteOffset(player) else null
+        val offsetLog = if (offsetTelemetry != null) {
+            ", targetOffset=[dx=${formatNumber(offsetTelemetry.dx, 3)},dy=${formatNumber(offsetTelemetry.dy, 3)},dz=${formatNumber(offsetTelemetry.dz, 3)},distH=${formatNumber(offsetTelemetry.distH, 2)}m,crossTrack=${formatNumber(offsetTelemetry.crossTrack, 2)}m]"
+        } else ""
+
+        val logMsg = "[ASL-CAPTURE] [BONZO_SHOT] src=$source, tick=$tickCount, t=${t}ms, pos=[${formatNumber(player.x, 4)},${formatNumber(player.y, 4)},${formatNumber(player.z, 4)}], eye=[${formatNumber(bonzoShotEyePos.x, 4)},${formatNumber(bonzoShotEyePos.y, 4)},${formatNumber(bonzoShotEyePos.z, 4)}], yaw=${formatNumber(bonzoShotYaw, 2)}, pitch=${formatNumber(bonzoShotPitch, 2)}, look=[${formatNumber(bonzoShotLookVec.x, 3)},${formatNumber(bonzoShotLookVec.y, 3)},${formatNumber(bonzoShotLookVec.z, 3)}], vel=[${formatNumber(vx, 4)},${formatNumber(vy, 4)},${formatNumber(vz, 4)}], bpsH=${formatNumber(bpsH, 2)}, ground=${player.onGround()}, speedAttr=${formatNumber(speedAttr, 4)}(${formatNumber(sbSpeed, 0)}), aimedBlock=[$rayBlock, face=$rayFace, dist=${formatNumber(rayDist, 2)}], $routeInfo$offsetLog, nearbyPre=[$nearbyPreStr]"
         AsthoonLite.LOGGER.info(logMsg)
 
-        val shotJson = """{"t":$t,"tick":$tickCount,"event":"BONZO_SHOT","source":"$source","x":${formatNumber(player.x, 4)},"y":${formatNumber(player.y, 4)},"z":${formatNumber(player.z, 4)},"yaw":${formatNumber(bonzoShotYaw, 2)},"pitch":${formatNumber(bonzoShotPitch, 2)},"vx":${formatNumber(vx, 4)},"vy":${formatNumber(vy, 4)},"vz":${formatNumber(vz, 4)},"bpsH":${formatNumber(bpsH, 2)},"ground":${player.onGround()},"speedAttr":${formatNumber(speedAttr, 4)},"aimedBlock":"$rayBlock","aimedFace":"$rayFace","aimedDist":${formatNumber(rayDist, 3)},"routeInfo":"$routeInfo"}"""
+        val offsetJson = if (offsetTelemetry != null) {
+            ""","targetOffset":{"dx":${formatNumber(offsetTelemetry.dx, 3)},"dy":${formatNumber(offsetTelemetry.dy, 3)},"dz":${formatNumber(offsetTelemetry.dz, 3)},"distH":${formatNumber(offsetTelemetry.distH, 3)},"crossTrack":${formatNumber(offsetTelemetry.crossTrack, 3)}}"""
+        } else ""
+
+        val shotJson = """{"t":$t,"tick":$tickCount,"event":"BONZO_SHOT","source":"$source","x":${formatNumber(player.x, 4)},"y":${formatNumber(player.y, 4)},"z":${formatNumber(player.z, 4)},"yaw":${formatNumber(bonzoShotYaw, 2)},"pitch":${formatNumber(bonzoShotPitch, 2)},"vx":${formatNumber(vx, 4)},"vy":${formatNumber(vy, 4)},"vz":${formatNumber(vz, 4)},"bpsH":${formatNumber(bpsH, 2)},"ground":${player.onGround()},"speedAttr":${formatNumber(speedAttr, 4)},"aimedBlock":"$rayBlock","aimedFace":"$rayFace","aimedDist":${formatNumber(rayDist, 3)},"routeInfo":"$routeInfo"$offsetJson}"""
         logJson(shotJson)
     }
 
@@ -488,6 +497,10 @@ object PathfindCapture {
             val execStatus = PathExecutor.getTelemetryStatus()
             if (execStatus != null) {
                 append(""", "executor":"$execStatus"""")
+            }
+            val routeOffset = if (PathExecutor.isActive) PathExecutor.getCurrentRouteOffset(player) else null
+            if (routeOffset != null) {
+                append(""", "routeOffset":{"route":"${routeOffset.routeName}","node":${routeOffset.nodeIndex},"action":"${routeOffset.action}","target":[${formatNumber(routeOffset.targetX, 2)},${formatNumber(routeOffset.targetY, 2)},${formatNumber(routeOffset.targetZ, 2)}],"dx":${formatNumber(routeOffset.dx, 3)},"dy":${formatNumber(routeOffset.dy, 3)},"dz":${formatNumber(routeOffset.dz, 3)},"distH":${formatNumber(routeOffset.distH, 3)},"crossTrack":${formatNumber(routeOffset.crossTrack, 3)},"alongTrack":${formatNumber(routeOffset.alongTrack, 3)},"yawErr":${formatNumber(routeOffset.yawErr, 2)},"pitchErr":${formatNumber(routeOffset.pitchErr, 2)}}""")
             }
             if (detectedAction != null) append(""","action":"$detectedAction"""")
             append("}")

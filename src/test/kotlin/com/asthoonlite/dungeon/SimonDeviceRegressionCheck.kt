@@ -879,6 +879,26 @@ internal fun simonDeviceRegressionChecks() {
         isExitingBreakDoorway = false
     )
     check(smallGapJump) { "Must auto-gap jump across small ledge gap even at distH <= 1.2" }
+
+    // 36. Route offset calculation telemetry
+    val telemetry = PathExecutor.computeRouteOffset(
+        routeName = "niggaS4",
+        nodeIndex = 0,
+        action = "BONZO_STAFF",
+        target = Vec3(54.5, 115.0, 47.5),
+        targetYaw = 184.5f,
+        targetPitch = 28.65f,
+        prevTarget = Vec3(54.5, 115.0, 50.5),
+        playerPos = Vec3(54.8, 115.0, 48.0),
+        playerYaw = 185.0f,
+        playerPitch = 30.0f,
+        bpsH = 8.5,
+        onGround = true
+    )
+    check(Math.abs(telemetry.dx - 0.3) < 0.01) { "dx should be +0.3" }
+    check(Math.abs(telemetry.dz - 0.5) < 0.01) { "dz should be +0.5" }
+    check(Math.abs(telemetry.yawErr - 0.5f) < 0.1f) { "yawErr should be +0.5°" }
+    check(Math.abs(telemetry.crossTrack - 0.3) < 0.01) { "crossTrack lateral error should be +0.3" }
 }
 
 
