@@ -86,14 +86,15 @@ object KinematicTrajectory {
         yaw: Float = 0f,
         maxTicks: Int = 30
     ): Triple<Vec3, Vec3, Int> {
+        val effectiveTargetY = if (targetY > startPos.y) startPos.y else targetY
         var cur = State(startPos.x, startPos.y, startPos.z, startVel.x, startVel.y, startVel.z, onGround = false)
         for (tick in 1..maxTicks) {
             val nxt = stepAirborne(cur, forwardInput, strafeInput, yaw)
-            if (nxt.y <= targetY && cur.y > targetY) {
-                val t = if (abs(nxt.y - cur.y) > 0.001) (cur.y - targetY) / (cur.y - nxt.y) else 0.0
+            if (nxt.y <= effectiveTargetY && cur.y > effectiveTargetY) {
+                val t = if (abs(nxt.y - cur.y) > 0.001) (cur.y - effectiveTargetY) / (cur.y - nxt.y) else 0.0
                 val landX = cur.x + (nxt.x - cur.x) * t
                 val landZ = cur.z + (nxt.z - cur.z) * t
-                return Triple(Vec3(landX, targetY, landZ), nxt.vel, tick)
+                return Triple(Vec3(landX, effectiveTargetY, landZ), nxt.vel, tick)
             }
             cur = nxt
         }
@@ -135,7 +136,7 @@ object KinematicTrajectory {
         }
 
         val turnAngle = Mth.wrapDegrees(destYaw - currentHeadingYaw)
-        val isRedirection = abs(turnAngle) >= 30.0f
+        val isRedirection = abs(turnAngle) >= 45.0f
 
         // Desired horizontal launch velocity vector
         val targetLaunchSpeed = (targetLaunchBps / 20.0).coerceIn(0.9, 1.4)
@@ -197,6 +198,8 @@ object KinematicTrajectory {
         onGround: Boolean
     ): Boolean {
         if (!onGround) return false
+        // Never jump when dropping down to a lower destination
+        if (targetPos.y < playerPos.y - 0.5) return false
         val currentSpeedH = playerVel.horizontalDistance()
         if (currentSpeedH < 0.15) return false
 
