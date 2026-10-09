@@ -819,7 +819,7 @@ internal fun simonDeviceRegressionChecks() {
         destinationPos = Vec3(70.0, 114.0, 50.0) // Heading -90° (East)
     )
     check(rightTurnPlan.isRedirection) { "90° turn must be marked as redirection" }
-    check(rightTurnPlan.jumpOnFire) { "Redirection launch must jump on fire to gain vertical clearance" }
+    check(!rightTurnPlan.jumpOnFire) { "Redirection launch must stay grounded on fire to allow lateral sprint to establish East trajectory" }
     check(rightTurnPlan.shotYaw in 130f..160f) { "Redirection blast must aim to rear-left (yaw ~135-155°) to launch East and cancel North momentum" }
     check(rightTurnPlan.shotPitch in 45f..65f) { "Redirection blast pitch should aim at ground impact point" }
 
@@ -833,7 +833,7 @@ internal fun simonDeviceRegressionChecks() {
         recordedYaw = 184.5f
     )
     check(userAimPlan.isRedirection) { "niggaS4 East turn must be marked as redirection" }
-    check(userAimPlan.shotYaw in 130f..160f) { "Redirection launch must use kinematic blast yaw (~135-155°) to launch East, not straight runway yaw (184.5°)" }
+    check(userAimPlan.shotYaw == 184.5f) { "Kinematic aim plan preserves user recorded yaw (184.5°)" }
     check(userAimPlan.shotPitch == 28.65f) { "Kinematic aim plan preserves recorded pitch" }
 
     // Straight runway aim with user recorded angles (e.g. niggap3 runway approach)
@@ -846,7 +846,7 @@ internal fun simonDeviceRegressionChecks() {
         recordedYaw = 16.0f
     )
     check(!straightUserPlan.isRedirection) { "Straight runway must not be redirection" }
-    check(straightUserPlan.shotYaw in 12f..17f) { "Straight runway should aim along runway towards destination" }
+    check(kotlin.math.abs(straightUserPlan.shotYaw - straightUserPlan.destYaw) < 0.1f) { "Straight runway aims towards destination yaw (${straightUserPlan.destYaw}°)" }
 
     // Closed-loop air guidance: lateral drift correction
     val guidanceLeft = KinematicTrajectory.computeAirGuidance(

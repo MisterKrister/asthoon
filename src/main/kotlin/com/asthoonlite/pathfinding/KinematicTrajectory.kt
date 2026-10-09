@@ -177,11 +177,13 @@ object KinematicTrajectory {
         }
 
         val finalYaw = if (isRedirection) {
-            computedYaw
-        } else if (recordedYaw != 0f && abs(Mth.wrapDegrees(recordedYaw - destYaw)) <= 35.0f) {
-            destYaw * 0.7f + recordedYaw * 0.3f
+            if (recordedYaw != 0f) recordedYaw else computedYaw
         } else {
-            destYaw
+            if (recordedYaw != 0f && abs(Mth.wrapDegrees(recordedYaw - destYaw)) > 25.0f) {
+                recordedYaw
+            } else {
+                destYaw
+            }
         }
 
         return BonzoAimPlan(
@@ -191,7 +193,7 @@ object KinematicTrajectory {
             destYaw = destYaw,
             aimedImpactPos = Vec3(blastImpactPos.x, groundImpactY, blastImpactPos.z),
             expectedLaunchSpeedBps = targetLaunchSpeed * 20.0,
-            jumpOnFire = true
+            jumpOnFire = !isRedirection
         )
     }
 
