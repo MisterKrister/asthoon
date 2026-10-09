@@ -819,7 +819,7 @@ internal fun simonDeviceRegressionChecks() {
         destinationPos = Vec3(70.0, 114.0, 50.0) // Heading -90° (East)
     )
     check(rightTurnPlan.isRedirection) { "90° turn must be marked as redirection" }
-    check(!rightTurnPlan.jumpOnFire) { "Redirection launch must not jump on fire" }
+    check(rightTurnPlan.jumpOnFire) { "Redirection launch must jump on fire to gain vertical clearance" }
     check(rightTurnPlan.shotYaw in 130f..160f) { "Redirection blast must aim to rear-left (yaw ~135-155°) to launch East and cancel North momentum" }
     check(rightTurnPlan.shotPitch in 45f..65f) { "Redirection blast pitch should aim at ground impact point" }
 

@@ -182,7 +182,7 @@ object KinematicTrajectory {
             destYaw = destYaw,
             aimedImpactPos = Vec3(blastImpactPos.x, groundImpactY, blastImpactPos.z),
             expectedLaunchSpeedBps = targetLaunchSpeed * 20.0,
-            jumpOnFire = !isRedirection
+            jumpOnFire = true
         )
     }
 

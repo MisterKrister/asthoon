@@ -281,20 +281,6 @@ object PathExecutor {
             return
         }
 
-        // Fast-skip any BREAK nodes whose target block is already air / broken
-        while (currentNodeIndex < points.size && points[currentNodeIndex].nodeType() == RouteNodeType.BREAK) {
-            val bp = BlockPos.containing(points[currentNodeIndex].x, points[currentNodeIndex].y, points[currentNodeIndex].z)
-            if (level.getBlockState(bp).isAir) {
-                currentNodeIndex++
-                resetSpecialNodeState()
-            } else {
-                break
-            }
-        }
-        if (currentNodeIndex >= points.size) {
-            finishRoute(preset)
-            return
-        }
 
         if (lastHandledNodeIndex != currentNodeIndex) {
             resetSpecialNodeState()
@@ -342,7 +328,7 @@ object PathExecutor {
         if (nodeType == RouteNodeType.BONZO_STAFF) {
             val isPrecedingJump = points.getOrNull(currentNodeIndex - 1)?.nodeType() == RouteNodeType.JUMP
             val isTargetMidAir = level.getBlockState(BlockPos.containing(target.x, target.y - 0.5, target.z)).isAir
-            val isAirborneBonzo = !player.onGround() || isPrecedingJump || isTargetMidAir
+            val isAirborneBonzo = isPrecedingJump || isTargetMidAir
 
             // Auto-select Bonzo's Staff
             selectBonzoStaff()
@@ -387,7 +373,7 @@ object PathExecutor {
             val toTargetHz = target.z - player.z
             val isMovingTowardsTarget = distH <= 0.8 || (player.deltaMovement.x * toTargetHx + player.deltaMovement.z * toTargetHz) > 0.0
 
-            val launchDistanceThreshold = if (isAirborneBonzo) 2.5 else if (isHighSpeed) 2.4 else 1.8
+            val launchDistanceThreshold = if (isAirborneBonzo) 2.0 else 1.25
             val isArrivedOnPlatform = distH <= launchDistanceThreshold
             val isFollowupLaunch = points.take(currentNodeIndex).any { it.nodeType() == RouteNodeType.BONZO_STAFF }
             val downwardFollowup = nextTarget != null && (nextTarget.y < target.y || isFollowupLaunch)
@@ -755,7 +741,9 @@ object PathExecutor {
             isNextBreakSolid && distH < 3.5 -> BlockPos.containing(nextTarget.x, nextTarget.y, nextTarget.z)
             else -> null
         }
-        val isMiningObstacle = nodeType == RouteNodeType.BREAK || targetBreakPos != null
+        val isNearbyBreak = points.drop(currentNodeIndex).take(3).any { it.nodeType() == RouteNodeType.BREAK } ||
+            points.take(currentNodeIndex).takeLast(2).any { it.nodeType() == RouteNodeType.BREAK }
+        val isMiningObstacle = nodeType == RouteNodeType.BREAK || targetBreakPos != null || isNearbyBreak
         val prevNode = points.getOrNull(currentNodeIndex - 1)
         val isExitingBreakDoorway = prevNode?.nodeType() == RouteNodeType.BREAK &&
             hypot(player.x - prevNode.x, player.z - prevNode.z) < 2.0
@@ -812,7 +800,7 @@ object PathExecutor {
             selectDungeonBreaker()
             val center = Vec3.atCenterOf(targetBreakPos)
             val eye = player.eyePosition
-            if (eye.distanceTo(center) <= 5.2) {
+            if (eye.distanceTo(center) <= 5.5) {
                 val hitResult = mc.hitResult
                 val dir = if (hitResult is BlockHitResult && hitResult.blockPos == targetBreakPos) {
                     hitResult.direction
@@ -822,7 +810,11 @@ object PathExecutor {
                 player.swing(InteractionHand.MAIN_HAND)
                 mc.gameMode?.startDestroyBlock(targetBreakPos, dir)
                 mc.gameMode?.continueDestroyBlock(targetBreakPos, dir)
-                mc.options.keyAttack.setDown(true)
+                if (hitResult is BlockHitResult && hitResult.blockPos == targetBreakPos) {
+                    mc.options.keyAttack.setDown(true)
+                } else {
+                    mc.options.keyAttack.setDown(false)
+                }
             }
         } else if (nodeType != RouteNodeType.BREAK && nextTarget?.nodeType() != RouteNodeType.BREAK) {
             mc.options.keyAttack.setDown(false)
@@ -841,8 +833,9 @@ object PathExecutor {
         val requiresTouchdown = isPrecedingAirborne || isNextStationary
 
         val canAdvanceBreak = isBreakNode && !isBreakBlockSolid
+        val arrivalDist = if (canAdvanceBreak) (if (isHighSpeed) 2.2 else 1.6) else arrivalThreshold
         if ((advancesOnArrival(nodeType) || canAdvanceBreak) &&
-            distH < arrivalThreshold && canArriveElevation &&
+            distH < arrivalDist && canArriveElevation &&
             (!requiresTouchdown || player.onGround()) &&
             (!isStationaryDest || isSettled)) {
             if (isBreakNode && nextTarget?.nodeType() != RouteNodeType.BREAK) {
@@ -851,6 +844,16 @@ object PathExecutor {
             }
             currentNodeIndex++
             resetSpecialNodeState()
+            while (currentNodeIndex < points.size && points[currentNodeIndex].nodeType() == RouteNodeType.BREAK) {
+                val nextPt = points[currentNodeIndex]
+                val nextBp = BlockPos.containing(nextPt.x, nextPt.y, nextPt.z)
+                if (level.getBlockState(nextBp).isAir && hypot(nextPt.x - player.x, nextPt.z - player.z) < 1.5) {
+                    currentNodeIndex++
+                    resetSpecialNodeState()
+                } else {
+                    break
+                }
+            }
             if (currentNodeIndex >= points.size) {
                 finishRoute(preset)
             }
@@ -1367,14 +1370,16 @@ object PathExecutor {
 
         // Movement keys:
         if (params.isRedirection) {
-            // Redirection launch: momentary neutral input on fire tick so forward sprint does not fight lateral knockback
+            // Redirection launch: momentary neutral horizontal input on fire tick so forward sprint does not fight lateral knockback, but jump on fire for vertical clearance
             mc.options.keyUp.setDown(false)
             mc.options.keyDown.setDown(false)
             mc.options.keyLeft.setDown(false)
             mc.options.keyRight.setDown(false)
-            mc.options.keySprint.setDown(false)
-            jumpTicksRemaining = 0
-            mc.options.keyJump.setDown(false)
+            mc.options.keySprint.setDown(true)
+            player.setSprinting(true)
+            val shouldJump = params.jumpOnFire && player.onGround()
+            jumpTicksRemaining = if (shouldJump) 3 else 0
+            mc.options.keyJump.setDown(shouldJump)
         } else {
             // Straight launch: hold forward W and sprint, jump on fire
             mc.options.keyUp.setDown(true)
