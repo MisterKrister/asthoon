@@ -103,7 +103,7 @@ object TerminalCursor {
      */
     private var drawn = false
 
-    fun ownsCursor(): Boolean = drawn
+    fun ownsCursor(): Boolean = if (Config.autoTerminalCursorStyle == 1) motion.moving(System.currentTimeMillis()) else drawn
 
     fun reset() {
         motion.reset(CursorMotion.Point(x, y))
@@ -118,7 +118,12 @@ object TerminalCursor {
             val screen = Minecraft.getInstance().screen as? AbstractContainerScreen<*>
             screen != null && TerminalSolver.isTerminalTitle(screen.title.string)
         } else false
-        syncOsCursor(holdNormalCursor(Config.autoTerminalCursorStyle, terminalOpen, Config.autoTerminalCursorGlide))
+        val hold = holdNormalCursor(Config.autoTerminalCursorStyle, terminalOpen, Config.autoTerminalCursorGlide)
+        if (Config.autoTerminalCursorStyle == 1) {
+            syncOsCursor(false)
+        } else {
+            syncOsCursor(hold)
+        }
         tipKnown = false
         trail.clear()
     }
@@ -218,7 +223,7 @@ object TerminalCursor {
             Config.autoTerminalCursorGlide
         )
 
-        if (!wanted && !osCursorHidden) return
+        if (!wanted && !osCursorHidden && Config.autoTerminalCursorStyle != 1) return
         val mc = runCatching { Minecraft.getInstance() }.getOrNull() ?: return
         val win = mc.window
         val handle = win.handle()
@@ -233,7 +238,7 @@ object TerminalCursor {
             return
         }
 
-        if (osCursorHidden) {
+        if (osCursorHidden || Config.autoTerminalCursorStyle == 1) {
             osCursorHidden = false
             if (tipKnown && Config.autoTerminalCursorStyle == 0) {
                 GLFW.glfwSetCursorPos(
@@ -516,7 +521,17 @@ object TerminalCursor {
     fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long, isFirstClick: Boolean = false) {
         if (!positioned) seedFromMouse(targetX, targetY)
         val now = System.currentTimeMillis()
-        val from = motion.position(now)
+        val from = if (Config.autoTerminalCursorStyle == 1 && !motion.moving(now)) {
+            val mc = Minecraft.getInstance()
+            val w = mc.window
+            CursorMotion.Point(
+                mc.mouseHandler.getScaledXPos(w).toFloat().coerceIn(0f, w.guiScaledWidth.toFloat()),
+                mc.mouseHandler.getScaledYPos(w).toFloat().coerceIn(0f, w.guiScaledHeight.toFloat())
+            )
+        } else {
+            motion.position(now)
+        }
+        motion.reset(from)
         val dist = hypot(targetX - from.x, targetY - from.y)
 
         val mode = Config.autoTerminalMode
@@ -691,14 +706,23 @@ object TerminalCursor {
         if (!positioned) seedFromMouse(screen.width / 2f, screen.height / 2f)
 
         if (Config.autoTerminalCursorStyle == 1) {
-            val pos = positionNow(now) ?: (mc.mouseHandler.getScaledXPos(mc.window).toFloat() to
-                mc.mouseHandler.getScaledYPos(mc.window).toFloat())
-            syncOsCursor(true)
-            drawn = true
-            drawArrowPointer(graphics, pos.first, pos.second, 1f)
-            x = pos.first
-            y = pos.second
-            tipKnown = true
+            syncOsCursor(false)
+            drawn = false
+            val win = mc.window
+            val handle = win.handle()
+            if (motion.moving(now)) {
+                val pos = motion.position(now)
+                val rawX = rawFromScaled(pos.x, win.screenWidth, win.guiScaledWidth)
+                val rawY = rawFromScaled(pos.y, win.screenHeight, win.guiScaledHeight)
+                GLFW.glfwSetCursorPos(handle, rawX, rawY)
+                x = pos.x
+                y = pos.y
+                tipKnown = true
+            } else {
+                x = mc.mouseHandler.getScaledXPos(win).toFloat()
+                y = mc.mouseHandler.getScaledYPos(win).toFloat()
+                tipKnown = true
+            }
             return
         }
 
@@ -853,6 +877,7 @@ object TerminalCursor {
         alpha: Float,
         now: Long
     ) {
+        graphics.nextStratum()
         if (Config.autoTerminalCursorStyle == 0 && !spriteBroken) {
             try {
                 drawTrail(graphics, now)
@@ -876,6 +901,7 @@ object TerminalCursor {
 
     /** The standard default arrow pointer: pixel-exact Windows cursor with crisp outline, fill and drop shadow. */
     private fun drawArrowPointer(graphics: GuiGraphicsExtractor, tipX: Float, tipY: Float, alpha: Float) {
+        graphics.nextStratum()
         val fillA = (255f * alpha).toInt().coerceIn(0, 255)
         val outlineA = (240f * alpha).toInt().coerceIn(0, 255)
         val shadowA = (80f * alpha).toInt().coerceIn(0, 255)

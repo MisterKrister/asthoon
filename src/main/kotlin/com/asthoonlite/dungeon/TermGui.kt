@@ -186,7 +186,9 @@ object TermGui {
         val next = if (Config.terminalSolverEnabled && (kind == Kind.ORDER || kind == Kind.MELODY))
             TerminalSolver.nextClickSlot(title, all, AutoTerminal.unsettledSlots(), target,
                 AutoTerminal.lastClickedSlot(), Config.autoTerminalClickOrder) else null
-        val hovered = if (TerminalCursor.ownsCursor()) null else grid.hitTest(mouseX.toDouble(), mouseY.toDouble())
+        val curX = if (TerminalCursor.ownsCursor()) TerminalCursor.currentX().toDouble() else mouseX.toDouble()
+        val curY = if (TerminalCursor.ownsCursor()) TerminalCursor.currentY().toDouble() else mouseY.toDouble()
+        val hovered = grid.hitTest(curX, curY)
         val font = Minecraft.getInstance().font
         graphics.centeredText(font, title, screen.width / 2, (grid.originY - 18).toInt(), 0xFFFFFFFF.toInt())
         val originX = grid.originX
@@ -243,7 +245,7 @@ object TermGui {
             }
             if (simulation && tile.slot == hovered && !stack.isEmpty &&
                 (kind == Kind.SELECT || kind == Kind.STARTS || !Config.terminalSolverEnabled)) {
-                graphics.setTooltipForNextFrame(font, stack.hoverName, mouseX, mouseY)
+                graphics.setTooltipForNextFrame(font, stack.hoverName, curX.toInt(), curY.toInt())
             }
 
             val label = TerminalSolver.labelFor(tile.slot, stack, kind)

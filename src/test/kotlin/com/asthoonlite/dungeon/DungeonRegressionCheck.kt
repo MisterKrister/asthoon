@@ -1,5 +1,6 @@
 package com.asthoonlite.dungeon
 
+import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.api.FloorType
 import com.asthoonlite.dungeon.map.DungeonMapScanner
 import com.asthoonlite.dungeon.TerminalSolver.Kind
@@ -1119,6 +1120,13 @@ fun main() {
         // A degenerate scale must degrade rather than divide by zero part-way
         // through a handback.
         check(TerminalCursor.rawFromScaled(100f, 1920, 0) == 0.0) { "a zero gui scale must not divide by zero" }
+
+        // Default (User Cursor) ownership: when style is 1, ownsCursor is only true during
+        // active glide flights, ensuring the user cursor is not suppressed while idle in TermGui.
+        val origStyle = Config.autoTerminalCursorStyle
+        Config.autoTerminalCursorStyle = 1
+        check(!TerminalCursor.ownsCursor()) { "idle Default user cursor must not claim ownership" }
+        Config.autoTerminalCursorStyle = origStyle
     }
 
     // ── Pathfinding Presets, Categories and Subcategories ─────────────────
