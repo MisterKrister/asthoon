@@ -1,6 +1,7 @@
 package com.asthoonlite.mixin;
 
 import com.asthoonlite.dungeon.TerminalCapture;
+import com.asthoonlite.pathfinding.GoldorRouteShortcut;
 import net.minecraft.client.KeyboardHandler;
 import net.minecraft.client.input.KeyEvent;
 import org.spongepowered.asm.mixin.Mixin;
@@ -13,6 +14,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class MixinTerminalCaptureKeyboardHandler {
     @Inject(method = "keyPress(JILnet/minecraft/client/input/KeyEvent;)V", at = @At("HEAD"))
     private void asthoonlite$captureKey(long window, int action, KeyEvent key, CallbackInfo ci) {
+        GoldorRouteShortcut.onKeyboardInput(window, key.key(), action);
         TerminalCapture.rawKey(window, key.key(), key.scancode(), key.modifiers(), action, System.nanoTime());
     }
 }

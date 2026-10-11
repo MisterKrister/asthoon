@@ -1,7 +1,6 @@
 package com.asthoonlite.pathfinding
 
 import com.asthoonlite.config.Config
-import com.mojang.blaze3d.platform.InputConstants
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.minecraft.client.Minecraft
@@ -11,7 +10,7 @@ import org.lwjgl.glfw.GLFW
 
 /** Teleport to Goldor, then replay the last route after the server moves the player. */
 object GoldorRouteShortcut {
-    private var previousKeyDown = false
+    private val pressLatch = RestartPressLatch()
     private var pendingPresetId: String? = null
     private var teleportConfirmed = false
     private var settledTicks = 0
@@ -24,7 +23,7 @@ object GoldorRouteShortcut {
     }
 
     private fun reset() {
-        previousKeyDown = false
+        pressLatch.reset()
         cancelPending()
     }
 
@@ -40,16 +39,27 @@ object GoldorRouteShortcut {
         if (pendingPresetId != null) teleportConfirmed = true
     }
 
+    /** Retain a short press/release until the next client tick consumes it. */
+    @JvmStatic
+    fun onKeyboardInput(window: Long, key: Int, action: Int) = recordInput(window, key, false, action)
+
+    @JvmStatic
+    fun onMouseInput(window: Long, button: Int, action: Int) = recordInput(window, button, true, action)
+
+    private fun recordInput(window: Long, input: Int, mouse: Boolean, action: Int) {
+        val mc = Minecraft.getInstance()
+        if (window != mc.window.handle()) return
+        val player = mc.player
+        val allowed = player != null && mc.level != null && !player.isDeadOrDying &&
+            mc.screen == null && mc.isWindowActive && mc.window.isFocused && !mc.window.isIconified
+        pressLatch.input(Config.goldorRouteKey, input, mouse, action, allowed)
+    }
+
     private fun tick() {
         val mc = Minecraft.getInstance()
-        val key = Config.goldorRouteKey
-        val down = when {
-            key < 0 -> false
-            key in 0..7 -> GLFW.glfwGetMouseButton(mc.window.handle(), key) == GLFW.GLFW_PRESS
-            else -> InputConstants.isKeyDown(mc.window, key)
-        }
-        val pressed = down && !previousKeyDown
-        previousKeyDown = down
+        val pressed = pressLatch.consume(Config.goldorRouteKey,
+            mc.player != null && mc.level != null && mc.screen == null &&
+                mc.isWindowActive && mc.window.isFocused && !mc.window.isIconified)
         val player = mc.player ?: run { cancelPending(); return }
         if (mc.level == null || player.isDeadOrDying || mc.screen is PauseScreen) {
             cancelPending()
@@ -94,4 +104,44 @@ object GoldorRouteShortcut {
     internal fun settledTicksAfterTeleport(confirmed: Boolean, onGround: Boolean, horizontalSpeed: Double,
                                          screenOpen: Boolean, previousTicks: Int): Int =
         if (confirmed && onGround && horizontalSpeed <= 0.06 && !screenOpen) (previousTicks + 1).coerceAtMost(2) else 0
+}
+
+/** Input callbacks and ticks share the client thread; only the configured input is retained. */
+internal class RestartPressLatch {
+    private var binding = -1
+    private var down = false
+    private var requested = false
+
+    private fun updateBinding(current: Int) {
+        if (binding == current) return
+        reset()
+        binding = current
+    }
+
+    fun input(currentBinding: Int, input: Int, mouse: Boolean, action: Int, allowed: Boolean) {
+        updateBinding(currentBinding)
+        if (binding < 0 || input != binding || mouse != (binding in 0..7)) return
+        when (action) {
+            GLFW.GLFW_PRESS -> {
+                if (!down && allowed) requested = true
+                down = true
+            }
+            GLFW.GLFW_RELEASE -> down = false
+        }
+    }
+
+    fun consume(currentBinding: Int, allowed: Boolean): Boolean {
+        updateBinding(currentBinding)
+        val pressed = requested && allowed
+        requested = false
+        // Focus loss may omit the release callback; accept the next fresh press.
+        if (!allowed) down = false
+        return pressed
+    }
+
+    fun reset() {
+        binding = -1
+        down = false
+        requested = false
+    }
 }

@@ -36,8 +36,6 @@ object AutoTerminal {
     private val rubixPredicted = HashMap<Int, Int>()
     private var lastMelodyRow = -1
     private var lastMelodyRowClickAt = 0L
-    private var lastMelodyClickedSlot: Int? = null
-    private var lastMelodyClickTime = 0L
     /** Clicks this terminal has taken since it opened, and how many it wants.
      *  Latched once on the first tick so a pane the server has already
      *  settled cannot quietly lower the denominator halfway through. */
@@ -199,74 +197,15 @@ object AutoTerminal {
         if (kind == Kind.MELODY) {
             if (!Config.autoTerminalMelodySkip) melodySkipQueue.clear()
 
-            // When live terminal sensing is available, use exact row & column packet tracking (Noamm style)
-            if (TerminalSensing.inTerminal && TerminalSensing.containerId == screen.menu.containerId) {
-                val buttonRow = TerminalSensing.melodyButtonRow
-                val current = TerminalSensing.melodyCurrentCol
-                val correct = TerminalSensing.melodyCorrectCol
-
-                if (buttonRow != null && buttonRow in 0..2) {
-                    val targetButtonSlot = buttonRow * 9 + 16 // row 0 -> 16, row 1 -> 25, row 2 -> 34
-                    aim(screen, kind, targetButtonSlot, clickNotBeforeAt())
-
-                    if (current != null && correct != null && current == correct) {
-                        val melodyDelayOk = if (firstClickPending) canClick(now)
-                            else (now - lastMelodyClickTime >= 250L || lastMelodyRow != buttonRow)
-                        if (melodyDelayOk && lastMelodyClickedSlot != targetButtonSlot) {
-                            if (!pointerBlocksClick(glide, TerminalCursor.isMoving(now))) {
-                                if (fireClick(screen, player, screen.menu.containerId, kind, Click(targetButtonSlot), nextClickDelayMs())) {
-                                    lastMelodyClickedSlot = targetButtonSlot
-                                    lastMelodyRow = buttonRow
-                                    lastMelodyClickTime = now
-                                    recordMelodyClick(items, targetButtonSlot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                                    if (Config.autoTerminalMelodySkip && buttonRow < 2) {
-                                        if (!(buttonRow == 0 && Config.autoTerminalDontSkipFirst)) {
-                                            if (buttonRow < 2) melodySkipQueue.add(targetButtonSlot + 9)
-                                            if (buttonRow < 1) melodySkipQueue.add(targetButtonSlot + 18)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                return
-            }
-
-            // Fallback for offline tests / simulations where no network packets arrive
-            val click = melodyClick(items, now)
-            (click?.slot ?: melodyAimSlot(items, now))?.let { aim(screen, kind, it, clickNotBeforeAt()) }
-            if (!canClick(now)) return
-            if (click != null) {
-                if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
-                // Same clock as every other terminal. This used to be a flat
-                // 40 ms, which is 25 clicks a second — the row debounce only
-                // guards one row, so two rows ready at once fired back to
-                // back and the whole thing read as a machine gun.
-                if (fireClick(screen, player, screen.menu.containerId, kind, click, nextClickDelayMs())) {
-                    recordMelodyClick(items, click.slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, click.slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
-                }
-                return
-            }
-            // A real aligned note takes priority. Revalidate queued buttons against the live rows.
-            val remaining = TerminalSolver.melodyRows(items).filter { !it.completed }.map { it.buttonSlot }.toSet()
-            while (melodySkipQueue.isNotEmpty()) {
-                val slot = melodySkipQueue.removeFirst()
-                if (slot !in remaining || slot / 9 <= lastMelodyRow) continue
-                aim(screen, kind, slot, clickNotBeforeAt())
-                // The queue entry is dropped when the pointer is still on its
-                // way — put it back, or the row it was for would be skipped
-                // without ever being clicked.
-                if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) {
-                    melodySkipQueue.addFirst(slot)
-                    break
-                }
-                if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), nextClickDelayMs())) {
-                    recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
-                    TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
-                }
-                break
+            // Live packet handlers update this same menu before sensing runs.
+            // Both routes share row validation, the click clock and premove.
+            val decision = melodyDecision(items, now)
+            decision.aimSlot?.let { aim(screen, kind, it, clickNotBeforeAt()) }
+            val slot = decision.clickSlot ?: return
+            if (pointerBlocksClick(glide, TerminalCursor.isMoving(now))) return
+            if (fireClick(screen, player, screen.menu.containerId, kind, Click(slot), nextClickDelayMs())) {
+                recordMelodyClick(items, slot, now, Config.autoTerminalMelodySkip, Config.autoTerminalDontSkipFirst)
+                TerminalSolver.melodyNextButton(items, slot)?.let { aim(screen, kind, it, clickNotBeforeAt()) }
             }
             return
         }
@@ -545,8 +484,32 @@ object AutoTerminal {
         return Click(slot)
     }
 
+    internal data class MelodyDecision(val aimSlot: Int?, val clickSlot: Int?)
+
+    /** One decision path for packet-updated live menus and local practice. */
+    internal fun melodyDecision(items: List<ItemStack>, now: Long): MelodyDecision {
+        val aligned = melodyClick(items, now)?.slot
+        val due = canClick(now)
+        val queued = if (aligned == null && due) nextMelodySkipSlot(items) else null
+        val target = aligned ?: queued
+        return MelodyDecision(target ?: melodyAimSlot(items, now), target?.takeIf { due })
+    }
+
+    /** Keep a valid queued input until a sent click commits it in recordMelodyClick. */
+    private fun nextMelodySkipSlot(items: List<ItemStack>): Int? {
+        val remaining = TerminalSolver.melodyRows(items).filter { !it.completed }.map { it.buttonSlot }.toSet()
+        while (melodySkipQueue.isNotEmpty()) {
+            val slot = melodySkipQueue.first()
+            if (slot in remaining && slot / 9 > lastMelodyRow) return slot
+            melodySkipQueue.removeFirst()
+        }
+        return null
+    }
+
+    // An earlier row can still be visible after a queued later-row input.
+    // Give that acknowledgement the same grace before returning to it.
     internal fun melodyRowReady(slot: Int, now: Long): Boolean =
-        slot / 9 != lastMelodyRow || now - lastMelodyRowClickAt >= MELODY_RETRY_TOTAL_MS
+        slot / 9 > lastMelodyRow || now - lastMelodyRowClickAt >= MELODY_RETRY_TOTAL_MS
 
     /**
      * Where the pointer sits while Melody runs — and, crucially, the same
@@ -568,7 +531,9 @@ object AutoTerminal {
         val sinceClick = now - lastMelodyRowClickAt
         if (lastMelodyRow >= 0 && sinceClick in 0 until MELODY_RETRY_TOTAL_MS) {
             // Down once, onto the row below — or stay put when there is none.
-            return TerminalSolver.melodyNextButton(items, lastMelodyRow * 9 + 7) ?: pending
+            val lastButton = lastMelodyRow * 9 + 7
+            return TerminalSolver.melodyNextButton(items, lastButton)
+                ?: pending?.let { if (it / 9 < lastMelodyRow) lastButton else it }
         }
         return pending
     }
@@ -777,10 +742,6 @@ object AutoTerminal {
         reset()
     }
 
-    fun onMelodyLimeMoved(row: Int, col: Int) {
-        lastMelodyClickedSlot = null
-    }
-
     /**
      * Clears solver state without taking the pointer off the screen.
      *
@@ -804,8 +765,6 @@ object AutoTerminal {
         rubixPredicted.clear()
         lastMelodyRow = -1
         lastMelodyRowClickAt = 0L
-        lastMelodyClickedSlot = null
-        lastMelodyClickTime = 0L
         clicksMade = 0
         clickGoal = -1
     }
@@ -816,7 +775,9 @@ object AutoTerminal {
     }
 
     private fun resetAutomationState() {
-        TerminalSensing.reset()
+        // Packet sensing owns the menu lifecycle. A solver restart can happen
+        // after that menu's contents arrived, so keep them until its next
+        // open/close packet or the connection reset.
         resetSolver()
     }
 }

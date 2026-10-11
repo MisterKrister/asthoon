@@ -88,10 +88,8 @@ internal fun terminalMotionAndGuiChecks() {
         }
         all[row * 9 + 3] = ItemStack(Items.LIME_STAINED_GLASS_PANE)
     }
-    // Melody ships three content rows. The loop used to run 3..4 when the game
-    // had a fourth; it is pinned to three now, and the four-row fixtures below
-    // are the stale-data probes rather than the normal case.
-    for (count in listOf(3)) for (r in 1..count) {
+    // Both variants share candidate selection, premove and button filtering.
+    for (count in listOf(3, 4)) for (r in 1..count) {
         val all = melody(count, r)
         val slot = r * 9 + 7
         check(TerminalSolver.melodyRows(all).map { it.buttonSlot } == (1..count).map { it * 9 + 7 })
@@ -104,11 +102,11 @@ internal fun terminalMotionAndGuiChecks() {
     val four = melody(4, 4)
     four[3] = ItemStack(Items.BLACK_STAINED_GLASS_PANE)
     four[48] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
-    check(TerminalSolver.melodyCandidate(four) == null) {
-        "melody ships three rows: a fourth row's note is the indicator, never a candidate"
+    check(TerminalSolver.melodyCandidate(four) == 43) {
+        "A fourth button-evidenced content row must use its footer marker"
     }
-    check(TerminalSolver.melodyRows(four).map { it.buttonSlot } == listOf(16, 25, 34)) {
-        "a row-4 button must not be read as a fourth content row"
+    check(TerminalSolver.melodyRows(four).map { it.buttonSlot } == listOf(16, 25, 34, 43)) {
+        "The fourth live content button must participate in the solver"
     }
     val three = melody(3, 3)
     three[3] = ItemStack(Items.BLACK_STAINED_GLASS_PANE)
@@ -116,14 +114,14 @@ internal fun terminalMotionAndGuiChecks() {
     check(TerminalSolver.melodyCandidate(three) == null) { "row five is filler in three-row melody" }
     check(TerminalSolver.melodyRows(four.take(16)).isEmpty())
     check(TerminalSolver.melodyCandidate(emptyList()) == null)
-    val done = melody(4, 4)
-    for (col in 1..5) done[36 + col] = ItemStack(Items.GREEN_STAINED_GLASS_PANE)
+    val done = melody(3, 3)
+    for (col in 1..5) done[27 + col] = ItemStack(Items.GREEN_STAINED_GLASS_PANE)
     check(TerminalSolver.melodyCandidate(done) == null)
     check(TerminalSolver.melodyNextButton(done, 34) == null)
     val withInventory = melody(3, 1) + MutableList(36) { ItemStack(Items.LIME_TERRACOTTA) }
     check(TerminalSolver.melodyRows(withInventory).size == 3)
 
-    val pending = melody(4, 1)
+    val pending = melody(3, 1)
     run {
         AutoTerminal.recordMelodyClick(pending, 16, 2_000L, skip = true, dontSkipFirst = false)
         check(AutoTerminal.melodyAimSlot(pending, 2_001L) == 25) { "premove must precede the server update" }
@@ -143,9 +141,13 @@ internal fun terminalMotionAndGuiChecks() {
         AutoTerminal.recordMelodyClick(pending, 16, 3_000L, skip = true, dontSkipFirst = true)
         check((queue.get(AutoTerminal) as Collection<*>).isEmpty())
         AutoTerminal.recordMelodyClick(pending, 34, 3_100L, skip = true, dontSkipFirst = true)
-        check(AutoTerminal.melodyAimSlot(melody(4, 3), 3_101L) == 34) {
-            "row three is the last content row: with no row below, the pointer stays put"
+        check(AutoTerminal.melodyAimSlot(melody(3, 3), 3_101L) == 34) {
+            "The last content row must hold the pointer when there is no row below"
         }
+        val liveFour = melody(4, 3)
+        AutoTerminal.recordMelodyClick(liveFour, 34, 3_150L, skip = true, dontSkipFirst = false)
+        check((queue.get(AutoTerminal) as Collection<*>).toList() == listOf(43))
+        check(AutoTerminal.melodyAimSlot(liveFour, 3_151L) == 43) { "Four-row Melody must premove and queue its last button" }
         AutoTerminal.recordMelodyClick(pending, 43, 3_200L, skip = true, dontSkipFirst = true)
         check((queue.get(AutoTerminal) as Collection<*>).isEmpty())
         AutoTerminal.onEscape()
@@ -172,14 +174,13 @@ internal fun terminalMotionAndGuiChecks() {
                 (grid.originY + (tile.y + 12) * grid.scale).toDouble()) == null)
         }
     }
-    // A screen too small for the grid still lands it inside the screen, and
-    // the last slot it can draw is the indicator strip — the row under the
-    // three content rows, which has no button column of its own.
+    // A screen too small for four content rows still fits the full grid and
+    // footer, with the footer's button column excluded from hit testing.
     val small = TermGui.layout(Kind.MELODY, 160, 120, 200, 12, listOf(1, 2, 3, 4))
-    check(small.originX >= 0 && small.originY >= 0 && small.center(41) != null) {
+    check(small.originX >= 0 && small.originY >= 0 && small.center(50) != null) {
         "the shrunk melody grid still reaches its last indicator pane"
     }
-    check(small.center(43) == null) { "the indicator row has no button column to draw" }
+    check(small.center(43) != null && small.center(52) == null) { "Only content rows have a button tile" }
     check(TermGui.layout(Kind.MELODY, 640, 360, 100, 4).center(43) == null)
 
     // ── The drawn grid must cover whatever screen it is on ─────────────────
@@ -198,8 +199,11 @@ internal fun terminalMotionAndGuiChecks() {
         check(TermGui.requiredSlots(Kind.SELECT) == 44)  // rows 1..4, cols 1..7
         check(TermGui.requiredSlots(Kind.STARTS) == 35)  // rows 1..3, cols 1..7
         check(TermGui.requiredSlots(Kind.MELODY) == 42)  // three rows, col 6 and the tail's col 7 skipped
-        check(TermGui.requiredSlots(Kind.MELODY, listOf(1, 2, 3, 4)) == 42) {
-            "a stale fourth content row must not inflate the grid — melody ships three"
+        check(TermGui.requiredSlots(Kind.MELODY, listOf(1, 2, 3, 4)) == 51) {
+            "Four content rows require their footer strip through slot50"
+        }
+        check(TermGui.tiles(Kind.MELODY, listOf(4, 4, 0, 3, 2, 1, 5, 6)) == TermGui.tiles(Kind.MELODY, listOf(1, 2, 3, 4))) {
+            "Detected rows must be unique, ordered and stay between the header and footer"
         }
         for (kind in Kind.entries) {
             check(TermGui.requiredSlots(kind) <= kind.slotCount) {
@@ -216,10 +220,10 @@ internal fun terminalMotionAndGuiChecks() {
         check(TermGui.covers(Kind.SELECT, 44) && !TermGui.covers(Kind.SELECT, 43))
         check(TermGui.covers(Kind.STARTS, 35) && !TermGui.covers(Kind.STARTS, 34))
         check(TermGui.covers(Kind.MELODY, 54) && !TermGui.covers(Kind.MELODY, 41))
-        check(TermGui.covers(Kind.MELODY, 42, listOf(1, 2, 3, 4))) {
-            "a stale fourth row must not raise what the menu has to reach"
+        check(TermGui.covers(Kind.MELODY, 51, listOf(1, 2, 3, 4))) {
+            "A four-row terminal does not require slots beyond its footer"
         }
-        check(!TermGui.covers(Kind.MELODY, 41, listOf(1, 2, 3, 4))) { "one slot short of the drawn rows is not covered" }
+        check(!TermGui.covers(Kind.MELODY, 50, listOf(1, 2, 3, 4))) { "One slot short of the four-row footer is not covered" }
     }
 
     // ── The progress readout's denominator ───────────────────────────────
@@ -253,8 +257,8 @@ internal fun terminalMotionAndGuiChecks() {
         check(TerminalSolver.clickCandidates("Click in order!", named) == listOf(liveSlots.last())) {
             "formatted numeric names must order count-one stacks"
         }
-        check(TerminalSolver.goalFor("Click in order!", named) == 10) {
-            "real numbers terminals display 10, not 14"
+        check(TerminalSolver.goalFor("Click in order!", named) == 14) {
+            "Live number terminals must count all fourteen actual panes"
         }
         check(TerminalSolver.numberSlots(named) == liveSlots)
         check(TermGui.requiredSlotsFor(Kind.ORDER, named) == 26) { "the live rightmost number is slot 25" }
@@ -270,7 +274,7 @@ internal fun terminalMotionAndGuiChecks() {
         check(TerminalSolver.numberSlots(named) == liveSlots) { "completed panes must preserve the grid geometry" }
         check(TerminalSolver.labelFor(completedSlot, named[completedSlot], Kind.ORDER) == null)
         check(TerminalSolver.clickCandidates("Click in order!", named) == listOf(liveSlots[liveSlots.lastIndex - 1]))
-        check(TerminalSolver.goalFor("Click in order!", named) == 10) { "remaining count capped at 10" }
+        check(TerminalSolver.goalFor("Click in order!", named) == 13) { "One completed pane leaves thirteen numbers" }
 
         // When fewer than 10 are left, exact count is returned
         for (i in 0 until 6) {
@@ -337,6 +341,7 @@ internal fun terminalMotionAndGuiChecks() {
         check(TerminalSolver.goalFor("Click the button on time!", melody(3, 1)) == 3) {
             "melody's goal is its three content rows"
         }
+        check(TerminalSolver.goalFor("Click the button on time!", melody(4, 1)) == 4) { "Live four-row Melody must count its fourth button" }
 
         check(TerminalSolver.displayName(Kind.SELECT) == "Colors")
         check(TerminalSolver.displayName(Kind.ORDER) == "Numbers")

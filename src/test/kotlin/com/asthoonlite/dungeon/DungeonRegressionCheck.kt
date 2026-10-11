@@ -296,11 +296,8 @@ fun main() {
         val blank = { ArrayList<ItemStack>(54).apply { repeat(54) { add(ItemStack(filler)) } } }
 
         // Row 0 carries the magenta marker (column 3). Rows 1..3 are the
-        // content rows melody ships: a button at column 7 and panes at columns
-        // 1..5, so the buttons sit at 16, 25, 34. Row 4 is the indicator below
-        // them — the fixture still plants a note-looking button at 43 on
-        // purpose, because that is exactly the shape the row reader has to
-        // refuse. Row 5 is filler outside the content window.
+        // three-row fixture's content: a button at column 7 and panes at
+        // columns 1..5. Row 4 is its indicator and has no button evidence.
         fun melody(magentaCol: Int, lime: Int, button: Int = 16): ArrayList<ItemStack> {
             val b = blank()
             b[magentaCol] = ItemStack(Items.MAGENTA_STAINED_GLASS_PANE)
@@ -308,7 +305,6 @@ fun main() {
             b[16] = ItemStack(Items.LIME_TERRACOTTA)
             b[25] = ItemStack(Items.LIME_TERRACOTTA)
             b[34] = ItemStack(Items.LIME_TERRACOTTA)
-            b[43] = ItemStack(Items.LIME_TERRACOTTA)
             b[button] = ItemStack(Items.LIME_TERRACOTTA)
             return b
         }
@@ -330,17 +326,17 @@ fun main() {
             "row 2's button is slot 25"
         }
 
-        // Melody ships three content rows, so row 4 is the indicator under
-        // them — and the indicator's slot (43) is the one a fourth-row reader
-        // would have taken for a note. A button planted there must never
-        // become a candidate: a click the server ignores is a click the
-        // clicker sits there repeating.
+        // An indicator's note-looking pane is not a row without its button.
         check(TerminalSolver.melodyCandidate(melody(magentaCol = 3, lime = 39)) == null) {
-            "row 4 is the indicator now, not a note"
+            "An indicator without a button must not become a content row"
         }
         check(TerminalSolver.melodyRows(melody(magentaCol = 3, lime = 39)).map { it.buttonSlot } == listOf(16, 25, 34)) {
-            "only the three content rows are read"
+            "Only button-evidenced content rows are read"
         }
+
+        val fourRows = melody(magentaCol = 3, lime = 39)
+        fourRows[43] = ItemStack(Items.LIME_TERRACOTTA)
+        check(TerminalSolver.melodyCandidate(fourRows) == 43) { "A genuine fourth row must be pressable" }
 
         // A struck-out button is still finished, even with the pane aligned.
         val done = melody(magentaCol = 3, lime = 12, button = 16)
@@ -429,8 +425,7 @@ fun main() {
         // Melody: marker strip, its three content rows with the buttons at
         // column 7, and the indicator strip below them. The indicator row is
         // the one melodyMarker reads for a lower marker, and it has no button
-        // column — 43 belongs to it only in the four-row layout the game used
-        // to run.
+        // column. A detected fourth content row moves that strip down one row.
         val melodySlots = slotsOf(Kind.MELODY)
         check(melodySlots.containsAll(listOf(16, 25, 34))) {
             "the melody grid is missing a button"
@@ -441,8 +436,9 @@ fun main() {
         check(43 !in melodySlots) {
             "the indicator row has no button column to draw"
         }
-        check(melodySlots == slotsOf(Kind.MELODY, listOf(1, 2, 3, 4))) {
-            "a stale fourth content row must not change the grid melody draws"
+        val fourRowSlots = slotsOf(Kind.MELODY, listOf(1, 2, 3, 4))
+        check(43 in fourRowSlots && 52 !in fourRowSlots && fourRowSlots.containsAll((46..50).toList())) {
+            "Four content rows need their fourth button and lower indicator, without an indicator button"
         }
         check(melodySlots.containsAll((1..5).toList())) {
             "the melody grid is missing the marker strip"
@@ -915,6 +911,11 @@ fun main() {
         terminalPracticeRegressionChecks()
         terminalCaptureRegressionChecks()
         terminalPresentationRegressionChecks()
+        terminalManualRubixRegressionChecks()
+        terminalSensingLifecycleRegressionChecks()
+        terminalOrderGoalRegressionChecks()
+        terminalPanePresentationRegressionChecks()
+        terminalRubixPresentationRegressionChecks()
         com.asthoonlite.gui.guiViewportRegressionChecks()
         simonDeviceRegressionChecks()
         mapStyleRegressionChecks()

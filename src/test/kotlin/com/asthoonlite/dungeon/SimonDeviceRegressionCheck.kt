@@ -5,6 +5,7 @@ import com.asthoonlite.pathfinding.PathfindCapture
 import com.asthoonlite.pathfinding.PathPoint
 import com.asthoonlite.pathfinding.RouteNodeType
 import com.asthoonlite.pathfinding.GoldorRouteShortcut
+import com.asthoonlite.pathfinding.RestartPressLatch
 import com.asthoonlite.pathfinding.KinematicTrajectory
 import com.asthoonlite.config.Config
 import com.google.gson.Gson
@@ -442,6 +443,57 @@ internal fun simonDeviceRegressionChecks() {
         }
     }
 
+    // Live terminal-return replay: the landing WALK advanced at 20:01:29 while still airborne.
+    val returnLanding = PathPoint(99.5, 113.0, 68.5, action = "WALK")
+    val returnCrouch = PathPoint(100.5, 113.0, 71.5, action = "CROUCH")
+    val airborneReturn = Vec3(99.74, 113.58, 66.56)
+    check(PathExecutor.hasPassedWaypointAlongRoute(airborneReturn, returnLanding, returnCrouch, 2.5)) {
+        "The observed airborne sample passes the old high-speed proximity check"
+    }
+    check(!PathExecutor.waypointTouchdownAllowsAdvance(false, returnCrouch.nodeType(), false)) {
+        "Proximity before landing must not switch the jump's WALK target into CROUCH"
+    }
+    check(PathExecutor.waypointTouchdownAllowsAdvance(false, returnCrouch.nodeType(), true)) {
+        "Landing must permit the crouched traverse without an additional dwell"
+    }
+    val returnLandingOffset = Vec3(returnLanding.x - airborneReturn.x, 0.0, returnLanding.z - airborneReturn.z)
+    val returnLandingMotion = PathExecutor.airborneMovement(returnLandingOffset, returnLandingOffset.normalize().scale(8.46 / 20.0))
+    check(returnLandingMotion.dot(returnLandingOffset) > 0.0 && PathExecutor.movementInput(returnLandingMotion, 0f).first > 0.25) {
+        "Keeping the landing WALK active must continue forward air guidance rather than apply a stationary brake"
+    }
+    check(PathExecutor.waypointTouchdownAllowsAdvance(false, RouteNodeType.WALK, false)) {
+        "Ordinary WALK-to-WALK continuity must retain its existing airborne advancement"
+    }
+    check(!PathExecutor.waypointTouchdownAllowsAdvance(true, RouteNodeType.WALK, false)) {
+        "The existing stationary-destination landing requirement must remain"
+    }
+    for (nextType in listOf(RouteNodeType.SIMON_SAYS, RouteNodeType.ARROWS_ALIGN, RouteNodeType.TERMINAL, RouteNodeType.TIMEOUT)) {
+        check(!PathExecutor.waypointTouchdownAllowsAdvance(false, nextType, false)) {
+            "The existing $nextType approach must still require touchdown"
+        }
+    }
+
+    // Repeated live takeoff began about a block before the recorded z=58.5 jump point.
+    val returnJumpSpeed = 15.14 / 20.0
+    check(!PathExecutor.canExecuteJumpAtNode(58.5 - 57.45, 0.0, true, returnJumpSpeed)) {
+        "The observed early launch must keep approaching the recorded jump point"
+    }
+    check(PathExecutor.canExecuteJumpAtNode(58.5 - 58.29, 0.0, true, returnJumpSpeed)) {
+        "The next close approach must launch at the recorded jump point"
+    }
+    check(!PathExecutor.canExecuteJumpAtNode(0.2, 0.0, false, returnJumpSpeed) &&
+        !PathExecutor.canExecuteJumpAtNode(0.2, 2.0, true, returnJumpSpeed)) {
+        "A jump node still requires ground at its recorded elevation"
+    }
+    check(PathExecutor.canExecuteJumpAtNode(0.3, 0.0, true, 0.0) &&
+        !PathExecutor.canExecuteJumpAtNode(0.9, 0.0, true, 2.0)) {
+        "Takeoff tolerance must allow a slow approach without expanding high-speed launches beyond the jump point"
+    }
+    check(!PathExecutor.shouldAutoJump(RouteNodeType.JUMP, false, true, true, 3.18,
+        false, false, false, false, false)) {
+        "A generic ledge probe must not bypass the explicit jump's launch position"
+    }
+
     // 20. Bonzo ground impact pitch calculation
     fun computeBonzoLaunchPitch(configuredPitch: Float): Float {
         return if (configuredPitch in 75.0f..88.0f) configuredPitch else 79.0f
@@ -650,6 +702,56 @@ internal fun simonDeviceRegressionChecks() {
     check(firstSettledTick == 1 && GoldorRouteShortcut.settledTicksAfterTeleport(true, true, 0.0, false, firstSettledTick) == 2) {
         "Replay only after two settled ticks following the teleport"
     }
+
+    val restartPress = RestartPressLatch()
+    val restartKey = org.lwjgl.glfw.GLFW.GLFW_KEY_F8
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_RELEASE, true)
+    check(restartPress.consume(restartKey, true) && !restartPress.consume(restartKey, true)) {
+        "A complete restart tap between ticks must survive until exactly one tick consumes it"
+    }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    check(restartPress.consume(restartKey, true))
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_REPEAT, true)
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    check(!restartPress.consume(restartKey, true)) { "Repeats or duplicate presses while held must not restart again" }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_RELEASE, true)
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, false)
+    check(!restartPress.consume(restartKey, true)) { "A press inside a screen must not replay when that screen closes" }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_REPEAT, true)
+    check(!restartPress.consume(restartKey, true)) { "Holding the screen's key after closing must not become a fresh press" }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_RELEASE, true)
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    check(!restartPress.consume(restartKey, false) && !restartPress.consume(restartKey, true)) {
+        "Opening a screen or losing the active world before consumption must discard the request"
+    }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_REPEAT, true)
+    check(!restartPress.consume(restartKey, true)) { "Returning focus must not turn a repeat into a fresh press" }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    check(restartPress.consume(restartKey, true)) { "A fresh press after focus loss must work even if its old release callback was skipped" }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_RELEASE, true)
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    restartPress.reset()
+    check(!restartPress.consume(restartKey, true)) { "Disconnect must discard a queued restart" }
+    restartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    check(!restartPress.consume(org.lwjgl.glfw.GLFW.GLFW_KEY_F9, true)) { "Changing the binding must discard its old queued press" }
+    restartPress.input(1, 1, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    restartPress.input(1, 2, true, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    check(!restartPress.consume(1, true)) { "Keyboard events and another mouse button must not activate a mouse binding" }
+    restartPress.input(1, 1, true, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    restartPress.input(1, 1, true, org.lwjgl.glfw.GLFW.GLFW_RELEASE, true)
+    check(restartPress.consume(1, true)) { "A short configured mouse-button tap must use the same latch" }
+
+    val liveRestartPress = GoldorRouteShortcut::class.java.getDeclaredField("pressLatch").apply { isAccessible = true }
+        .get(null) as RestartPressLatch
+    liveRestartPress.reset()
+    liveRestartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_PRESS, true)
+    liveRestartPress.input(restartKey, restartKey, false, org.lwjgl.glfw.GLFW.GLFW_RELEASE, true)
+    GoldorRouteShortcut.cancelPending()
+    check(liveRestartPress.consume(restartKey, true)) {
+        "Canceling an old route or teleport before the shortcut tick must preserve a newly queued tap"
+    }
+    liveRestartPress.reset()
 
     // 26. Camera rotation critically damped spring & wrap handling
     val (settledYaw, _) = PathExecutor.dampRotation(0f, 10f, 0f, 0.8, 12f, wrap = true)

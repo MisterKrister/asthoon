@@ -263,10 +263,7 @@ object TerminalSolver {
         val type = kindOf(cleanTitle(screenTitle)) ?: return 0
         val all = items.take(type.slotCount)
         return when (type) {
-            Kind.ORDER -> {
-                val count = pendingNumbers(all).size
-                if (count == 0) 0 else minOf(NUMBER_TERM_COUNT, count)
-            }
+            Kind.ORDER -> pendingNumbers(all).size
             Kind.RUBIX -> {
                 val target = rubixTarget ?: optimalRubixTarget(all) ?: return 0
                 rubixPanes(all).sumOf { rubixDistance(it.second, target) }
@@ -385,26 +382,30 @@ object TerminalSolver {
         val buttonSlot: Int get() = row * 9 + 7
     }
 
-    /**
-     * Melody ships three content rows: 1, 2, 3. Row 0 above them carries the
-     * marker strip, row 4 below them is the indicator — and button evidence is
-     * what stops that indicator being read as a fourth note row, which is the
-     * mistake that used to park the clicker on a pane the server ignores.
-     * Only the terminal's own rows are read; inventory items cannot become notes.
-     */
-    fun melodyRows(all: List<ItemStack>): List<MelodyRow> = (1..3).mapNotNull { row ->
-        val button = all.getOrNull(row * 9 + 7) ?: return@mapNotNull null
-        val doneButton = button.`is`(Items.LIME_STAINED_GLASS_PANE) ||
-            button.`is`(Items.GREEN_STAINED_GLASS_PANE) || button.`is`(Items.LIME_CONCRETE) ||
-            button.`is`(Items.EMERALD_BLOCK)
-        val isButton = doneButton || button.`is`(Items.LIME_TERRACOTTA) ||
-            button.`is`(Items.GREEN_TERRACOTTA) || button.`is`(Items.RED_TERRACOTTA) ||
-            button.`is`(Items.YELLOW_TERRACOTTA)
-        if (!isButton) return@mapNotNull null
-        val panes = (row * 9 + 1)..(row * 9 + 5)
-        val greens = panes.filter { all.getOrNull(it)?.let(::isMelodyPointer) == true }
-        val completed = doneButton || greens.size == 5
-        MelodyRow(row, completed, if (completed) null else greens.singleOrNull())
+    /** A six-row menu reserves a header and footer, leaving at most four note rows. */
+    internal const val MAX_MELODY_CONTENT_ROW = 4
+
+    /** Button evidence distinguishes three/four-row boards from their indicator and inventory. */
+    fun melodyRows(all: List<ItemStack>): List<MelodyRow> {
+        val rows = (1..MAX_MELODY_CONTENT_ROW).mapNotNull { row ->
+            val button = all.getOrNull(row * 9 + 7) ?: return@mapNotNull null
+            val doneButton = button.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+                button.`is`(Items.GREEN_STAINED_GLASS_PANE) || button.`is`(Items.LIME_CONCRETE) ||
+                button.`is`(Items.EMERALD_BLOCK)
+            val isButton = doneButton || button.`is`(Items.LIME_TERRACOTTA) ||
+                button.`is`(Items.GREEN_TERRACOTTA) || button.`is`(Items.RED_TERRACOTTA) ||
+                button.`is`(Items.YELLOW_TERRACOTTA)
+            if (!isButton) return@mapNotNull null
+            val panes = (row * 9 + 1)..(row * 9 + 5)
+            val greens = panes.filter { all.getOrNull(it)?.let(::isMelodyPointer) == true }
+            val completed = doneButton || greens.size == 5
+            MelodyRow(row, completed, if (completed) null else greens.singleOrNull())
+        }
+        // Some live boards return earlier buttons to red terracotta and their
+        // tracks to white. A later observed note proves those rows advanced;
+        // sending an input alone never does.
+        val activeRow = rows.firstOrNull { it.movingSlot != null }?.row ?: return rows
+        return rows.map { if (it.row < activeRow) it.copy(completed = true, movingSlot = null) else it }
     }
 
     private fun isMelodyPointer(stack: ItemStack): Boolean =

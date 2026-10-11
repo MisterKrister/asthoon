@@ -305,9 +305,8 @@ object TerminalCapture {
         val shape = geometry(screen)
         val configuration = settings()
         val first = current.lastSlots == null
-        if (first || current.initialGoal == 0 && current.clicks == 0) {
-            current.initialGoal = TerminalSolver.goalFor(screen.title.string, items)
-        }
+        current.initialGoal = initialGoalForSnapshot(current.initialGoal,
+            TerminalSolver.goalFor(screen.title.string, items), current.clicks)
         if (slots != current.lastSlots || candidates != current.lastCandidates || shape != current.lastGeometry || configuration != current.lastSettings) {
             val changed = if (first) slots.indices.toList() else slots.indices.filter { slots[it] != current.lastSlots?.getOrNull(it) }
             emit(current, "state_snapshot", now, linkedMapOf(
@@ -334,6 +333,10 @@ object TerminalCapture {
             }
         }
     }
+
+    /** Slot packets assemble the initial board before the first sent input freezes its goal. */
+    internal fun initialGoalForSnapshot(previous: Int, observed: Int, clicks: Int): Int =
+        if (clicks == 0) maxOf(previous, observed) else previous
 
     private fun position(screen: AbstractContainerScreen<*>, x: Double, y: Double): Map<String, Any?> {
         val mc = Minecraft.getInstance()

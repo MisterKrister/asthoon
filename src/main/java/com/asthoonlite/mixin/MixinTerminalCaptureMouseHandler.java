@@ -1,6 +1,7 @@
 package com.asthoonlite.mixin;
 
 import com.asthoonlite.dungeon.TerminalCapture;
+import com.asthoonlite.pathfinding.GoldorRouteShortcut;
 import net.minecraft.client.MouseHandler;
 import net.minecraft.client.input.MouseButtonInfo;
 import org.spongepowered.asm.mixin.Mixin;
@@ -18,6 +19,7 @@ public class MixinTerminalCaptureMouseHandler {
 
     @Inject(method = "onButton(JLnet/minecraft/client/input/MouseButtonInfo;I)V", at = @At("HEAD"))
     private void asthoonlite$captureButton(long window, MouseButtonInfo button, int action, CallbackInfo ci) {
+        GoldorRouteShortcut.onMouseInput(window, button.button(), action);
         TerminalCapture.rawMouseButton(window, button.button(), button.modifiers(), action, System.nanoTime());
     }
 

@@ -285,12 +285,17 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   (furthest) — and one setting feeds both `AutoTerminal.choose` and the
   next-click marker, so the ring and the packets cannot pick differently.
   Detection, skip queues
-  and layout share the same **three**-row model: melody ships content rows
-  1–3, row 0 above them is the marker strip and row 4 below them is the
-  indicator, and `TermGui.contentRows` drops anything else out of the data
-  before it can grow the grid. Number practice ships ten panes
+  and layout share adaptive Melody rows: button evidence detects content rows
+  1–3 or 1–4, row 0 is the marker strip and the row immediately below the
+  detected content is the indicator. Inventory and strips without buttons
+  never grow the grid. A later observed moving note confirms earlier rows
+  completed even on live boards that restore their buttons to red terracotta;
+  sent clicks alone do not confirm completion. Number practice ships ten panes
   (`TerminalSolver.NUMBER_TERM_COUNT`); live number grids follow the actual
   numbered slots so wider boards share the same drawing and cursor targets.
+  Disabling solver hints retains actual red/green pane states and the five
+  current color-terminal states. Item-selection tiles keep their neutral
+  background and item icons; hint counts and directions remain conditional.
   An unacknowledged melody
   click waits `MELODY_ROW_RETRY_MS` (250 ms) plus `MELODY_UPDATE_GRACE_MS`
   (three ticks, 150 ms) — the row is given time to arrive before the aim or
@@ -298,7 +303,12 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   to the row it just left while the server is still catching up. Melody's aim
   and its click read the same candidate and the same deadline (the click
   beat), so there is one aim per tick, the hand drops to the next row once,
-  and it stays there.
+  and it stays there. Live packet-updated menus and local practice use the
+  same Melody decision. A valid queued skip stays pending until a sent
+  input commits it, and the acknowledgement grace also covers an earlier
+  row still visible after a later queued input. Packet sensing owns menu
+  open/close and connection resets; restarting the click driver retains
+  contents that arrived before its first tick.
 
 ## 7. The regression harness
 
@@ -323,14 +333,19 @@ balance, Java2D fill convention). `MapRenderingRegressionCheck.kt` also checks
 gameplay visibility gates, desktop/HUD routing and delayed map calibration.
 `TerminalPresentationRegressionCheck.kt` checks GUI gates, item visibility,
 backend cursor policy, restoration ownership and viewport intersection.
+`TerminalSensingLifecycleRegressionCheck.kt` and
+`TerminalLiveMelodyRegressionCheck.kt` exercise real packet objects through
+the production sensing and decision paths. `TerminalManualRubixRegressionCheck.kt`
+checks that manual filtering and direction retain the displayed color target
+when a partial input changes the board's optimal color.
 `gui/GuiViewportRegressionCheck.kt` checks settings fitting and inverse input
 transforms without requiring a game window. These are logic checks, not
 native-window or GPU presentation tests.
 
 `TerminalRegressionCheck.kt`, called by that harness, also checks CSS easing
 reference values and degenerate curves, retarget continuity, clicks during
-flight, premove/debounce, three-row melody and skip queues (with the stale
-fourth row as the must-ignore probe), the four Click Order modes over the same
+flight, premove/debounce, three/four-row Melody and skip queues (including
+indicator/inventory exclusion and a captured live fourth-row fixture), the four Click Order modes over the same
 ready set, the pointer gate that holds a packet until the hand lands, grid
 centers/hit testing across scales, and old-config defaults — plus the pieces
 that made the terminal settings stop answering: the click clock taking Click

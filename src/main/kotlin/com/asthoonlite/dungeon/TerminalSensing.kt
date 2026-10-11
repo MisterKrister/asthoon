@@ -32,7 +32,7 @@ object TerminalSensing {
     private val packetSlots = ConcurrentHashMap<Int, ItemStack>()
 
     // Melody sensing state
-    @Volatile var melodyButtonRow: Int? = null     // 0, 1, 2
+    @Volatile var melodyButtonRow: Int? = null     // 0..3
     @Volatile var melodyCurrentCol: Int? = null     // 0..4
     @Volatile var melodyCorrectCol: Int? = null     // 0..4
     @Volatile var melodyLastLimeSlot: Int = -1
@@ -102,15 +102,14 @@ object TerminalSensing {
         }
 
         if (currentKind == Kind.MELODY) {
-            if (packet.item.`is`(Items.LIME_STAINED_GLASS_PANE) && packet.slot in 9..35) {
+            if (packet.item.`is`(Items.LIME_STAINED_GLASS_PANE) && packet.slot in 9..44) {
                 val row = packet.slot / 9 - 1
                 val col = (packet.slot % 9) - 1
-                if (row in 0..2 && col in 0..4) {
+                if (row in 0 until TerminalSolver.MAX_MELODY_CONTENT_ROW && col in 0..4) {
                     melodyButtonRow = row
                     melodyCurrentCol = col
                     melodyLastLimeSlot = packet.slot
                     updateMelodyMarkers()
-                    AutoTerminal.onMelodyLimeMoved(row, col)
                 }
             } else if (packet.item.`is`(Items.MAGENTA_STAINED_GLASS_PANE)) {
                 updateMelodyMarkers()
@@ -132,7 +131,7 @@ object TerminalSensing {
         for ((slot, item) in packetSlots) {
             if (item.`is`(Items.MAGENTA_STAINED_GLASS_PANE)) {
                 foundMagentaCol = (slot % 9) - 1
-            } else if (item.`is`(Items.LIME_STAINED_GLASS_PANE) && slot in 9..35) {
+            } else if (item.`is`(Items.LIME_STAINED_GLASS_PANE) && slot in 9..44 && slot % 9 in 1..5) {
                 foundLimeSlot = slot
             }
         }
@@ -142,12 +141,11 @@ object TerminalSensing {
         if (foundLimeSlot != -1) {
             val row = foundLimeSlot / 9 - 1
             val col = (foundLimeSlot % 9) - 1
-            if (row in 0..2 && col in 0..4) {
+            if (row in 0 until TerminalSolver.MAX_MELODY_CONTENT_ROW && col in 0..4) {
                 if (melodyButtonRow != row || melodyCurrentCol != col) {
                     melodyButtonRow = row
                     melodyCurrentCol = col
                     melodyLastLimeSlot = foundLimeSlot
-                    AutoTerminal.onMelodyLimeMoved(row, col)
                 }
             }
         }

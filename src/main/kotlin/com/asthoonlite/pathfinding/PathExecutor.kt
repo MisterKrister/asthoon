@@ -590,28 +590,21 @@ object PathExecutor {
 
         // 3. Handle approaching / arriving at a JUMP node
         if (nodeType == RouteNodeType.JUMP) {
-            val jumpArrivalDist = if (isHighSpeed) 2.2 else 1.5
-            val bpsH = player.deltaMovement.horizontalDistance() * 20.0
-            val toTargetDx = target.x - player.x
-            val toTargetDz = target.z - player.z
-            val targetYaw = (-Math.toDegrees(atan2(toTargetDx, toTargetDz))).toFloat()
-            val maxLedgeDist = (distH - 0.4).coerceAtLeast(0.5)
-            val isAtLedge = isLedgeOrGapAhead(level, player, targetYaw, maxLedgeDist) ||
-                KinematicTrajectory.shouldPredictiveLedgeJump(level, Vec3(player.x, player.y, player.z), player.deltaMovement, Vec3(target.x, target.y, target.z), player.onGround())
-            val hasSpeed = bpsH >= 10.0
-            val canExecuteJump = (distH <= jumpArrivalDist && distY < 2.0 && player.onGround()) &&
-                                 (isAtLedge || hasSpeed || distH <= 0.8)
-            if (canExecuteJump) {
+            if (canExecuteJumpAtNode(distH, distY, player.onGround(), player.deltaMovement.horizontalDistance())) {
                 touchedDownSinceLaunch = false
                 jumpTicksRemaining = 3
                 mc.options.keyJump.setDown(true)
-                player.setSprinting(true)
+                val landing = nextTarget ?: target
+                moveInDirection(player, Vec3(landing.x - player.x, 0.0, landing.z - player.z), true)
+                AsthoonLite.LOGGER.info("[ASL-ROUTE-OFFSET] JUMP launch requested at [${"%.2f".format(Locale.ROOT, player.x)},${"%.2f".format(Locale.ROOT, player.y)},${"%.2f".format(Locale.ROOT, player.z)}] node=$currentNodeIndex distH=${"%.2f".format(Locale.ROOT, distH)}")
                 currentNodeIndex++
                 resetSpecialNodeState()
                 if (currentNodeIndex >= points.size) {
                     finishRoute(preset)
                     return
                 }
+                // The new landing target owns the following tick; do not reprocess the old jump node.
+                return
             }
         }
 
@@ -1008,13 +1001,6 @@ object PathExecutor {
         // 8. Fluid Waypoint Transition: Speed-Scaled Arrival Check
         val canArriveElevation = if (isClimbingToNode) player.y >= target.y - 0.6 else distY < 2.5
         val isPrecedingAirborne = points.getOrNull(currentNodeIndex - 1)?.nodeType() in setOf(RouteNodeType.BONZO_STAFF, RouteNodeType.JUMP)
-        val isNextStationary = nextTarget != null && (
-            nextTarget.nodeType() == RouteNodeType.SIMON_SAYS ||
-            nextTarget.nodeType() == RouteNodeType.ARROWS_ALIGN ||
-            nextTarget.nodeType() == RouteNodeType.TERMINAL ||
-            nextTarget.nodeType() == RouteNodeType.TIMEOUT
-        )
-        val requiresTouchdown = isStationaryDest || isNextStationary
 
         val canAdvanceBreak = isBreakNode && !isBreakBlockSolid
         val arrivalDist = if (canAdvanceBreak) (if (isHighSpeed) 2.2 else 1.6) else arrivalThreshold
@@ -1042,7 +1028,7 @@ object PathExecutor {
 
         if ((advancesOnArrival(nodeType) || canAdvanceBreak) &&
             hasArrived && canArriveElevation &&
-            (!requiresTouchdown || player.onGround()) &&
+            waypointTouchdownAllowsAdvance(isStationaryDest, nextTarget?.nodeType(), player.onGround()) &&
             (!isStationaryDest || isSettled)) {
             if (isBreakNode && nextTarget?.nodeType() != RouteNodeType.BREAK) {
                 mc.options.keyAttack.setDown(false)
@@ -1288,6 +1274,8 @@ object PathExecutor {
         isExitingBreakDoorway: Boolean,
         isDescending: Boolean = false
     ): Boolean {
+        // An explicit jump point owns its takeoff; a distant gap probe must not launch it early.
+        if (nodeType == RouteNodeType.JUMP) return false
         if (isDescending || isCrouchNode) return false
         if (isMiningObstacle || isExitingBreakDoorway) return false
 
@@ -1327,6 +1315,19 @@ object PathExecutor {
 
     internal fun advancesOnArrival(nodeType: RouteNodeType): Boolean =
         nodeType == RouteNodeType.WALK || nodeType == RouteNodeType.CROUCH
+
+    internal fun canExecuteJumpAtNode(distH: Double, distY: Double, onGround: Boolean, horizontalSpeed: Double): Boolean =
+        onGround && distY < 2.0 && distH <= horizontalSpeed.coerceIn(0.35, 0.8)
+
+    internal fun waypointTouchdownAllowsAdvance(stationaryDestination: Boolean, nextType: RouteNodeType?, onGround: Boolean): Boolean {
+        // Retain the landing target until grounded before starting a crouched traverse.
+        val requiresTouchdown = stationaryDestination || when (nextType) {
+            RouteNodeType.SIMON_SAYS, RouteNodeType.ARROWS_ALIGN, RouteNodeType.TERMINAL,
+            RouteNodeType.TIMEOUT, RouteNodeType.CROUCH -> true
+            else -> false
+        }
+        return !requiresTouchdown || onGround
+    }
 
     internal fun hasLandedAtNode(distH: Double, distY: Double, onGround: Boolean): Boolean =
         onGround && distH < 1.4 && distY <= 0.8
