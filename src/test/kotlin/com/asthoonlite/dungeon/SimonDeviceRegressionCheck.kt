@@ -778,6 +778,20 @@ internal fun simonDeviceRegressionChecks() {
     )
     check(jumpToDevice) { "Must auto-gap jump across ledge to reach device platforms" }
 
+    val jumpOnBonzoApproach = PathExecutor.shouldAutoJump(
+        nodeType = com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
+        isStationaryDest = false,
+        onGround = true,
+        isLedge = true,
+        distH = 3.5,
+        isCrouchNode = false,
+        isObstacleCollision = false,
+        isElevationStep = false,
+        isMiningObstacle = false,
+        isExitingBreakDoorway = false
+    )
+    check(!jumpOnBonzoApproach) { "Must not auto-gap-jump on approach to a BONZO_STAFF launch pad, preserving clean runway sprint on the ground" }
+
     // 34. Kinematic Trajectory Engine: forward physics step, flight prediction, aim solver & guidance
     val initialAir = KinematicTrajectory.State(0.0, 70.0, 0.0, 0.5, 0.42, 0.0, onGround = false)
     val stepped = KinematicTrajectory.stepAirborne(initialAir, forwardInput = 0.0, strafeInput = 0.0, yaw = 0f)

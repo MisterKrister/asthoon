@@ -223,7 +223,13 @@ object KinematicTrajectory {
 
         val deltaY = destinationPos.y - playerPos.y
         val finalPitch = if (isRedirection) {
-            if (recordedPitch in 40.0f..88.0f) recordedPitch else computedPitch
+            if (recordedPitch in 25.0f..88.0f) {
+                if (destDistH >= 17.0 && deltaY >= 0.0 && recordedPitch > 38.0f) 38.0f
+                else if (destDistH >= 18.0 && deltaY < 0.0 && recordedPitch > 54.15f) 54.15f
+                else recordedPitch
+            } else {
+                computedPitch
+            }
         } else if (recordedPitch in 25.0f..88.0f) {
             if (destDistH >= 17.0 && deltaY >= 0.0 && recordedPitch > 38.0f) {
                 38.0f

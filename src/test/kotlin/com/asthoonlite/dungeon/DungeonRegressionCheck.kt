@@ -1273,7 +1273,7 @@ fun main() {
             "Player in deadzone on ground must register as settled"
         }
 
-        // 5. Jump suppression should not trigger when there is an actual gap/ledge ahead
+        // 5. Bonzo staff runway approach must suppress jumping across ledges so player stays grounded to fire
         val shouldJumpGap = PathExecutor.shouldAutoJump(
             nodeType = com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
             isStationaryDest = false,
@@ -1286,8 +1286,8 @@ fun main() {
             isMiningObstacle = false,
             isExitingBreakDoorway = false
         )
-        check(shouldJumpGap) {
-            "Approaching Bonzo staff must auto-jump across gap/ledge to reach platform"
+        check(!shouldJumpGap) {
+            "Approaching Bonzo staff must stay grounded on runway and not jump off ledge before launch"
         }
     }
 
