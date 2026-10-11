@@ -33,6 +33,8 @@ import java.util.stream.Stream
 import com.asthoonlite.pathfinding.RouteCategory
 import com.asthoonlite.pathfinding.PathPreset
 import com.asthoonlite.pathfinding.PathPoint
+import com.asthoonlite.pathfinding.KinematicTrajectory
+import net.minecraft.world.phys.Vec3
 import com.google.gson.Gson
 
 /** Run with ./gradlew regressionCheck (also included in build). No game or server needed. */
@@ -1154,6 +1156,40 @@ fun main() {
         val deserialized = gson.fromJson(json, PathPreset::class.java)
         check(deserialized.name == "Test Route" && deserialized.points.size == 1) {
             "PathPreset must serialize and deserialize cleanly via Gson"
+        }
+    }
+
+    // ── Bonzo Kinematic Trajectory & Pitch Calibration ────────────────────
+    run {
+        // Test that calibrated user pitches (e.g. 36.45° from Niggap3, 54.15° from niggaS2) are preserved
+        val planP3 = KinematicTrajectory.calculateBonzoAimPlan(
+            playerPos = Vec3(99.0, 115.8, 47.1),
+            playerVel = Vec3(-0.169, -0.23, 0.73),
+            playerEyeY = 117.4,
+            destinationPos = Vec3(96.4, 120.0, 69.9),
+            recordedPitch = 36.45f,
+            recordedYaw = 12.60f
+        )
+        check(planP3.shotPitch == 36.45f) {
+            "Recorded pitch 36.45° must be preserved, got ${planP3.shotPitch}"
+        }
+        check(planP3.shotYaw == 12.60f) {
+            "Recorded yaw 12.60° must be preserved, got ${planP3.shotYaw}"
+        }
+
+        val planS2 = KinematicTrajectory.calculateBonzoAimPlan(
+            playerPos = Vec3(52.25, 133.0, 139.0),
+            playerVel = Vec3(-0.55, -0.23, 0.0),
+            playerEyeY = 134.6,
+            destinationPos = Vec3(31.6, 131.0, 138.6),
+            recordedPitch = 54.15f,
+            recordedYaw = 91.50f
+        )
+        check(planS2.shotPitch == 54.15f) {
+            "Recorded pitch 54.15° must be preserved, got ${planS2.shotPitch}"
+        }
+        check(planS2.shotYaw == 91.50f) {
+            "Recorded yaw 91.50° must be preserved, got ${planS2.shotYaw}"
         }
     }
 
