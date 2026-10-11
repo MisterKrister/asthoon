@@ -19,10 +19,10 @@ internal fun terminalManualRubixRegressionChecks() {
     val cached = requireNotNull(TermGui.rubixTargetFor(board, committed = null, cached = null))
     check(cached == 4) { "The manual board initially chooses red" }
     val limeSlot = TerminalSolver.RUBIX_SLOTS[1]
-    check(TermGui.canClick(kind, title, board, limeSlot, rubixTarget = cached))
-    val firstButton = TerminalSolver.rubixButton(2, cached)
-    check(firstButton == 0)
-    board[limeSlot] = ItemStack(ring[TerminalSolver.rubixAdvance(2, firstButton)])
+    check(TermGui.canClick(kind, title, board, limeSlot))
+    val first = TermGui.rubixClickPlan(board[limeSlot], predicted = null, target = cached, requestedButton = 0)
+    check(first.button == 0 && first.nextColor == 3)
+    board[limeSlot] = ItemStack(ring[requireNotNull(first.nextColor)])
 
     // A tie now selects blue when recomputed, although this pane still needs
     // its second click to the red target already shown by the manual grid.
@@ -30,30 +30,34 @@ internal fun terminalManualRubixRegressionChecks() {
     check(recomputed == 3) { "The first lime click must reproduce the changed optimal target" }
     val fixed = requireNotNull(TermGui.rubixTargetFor(board, committed = null, cached = cached))
     check(fixed == 4)
-    check(!TermGui.canClick(kind, title, board, limeSlot, rubixTarget = recomputed)) {
-        "The old live filter rejected the newly blue pane"
+    check(limeSlot !in TerminalSolver.clickCandidates(title, board, rubixTarget = recomputed)) {
+        "Recomputing the target would remove the newly blue pane from the solver candidates"
     }
-    check(TermGui.canClick(kind, title, board, limeSlot, rubixTarget = fixed)) {
-        "Manual live filtering must allow the second click toward the cached red target"
+    check(TermGui.canClick(kind, title, board, limeSlot)) {
+        "Manual input must allow the second click toward the cached red target"
     }
-    val secondButton = TerminalSolver.rubixButton(3, fixed)
-    check(secondButton == 0)
-    board[limeSlot] = ItemStack(ring[TerminalSolver.rubixAdvance(3, secondButton)])
-    check(!TermGui.canClick(kind, title, board, limeSlot, rubixTarget = fixed)) {
-        "A pane that reached the fixed target must stop accepting manual clicks"
+    val second = TermGui.rubixClickPlan(board[limeSlot], predicted = null, target = fixed, requestedButton = 0)
+    check(second.button == 0 && second.nextColor == 4)
+    board[limeSlot] = ItemStack(ring[requireNotNull(second.nextColor)])
+    check(TermGui.canClick(kind, title, board, limeSlot)) {
+        "A target-colour pane remains interactive for an explicit manual input"
     }
 
     for (slot in TerminalSolver.RUBIX_SLOTS) {
         var current = TerminalHelper.rubixColorIndex(board[slot])
         repeat(TerminalSolver.rubixDistance(current, fixed)) {
             val target = requireNotNull(TermGui.rubixTargetFor(board, committed = null, cached = cached))
-            check(target == fixed && TermGui.canClick(kind, title, board, slot, rubixTarget = target))
-            current = TerminalSolver.rubixAdvance(current, TerminalSolver.rubixButton(current, target))
+            check(target == fixed && TermGui.canClick(kind, title, board, slot))
+            val plan = TermGui.rubixClickPlan(board[slot], predicted = null, target = target, requestedButton = 0)
+            current = requireNotNull(plan.nextColor)
             board[slot] = ItemStack(ring[current])
         }
         check(current == fixed)
     }
-    check(TerminalSolver.RUBIX_SLOTS.none { TermGui.canClick(kind, title, board, it, rubixTarget = fixed) })
+    check(TerminalSolver.clickCandidates(title, board, rubixTarget = fixed).isEmpty())
+    check(TerminalSolver.RUBIX_SLOTS.all { TermGui.canClick(kind, title, board, it) }) {
+        "Solver completion must not disable the manual controls"
+    }
     check(TermGui.rubixTargetFor(board, committed = 3, cached = 4) == 3) {
         "Automation's committed target takes precedence over the manual cache"
     }

@@ -64,9 +64,10 @@ rejected after close or replacement.
 Manual color terminal filtering used to recompute an optimal target while
 rendering and click direction used the cached target. A partially changed
 pane could therefore become unclickable before reaching the displayed
-color. Rendering, direction and filtering now share the same committed or
-cached target. A regression changes the optimal color midway through a
-two-click sequence and completes the board using the fixed target.
+color. Rendering and manual left-click direction now share the same committed
+or cached target. Manual eligibility follows the visible controls independently
+of the solver's next candidate. A regression changes the optimal color midway
+through a two-click sequence and completes the board using the fixed target.
 
 Live Melody used a separate packet-marker algorithm that compared rows
 using different bases, bypassed the click clock after the first input and
@@ -144,8 +145,8 @@ without sending a final completed slot state. Live capture does not receive
 authoritative input acceptance, so its authoritative wrong-input count remains
 unknown.
 
-The final build also retains actual red/green pane states and all five
-current color-terminal states when solver hints are off. Its JDK 25 offline
+A previous build also retained actual red/green pane states and all five
+current color-terminal states when solver hints were off. Its JDK 25 offline
 build and full regression harness passed at 20:54:17. The root jar and the
 jar installed into Prism have identical SHA-256:
 `D8328415AC4976546A2F5FD4CC5CDF476C8C756AF66D94A5E491868174341BE6`.
@@ -153,7 +154,7 @@ F8 replay of the unchanged route passed again at 20:58:09 with this jar.
 Live Computer Use observed the actual pane/color states and neutral item
 tiles with solver hints off at GUI scale 3.
 
-Representative boards completed with this final jar, independently confirmed
+Representative boards completed with this previous jar, independently confirmed
 by server chat and the green Terminal Active hologram:
 
 | Server confirmation time | Board | Sent automatic inputs / recorded goal | Duration |
@@ -165,9 +166,9 @@ by server chat and the green Terminal Active hologram:
 | 21:09:32 | Red/green panes | 12 / 12 | 6.219 s |
 | 21:13:24 | Numbers, fourteen panes | 14 / 14 | 9.027 s |
 
-The final Numbers board displayed all fourteen labels and a `/14` progress
+The D8328415 build's Numbers board displayed all fourteen labels and a `/14` progress
 denominator. Its capture goal was fourteen before the first input and stayed
-fourteen throughout; inputs selected labels 1 through 14 in order. The final
+fourteen throughout; inputs selected labels 1 through 14 in order. That build's
 Melody sequence was slots 16, 25, 34, 34, 43, 43, with one retry each on rows
 three and four. Both fourth-row inputs were inside the displayed button.
 Every input matched its current candidate, and the shortest Melody interval
@@ -176,7 +177,89 @@ suspected wrong inputs, lost events, ordering errors or file failures.
 The server-completed boards can still be classified `closed_unconfirmed`
 when the final completed slot snapshot does not arrive before menu closure;
 the authoritative live wrong-input count remains unknown. Raw Input was
-restored to on after Computer Use testing, with GUI scale left at 3.
+restored to on after that Computer Use session, with GUI scale left at 3.
+
+## Current manual-input correction and verification
+
+Manual custom-grid input now checks structural eligibility rather than the
+solver's next candidate. Visible numbered panes, choice items, color panes and
+evidenced Melody buttons can receive manual input while the server validates
+order and timing. Empty tiles, filler, gaps and positions outside the interactive
+grid remain excluded. Rubix left clicks still choose the shortest direction
+toward the fixed target, while explicit right clicks retain their direction.
+An immutable pre-send `RubixClickPlan` retains the effective button and next
+ring color before vanilla `PICKUP` can empty the local slot. Successful sends
+use that stored color for prediction and presentation.
+
+The current JDK 25 offline build and full regression harness passed at
+22:02:41. The jar was installed at 22:04:10 and launched at 22:04:20; its SHA-256 is:
+`FA1BF38BA4C9E50897B5DC87065C55FFE204393CCEAFC6E229BD8767497D1F05`.
+A short F8 press replayed the exact unchanged route successfully between
+22:07:59 and 22:08:02.
+
+With Auto Terminal and solver hints both off, the live Numbers test ran from
+22:08:40.357 to 22:09:56.856. Fourteen raw left-click presses produced fourteen
+client-accepted inputs routed as `CLONE`, button 2, selecting labels 1 through
+14 with a recorded goal of 14. Server completion confirmed the solve.
+Acknowledgements for inputs 1–13 arrived after 131.405–165.578 ms; the screen
+closed 130.628 ms after the final input. This sequence did not exercise clicks
+faster than the previous acknowledgement; the rapid manual acknowledgement
+case is covered by regression checks only.
+
+At 22:10:25.875, an intentional off-beat manual Melody input reached row one's
+button at slot 16 despite `candidateMatch=false`. It was accepted by the client
+input route, the server did not advance the row, and Escape then ended the
+test. This demonstrates manual eligibility independently of solver alignment;
+it is not a completed Melody board.
+
+After enabling Auto Terminal, the reopened four-row Melody board ran from
+22:12:48.296 to 22:12:53.910, completing in 5.614 seconds with server
+confirmation. Its five inputs were slots 16, 25, 34, 43 and a retry of 43,
+against a recorded goal of four rows. All matched their current candidates;
+the fourth-row retry interval was 550.990 ms. These runs reported no lost
+events, ordering errors or file failures. Candidate matching does not provide
+an authoritative live wrong-input count.
+
+Manual Rubix also completed on the same FA1BF38B build with Auto Terminal and
+solver hints off at GUI scale 3. The board opened at 22:24:26.977 and closed at
+22:25:58.605, lasting 91.627604 seconds. Its initial normalized ring was
+`[3,1,0] / [1,1,4] / [3,3,2]`, with an optimal yellow target (index 1) and a
+recorded goal of ten clicks. The cached target itself is not logged, but the
+recorded directions are consistent with retaining yellow.
+
+Twelve client-accepted manual `PICKUP` inputs came from one raw right click and
+eleven raw left clicks, with no automatic inputs. Eight used effective button
+1 (backward) and four used button 0 (forward). The intentional first right click
+at slot 22 changed an already-yellow pane to orange; the following left click
+restored yellow. That deliberate two-input detour explains twelve inputs
+against the original goal of ten, and produced the only candidate mismatch.
+All subsequent inputs matched their candidates.
+
+| Local time | Slot | Raw button → sent button | Server color change | Acknowledgement |
+|---|---:|---|---|---:|
+| 22:24:48.223 | 22 | right → 1 | yellow → orange | 132.618 ms |
+| 22:24:53.840 | 22 | left → 0 | orange → yellow | 165.331 ms |
+| 22:25:03.508 | 12 | left → 1 | blue → green | 146.582 ms |
+| 22:25:08.657 | 12 | left → 1 | green → yellow | 147.924 ms |
+| 22:25:14.324 | 14 | left → 0 | orange → yellow | 121.714 ms |
+| 22:25:20.839 | 23 | left → 0 | red → orange | 165.508 ms |
+| 22:25:27.809 | 23 | left → 0 | orange → yellow | 145.055 ms |
+| 22:25:33.922 | 32 | left → 1 | green → yellow | 132.750 ms |
+| 22:25:40.605 | 31 | left → 1 | blue → green | 149.028 ms |
+| 22:25:46.823 | 31 | left → 1 | green → yellow | 130.456 ms |
+| 22:25:52.155 | 30 | left → 1 | blue → green | 148.516 ms |
+| 22:25:58.439 | 30 | left → 1 | final input; no final slot packet | menu closed after 165.156 ms |
+
+The first eleven matching server updates arrived after 121.714–165.508 ms,
+with a median of 146.582 ms. The final input was independently confirmed by
+the testing player's server activation at 22:25:58 and the green Terminal
+Active hologram. The capture classified this board as completed after the
+optimistic final pane update, so the server confirmation is the independent
+completion proof. The recording reported no lost events, ordering errors or
+file failures. It does not provide an authoritative wrong-input count.
+These manual clicks were spaced seconds apart; the click-before-acknowledgement
+race remains covered by regressions only. Raw Input was restored to on after
+this session, with GUI scale left at 3.
 
 Live terminal input recording is enabled for these tests. JSONL captures
 and game logs stay local under the verification instance and ignored build

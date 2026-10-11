@@ -125,7 +125,9 @@ internal fun terminalLiveMelodyDecisionRegressionChecks() {
         check(TerminalSolver.melodyCandidate(captured) == 43 && TerminalSolver.melodyMarker(captured) == 5)
         check(TerminalSolver.goalFor(title, captured) == 4)
         check(TermGui.canClick(TerminalSolver.Kind.MELODY, title, captured, 43))
-        check(!TermGui.canClick(TerminalSolver.Kind.MELODY, title, captured, 34))
+        check(TermGui.canClick(TerminalSolver.Kind.MELODY, title, captured, 34)) {
+            "An evidenced earlier Melody button remains a manual control"
+        }
         val contentRows = rows.map { it.row }
         val grid = TermGui.layout(TerminalSolver.Kind.MELODY, 960, 601, 150, 2, contentRows)
         val fourthButton = checkNotNull(grid.center(43))

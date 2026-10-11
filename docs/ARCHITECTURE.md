@@ -239,7 +239,20 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   draw remains subject to the same title, slot-count and quiet-mode gates. Clicks leave
   through `dungeon/TerminalInput.kt`: the player's window sends packets, a
   screen holding a menu of its own is driven through `slotClicked`, the door
-  a hand's click uses there. `MixinScreen` owns the terminal frame at
+  a hand's click uses there. Manual eligibility follows the visible interactive
+  controls, independently of the solver's next candidate. Numbered panes can
+  receive consecutive clicks before the previous acknowledgement, and Melody
+  buttons remain clickable between alignments. Live servers validate order and
+  timing; the practice engine validates its own inputs. Empty tiles, filler,
+  gaps and positions outside the interactive grid never become slot clicks.
+  Manual Rubix left clicks still choose the shortest direction toward the
+  fixed displayed target; explicit right clicks retain their requested
+  direction, including on a pane already at that target. An immutable
+  `RubixClickPlan` captures the effective button and next ring color before
+  `TerminalInput.send`: vanilla `PICKUP` can empty the local slot during that
+  call. After a successful send, prediction and presentation use the stored
+  next color rather than reading the now-empty slot.
+  `MixinScreen` owns the terminal frame at
   `extractRenderStateWithTooltipAndSubtitles`, before competing render
   cancellations. Fabric's GameRenderer wrapper retains the extraction events,
   input clock and pointer; the replacement dispatches only the background event.
@@ -335,9 +348,13 @@ gameplay visibility gates, desktop/HUD routing and delayed map calibration.
 backend cursor policy, restoration ownership and viewport intersection.
 `TerminalSensingLifecycleRegressionCheck.kt` and
 `TerminalLiveMelodyRegressionCheck.kt` exercise real packet objects through
-the production sensing and decision paths. `TerminalManualRubixRegressionCheck.kt`
-checks that manual filtering and direction retain the displayed color target
-when a partial input changes the board's optimal color.
+the production sensing and decision paths. `TerminalManualInputRegressionCheck.kt`
+checks consecutive number clicks before acknowledgement, manual choices and
+Melody buttons outside solver candidates, explicit right clicks at the Rubix
+target, and preservation of the pre-send next color after `PICKUP` empties a
+slot. `TerminalManualRubixRegressionCheck.kt` checks that manual left-click
+direction retains the fixed displayed color target when a partial input changes
+the board's optimal color, while completed controls remain interactive.
 `gui/GuiViewportRegressionCheck.kt` checks settings fitting and inverse input
 transforms without requiring a game window. These are logic checks, not
 native-window or GPU presentation tests.

@@ -378,12 +378,25 @@ object TermGui {
         return clicks.takeIf { it > 0 }?.toString()
     }
 
-    /** Manual filtering, direction and drawing share the terminal's fixed target. */
+    /** Manual direction and drawing share the terminal's fixed target. */
     internal fun rubixTargetFor(
         all: List<ItemStack>,
         committed: Int? = AutoTerminal.rubixTargetOrNull(),
         cached: Int? = cachedRubixTarget
     ): Int? = committed ?: cached ?: TerminalSolver.optimalRubixTarget(all)
+
+    internal data class RubixClickPlan(val button: Int, val nextColor: Int?)
+
+    /** PICKUP can empty the live slot before returning, so capture its next colour first. */
+    internal fun rubixClickPlan(
+        stack: ItemStack, predicted: Int?, target: Int?, requestedButton: Int
+    ): RubixClickPlan {
+        val current = predicted?.takeIf { it in 0..4 }
+            ?: TerminalHelper.rubixColorIndex(stack).takeIf { it >= 0 }
+        val button = if (requestedButton == 0 && current != null && target != null && target in 0..4)
+            TerminalSolver.rubixButton(current, target) else requestedButton
+        return RubixClickPlan(button, current?.let { TerminalSolver.rubixAdvance(it, button) })
+    }
 
     /** Gaps and padding consume input, but never become hidden vanilla slot clicks. */
     fun click(screen: AbstractContainerScreen<*>, x: Double, y: Double, button: Int, source: String = "manual") {
@@ -395,19 +408,11 @@ object TermGui {
         val mc = Minecraft.getInstance()
         val player = mc.player ?: return
 
-        val effectiveButton = if (kind == Kind.RUBIX) {
-            val slotObj = screen.menu.slots.getOrNull(slot)
-            val currentIdx = AutoTerminal.rubixPredicted(slot)
-                ?: TerminalHelper.rubixColorIndex(slotObj?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
-            val target = rubixTargetFor(all)
-            when (button) {
-                0 -> if (currentIdx != null && target != null && currentIdx in 0..4 && target in 0..4) {
-                    TerminalSolver.rubixButton(currentIdx, target)
-                } else 0
-                1 -> 1
-                else -> 2
-            }
-        } else if (simulation) button else 2
+        val rubixPlan = if (kind == Kind.RUBIX) rubixClickPlan(
+            all.getOrNull(slot) ?: ItemStack.EMPTY, AutoTerminal.rubixPredicted(slot), rubixTargetFor(all), button
+        ) else null
+        val effectiveButton = rubixPlan?.button ?: if (simulation) button else 2
+        val nextColor = rubixPlan?.nextColor
 
         // Same door the clicker uses: the player's window sends the packet, a
         // screen holding its own menu gets the click through slotClicked —
@@ -422,12 +427,8 @@ object TermGui {
         if (!sent) return
         screen.menu.carried = ItemStack.EMPTY
         if (!simulation) player.containerMenu.carried = ItemStack.EMPTY
-        if (kind == Kind.RUBIX && !simulation) {
+        if (nextColor != null && !simulation) {
             val slotObj = screen.menu.slots.getOrNull(slot)
-            val currentIdx = AutoTerminal.rubixPredicted(slot)
-                ?: TerminalHelper.rubixColorIndex(slotObj?.item ?: ItemStack.EMPTY).takeIf { it >= 0 }
-                ?: 0
-            val nextColor = TerminalSolver.rubixAdvance(currentIdx, effectiveButton)
             AutoTerminal.setRubixPredicted(slot, nextColor)
             val nextItem = when (nextColor) {
                 0 -> net.minecraft.world.item.Items.ORANGE_STAINED_GLASS_PANE
@@ -443,12 +444,21 @@ object TermGui {
         }
     }
 
-    internal fun canClick(
-        kind: Kind, title: String, all: List<ItemStack>, slot: Int,
-        rubixTarget: Int? = if (kind == Kind.RUBIX) rubixTargetFor(all) else null
-    ): Boolean =
-        if (kind == Kind.MELODY) TerminalSolver.melodyRows(all).any { it.buttonSlot == slot && !it.completed }
-        else slot in TerminalSolver.clickCandidates(title, all, rubixTarget = rubixTarget)
+    /** Manual input follows interactive content, independently of the solver's next candidate. */
+    internal fun canClick(kind: Kind, title: String, all: List<ItemStack>, slot: Int): Boolean {
+        if (TerminalSolver.kindOf(title) != kind || slot !in 0 until kind.slotCount) return false
+        val stack = all.getOrNull(slot) ?: return false
+        if (stack.isEmpty || stack.`is`(Items.BLACK_STAINED_GLASS_PANE)) return false
+        return when (kind) {
+            Kind.ORDER -> slot in TerminalSolver.numberSlots(all)
+            Kind.RUBIX -> slot in TerminalSolver.RUBIX_SLOTS && TerminalHelper.rubixColorIndex(stack) in 0..4
+            Kind.PANES -> tiles(kind).any { it.slot == slot } &&
+                (stack.`is`(Items.RED_STAINED_GLASS_PANE) || stack.`is`(Items.LIME_STAINED_GLASS_PANE) ||
+                    stack.`is`(Items.GREEN_STAINED_GLASS_PANE))
+            Kind.SELECT, Kind.STARTS -> tiles(kind).any { it.slot == slot }
+            Kind.MELODY -> TerminalSolver.melodyRows(all).any { it.buttonSlot == slot }
+        }
+    }
 
     fun keyPressed(screen: AbstractContainerScreen<*>, event: KeyEvent) {
         val mc = Minecraft.getInstance()

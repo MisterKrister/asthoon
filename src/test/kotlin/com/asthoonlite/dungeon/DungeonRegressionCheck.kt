@@ -912,6 +912,7 @@ fun main() {
         terminalCaptureRegressionChecks()
         terminalPresentationRegressionChecks()
         terminalManualRubixRegressionChecks()
+        terminalManualInputRegressionChecks()
         terminalSensingLifecycleRegressionChecks()
         terminalOrderGoalRegressionChecks()
         terminalPanePresentationRegressionChecks()
