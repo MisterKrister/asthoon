@@ -5,6 +5,8 @@ import com.asthoonlite.config.Config
 import com.asthoonlite.config.TerminalMode
 import com.asthoonlite.mixin.AbstractContainerScreenAccessor
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphicsExtractor
@@ -19,10 +21,12 @@ import kotlin.random.Random
 /**
  * A mouse pointer that moves like a hand, drawn over the container screen.
  *
- * The mod never moves the real cursor. Terminal clicks go down the packet path
+ * Terminal clicks go down the packet path
  * (`MultiPlayerGameMode.handleContainerInput` -> `ServerboundContainerClickPacket`),
  * so nothing about the click needs a pointer at all — this object is purely the
- * picture of one. What it buys is that a solved terminal no longer *looks* like
+ * picture of one. The default cursor style moves the native GUI cursor on
+ * backends which support it; native Wayland uses a drawn arrow during a glide.
+ * What it buys is that a solved terminal no longer *looks* like
  * it was solved by an act of God: a pointer travels to the pane, decelerates
  * into it, while clicks run independently on the terminal's clock.
  *
@@ -75,7 +79,8 @@ object TerminalCursor {
     fun currentY(): Float = y
     private var positioned = false
 
-    /** True once [x]/[y] have actually been drawn — i.e. once there is a tip
+    /** True once [x]/[y] have been queued for drawing or sent to the native
+     *  pointer — i.e. once there is a tip
      *  worth warping the real cursor to on handback. Never true before the
      *  first frame, so an early handback leaves the cursor where it was
      *  rather than snapping it to an invented coordinate. */
@@ -86,13 +91,11 @@ object TerminalCursor {
     private var lastGlideAt = 0L
 
     /**
-     * True while the drawn pointer is on screen this frame and therefore
-     * *is* the cursor.
+     * True after the software pointer was queued in this frame.
      *
      * Set the same frame the arrow is drawn, cleared the same frame it stops
-     * being drawn (see [render] and [reset]). Derived from the draw, not from
-     * Config, so it needs no clock and no config reads and cannot disagree
-     * with what anyone can see.
+     * being drawn (see [render] and [reset]). Extraction cannot prove GPU
+     * presentation; diagnostic counters explicitly report queued primitives.
      *
      * While this is true the window has a cursor at the drawn pointer's tip
      * and no cursor at all where GLFW thinks the mouse is. Everything vanilla
@@ -103,51 +106,115 @@ object TerminalCursor {
      */
     private var drawn = false
 
-    fun ownsCursor(): Boolean = if (Config.autoTerminalCursorStyle == 1) motion.moving(System.currentTimeMillis()) else drawn
+    private var nativePresentation = false
+    fun ownsCursor(): Boolean = drawn || (nativePresentation && moving)
 
     fun reset() {
         motion.reset(CursorMotion.Point(x, y))
         positioned = false
         drawn = false
-        // Hand the real cursor back now that nothing is drawn for it. Clear
-        // positioned first so shouldHideRealCursor agrees, but leave
-        // tipKnown set: x/y are still the pointer's last tip, and that is
-        // where the real cursor has to reappear.
-        // Resetting the click driver during an open terminal must not release Normal's OS cursor.
-        val terminalOpen = if (Config.autoTerminalCursorStyle == 1) {
-            val screen = Minecraft.getInstance().screen as? AbstractContainerScreen<*>
-            screen != null && TerminalSolver.isTerminalTitle(screen.title.string)
-        } else false
-        val hold = holdNormalCursor(Config.autoTerminalCursorStyle, terminalOpen, Config.autoTerminalCursorGlide)
-        if (Config.autoTerminalCursorStyle == 1) {
-            syncOsCursor(false)
-        } else {
-            syncOsCursor(hold)
-        }
+        nativePresentation = false
+        release("reset")
         tipKnown = false
         trail.clear()
     }
 
     /**
      * Whether the real cursor is currently hidden for the drawn one.
-     * Tracks intent, not the window: one transition in, one out.
+     * Tracks mode ownership, including a failed acquisition awaiting cleanup.
+     * Normal acquisition verifies the requested mode. It does not prove
+     * that the compositor has displayed a frame; diagnostics distinguish this
+     * native mode from the queued software draw.
      */
     private var osCursorHidden = false
-    private var blankCursor: Long = 0L
+    private var hiddenWindow = 0L
+    private var activeScreen: AbstractContainerScreen<*>? = null
+    private var activeContainerId = -1
+    private var platform = 0
+    private var lastOutcome = "not-extracted"
+    private var lastRelease = "none"
+    private var lastNativeFailure: String? = null
+    private var extractCallbacks = 0L
+    private var softwareEnqueues = 0L
+    private var nativeWarpRequests = 0L
+    private var lastExtractAt = 0L
+    private var waylandFallbackLogged = false
+    private val modeTransitions = CursorModeTransitions()
 
-    private fun getOrCreateBlankCursor(): Long {
-        if (blankCursor != 0L) return blankCursor
-        try {
-            val buffer = org.lwjgl.system.MemoryUtil.memAlloc(16 * 16 * 4)
-            for (i in 0 until 16 * 16 * 4) buffer.put(i, 0)
-            val img = org.lwjgl.glfw.GLFWImage.malloc().set(16, 16, buffer)
-            blankCursor = GLFW.glfwCreateCursor(img, 0, 0)
-            img.free()
-            org.lwjgl.system.MemoryUtil.memFree(buffer)
-        } catch (t: Throwable) {
-            AsthoonLite.LOGGER.warn("[AsthoonLite] Failed to create blank GLFW cursor", t)
+    internal enum class Presentation { INACTIVE, NATIVE, OSU, ARROW }
+
+    /** Cumulative native requests and their readbacks; repeated frame reads do not count. */
+    internal class CursorModeTransitions {
+        var hideRequests = 0L
+            private set
+        var hideSuccesses = 0L
+            private set
+        var restoreRequests = 0L
+            private set
+        var restoreSuccesses = 0L
+            private set
+        var lastHideObservedMode: Int? = null
+            private set
+        var lastHideReason = "none"
+            private set
+        private var requestedMode: Int? = null
+
+        fun requested(mode: Int, reason: String) {
+            requestedMode = mode
+            if (mode == GLFW.GLFW_CURSOR_HIDDEN) {
+                hideRequests++
+                lastHideObservedMode = null
+                lastHideReason = reason
+            } else restoreRequests++
         }
-        return blankCursor
+
+        fun observed(mode: Int) {
+            val requested = requestedMode ?: return
+            requestedMode = null
+            if (requested == GLFW.GLFW_CURSOR_HIDDEN) {
+                lastHideObservedMode = mode
+                if (mode == requested) hideSuccesses++
+            } else if (mode == requested) restoreSuccesses++
+        }
+
+        fun failed(reason: String) {
+            if (requestedMode == GLFW.GLFW_CURSOR_HIDDEN) lastHideReason = reason
+            requestedMode = null
+        }
+    }
+
+    /** Native Wayland cannot warp a normal GUI cursor. XWayland reports X11. */
+    internal fun supportsNativeWarp(platform: Int): Boolean = platform == GLFW.GLFW_PLATFORM_WIN32 ||
+        platform == GLFW.GLFW_PLATFORM_COCOA || platform == GLFW.GLFW_PLATFORM_X11
+
+    internal fun presentation(
+        glide: Boolean, terminal: Boolean, focused: Boolean, iconified: Boolean,
+        grabbed: Boolean, validDimensions: Boolean, style: Int, nativeWarp: Boolean, moving: Boolean,
+        completedPractice: Boolean = false
+    ): Presentation = when {
+        !glide || !terminal || completedPractice || !focused || iconified || grabbed || !validDimensions -> Presentation.INACTIVE
+        style != 1 -> Presentation.OSU
+        nativeWarp || !moving -> Presentation.NATIVE
+        else -> Presentation.ARROW
+    }
+
+    internal fun restoredMode(ownedHidden: Boolean, currentMode: Int, grabbed: Boolean): Int? =
+        if (ownedHidden && currentMode == GLFW.GLFW_CURSOR_HIDDEN)
+            if (grabbed) GLFW.GLFW_CURSOR_DISABLED else GLFW.GLFW_CURSOR_NORMAL
+        else null
+
+    /** Drawable bounds, independent of motion; an off-screen enqueue cannot hide the native pointer. */
+    internal fun pointerIntersectsViewport(tipX: Float, tipY: Float, width: Int, height: Int, osu: Boolean): Boolean {
+        if (!tipX.isFinite() || !tipY.isFinite() || width <= 0 || height <= 0) return false
+        if (osu) return tipX - POINTER_SIZE / 2f < width && tipY - POINTER_SIZE / 2f < height &&
+            tipX + POINTER_SIZE / 2f > 0f && tipY + POINTER_SIZE / 2f > 0f
+        val x = tipX.toInt().toLong()
+        val y = tipY.toInt().toLong()
+        // Use the actual sparse arrow spans, including its one-pixel shadow.
+        return cursorShadowSpans.any { run ->
+            (y + run.row in 0 until height.toLong() && x + run.x0 < width && x + run.x1 + 1 > 0) ||
+                (y + run.row + 1 in 0 until height.toLong() && x + run.x0 + 1 < width && x + run.x1 + 2 > 0)
+        }
     }
 
     internal fun holdNormalCursor(style: Int, terminalOpen: Boolean, glide: Boolean): Boolean =
@@ -186,71 +253,110 @@ object TerminalCursor {
         if (guiScaledWidth <= 0) 0.0
         else scaled.toDouble() * screenWidth / guiScaledWidth
 
-    /**
-     * Swaps the real cursor out from under the drawn pointer, and hands it
-     * back when the drawn one is finished.
-     *
-     * Handback warps first ([rawFromScaled]): the drawn pointer's tip is
-     * where the eye last saw a cursor, so the real one has to appear *there*
-     * rather than wherever the physical mouse drifted to while it was
-     * hidden. That is what makes the handover invisible — without it the
-     * arrow fades on pane 7 and the real cursor pops in three hundred pixels
-     * away.
-     *
-     * [GLFW] is called on the client thread — both the tick and the render
-     * pass run there, so the call never leaves the thread GLFW was
-     * initialised on, and the equality guard makes it a no-op per state, so
-     * calling it every frame costs nothing.
-     *
-     * The mode only goes to HIDDEN out of [render], and [render] only runs
-     * behind a container screen, so the gameplay grab is never disturbed on
-     * the way in. It only comes back to NORMAL while a screen is still up:
-     * with no screen gameplay owns the grab and forcing NORMAL over it would
-     * let the mouse out of the window. The position still gets warped either
-     * way, so the cursor is where it belongs the next time a screen releases
-     * it.
-     */
-    private fun syncOsCursor(pointerVisible: Boolean) {
-        // Short-circuit before the argument list is evaluated — the repeated
-        // `pointerVisible` is deliberate, because Kotlin only skips the Config
-        // reads if this && decides it. With nothing drawn there is nothing to
-        // hide behind anyway, and reaching those reads needs a Fabric loader to
-        // open a config directory with, which the regression harness does not
-        // have behind it when it calls reset().
-        val wanted = pointerVisible && shouldHideRealCursor(
-            pointerVisible,
-            Config.autoTerminalCursorHideReal,
-            Config.autoTerminalCursorGlide
-        )
+    private fun currentPlatform(): Int {
+        if (platform == 0) platform = GLFW.glfwGetPlatform()
+        return platform
+    }
 
-        if (!wanted && !osCursorHidden && Config.autoTerminalCursorStyle != 1) return
-        val mc = runCatching { Minecraft.getInstance() }.getOrNull() ?: return
-        val win = mc.window
-        val handle = win.handle()
+    private fun nativeFailure(operation: String, error: Throwable) {
+        val detail = "$operation: ${error.javaClass.simpleName}: ${error.message}"
+        if (detail != lastNativeFailure) AsthoonLite.LOGGER.warn("[AsthoonLite] Terminal cursor {}", detail)
+        lastNativeFailure = detail
+    }
 
-        if (wanted) {
-            val blank = getOrCreateBlankCursor()
-            if (blank != 0L) {
-                GLFW.glfwSetCursor(handle, blank)
-            }
-            GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_HIDDEN)
-            osCursorHidden = true
+    /** Hide only after a software primitive was queued successfully this frame. */
+    private fun syncOsCursor(pointerQueued: Boolean) {
+        val wanted = pointerQueued && shouldHideRealCursor(true,
+            Config.autoTerminalCursorHideReal, Config.autoTerminalCursorGlide)
+        if (!wanted) {
+            release("software-pointer-inactive")
             return
         }
+        val mc = Minecraft.getInstance()
+        val win = mc.window
+        if (!win.isFocused || win.isIconified || mc.mouseHandler.isMouseGrabbed) {
+            release("window-inactive")
+            return
+        }
+        var acquisitionAttempted = false
+        try {
+            val handle = win.handle()
+            val before = GLFW.glfwGetInputMode(handle, GLFW.GLFW_CURSOR)
+            // Camera capture belongs to Minecraft. Never replace DISABLED.
+            if (before == GLFW.GLFW_CURSOR_DISABLED) {
+                release("gameplay-grab")
+                return
+            }
+            if (before != GLFW.GLFW_CURSOR_NORMAL && before != GLFW.GLFW_CURSOR_HIDDEN) {
+                release("external-cursor-mode")
+                return
+            }
+            if (before != GLFW.GLFW_CURSOR_HIDDEN) {
+                acquisitionAttempted = true
+                modeTransitions.requested(GLFW.GLFW_CURSOR_HIDDEN, "software-pointer-queued")
+                GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_HIDDEN)
+            }
+            val observed = GLFW.glfwGetInputMode(handle, GLFW.GLFW_CURSOR)
+            if (acquisitionAttempted) modeTransitions.observed(observed)
+            if (observed != GLFW.GLFW_CURSOR_HIDDEN) {
+                error("requested HIDDEN, observed native cursor mode $observed")
+            }
+            // If another owner already hid it, leave restoration to that owner.
+            if (before != GLFW.GLFW_CURSOR_HIDDEN || osCursorHidden) {
+                osCursorHidden = true
+                hiddenWindow = handle
+            }
+        } catch (t: Throwable) {
+            modeTransitions.failed("native-hide-error")
+            if (acquisitionAttempted) {
+                osCursorHidden = true
+                hiddenWindow = win.handle()
+            }
+            nativeFailure("hide", t)
+            release("native-hide-error")
+        }
+    }
 
-        if (osCursorHidden || Config.autoTerminalCursorStyle == 1) {
+    /** Release only the hidden mode this module acquired, without changing a camera grab. */
+    fun release(reason: String = "release") {
+        lastRelease = reason
+        drawn = false
+        nativePresentation = false
+        if (!osCursorHidden) return
+        try {
+            val mc = Minecraft.getInstance()
+            val win = mc.window
+            val handle = hiddenWindow
+            if (handle == 0L || handle != win.handle()) {
+                osCursorHidden = false
+                hiddenWindow = 0L
+                return
+            }
+            val mode = GLFW.glfwGetInputMode(handle, GLFW.GLFW_CURSOR)
+            val restored = restoredMode(osCursorHidden, mode, mc.mouseHandler.isMouseGrabbed)
+            if (restored != null) {
+                // Native Wayland has no supported GUI warp. Restore its cursor
+                // where the physical pointer is, rather than issuing an error.
+                if (tipKnown && win.isFocused && !win.isIconified && mc.screen != null &&
+                    !mc.mouseHandler.isMouseGrabbed && supportsNativeWarp(currentPlatform())) {
+                    runCatching {
+                        GLFW.glfwSetCursorPos(handle,
+                            rawFromScaled(x, win.screenWidth, win.guiScaledWidth),
+                            rawFromScaled(y, win.screenHeight, win.guiScaledHeight))
+                    }.onFailure { nativeFailure("handback-warp", it) }
+                }
+                modeTransitions.requested(restored, reason)
+                GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, restored)
+                val observed = GLFW.glfwGetInputMode(handle, GLFW.GLFW_CURSOR)
+                modeTransitions.observed(observed)
+                check(observed == restored) { "native cursor mode did not restore" }
+            }
             osCursorHidden = false
-            if (tipKnown && Config.autoTerminalCursorStyle == 0) {
-                GLFW.glfwSetCursorPos(
-                    handle,
-                    rawFromScaled(x, win.screenWidth, win.guiScaledWidth),
-                    rawFromScaled(y, win.screenHeight, win.guiScaledHeight)
-                )
-            }
-            GLFW.glfwSetCursor(handle, 0L)
-            if (mc.screen != null) {
-                GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL)
-            }
+            hiddenWindow = 0L
+        } catch (t: Throwable) {
+            modeTransitions.failed("native-restore-error")
+            // Retain ownership on failure so a later tick can retry restoration.
+            nativeFailure("restore", t)
         }
     }
 
@@ -495,6 +601,38 @@ object TerminalCursor {
         if (!moving) lastGlideAt = System.currentTimeMillis()
     }
 
+    /** Manual terminal input follows the physical mouse without changing native ownership. */
+    fun followMouse() {
+        val mc = Minecraft.getInstance()
+        val screen = mc.screen as? AbstractContainerScreen<*> ?: return
+        val win = mc.window
+        val present = presentation(Config.autoTerminalCursorGlide,
+            TerminalSolver.isTerminalTitle(screen.title.string), mc.isWindowActive && win.isFocused,
+            win.isIconified, mc.mouseHandler.isMouseGrabbed,
+            win.screenWidth > 0 && win.screenHeight > 0 && win.guiScaledWidth > 0 && win.guiScaledHeight > 0,
+            Config.autoTerminalCursorStyle, false, false,
+            com.asthoonlite.dungeon.simulator.TerminalSimulator.isCompleted(screen))
+        if (present == Presentation.INACTIVE) return
+        // Seeding resets only motion/position, leaving HIDDEN ownership in place.
+        seedFromMouse(screen.width / 2f, screen.height / 2f)
+        trail.clear()
+        lastGlideAt = System.currentTimeMillis()
+    }
+
+    /** Prepare a changed aim without restarting an existing or landed trip. */
+    internal fun prepareGlide(
+        motion: CursorMotion,
+        target: CursorMotion.Point,
+        now: Long,
+        nativeIdlePosition: (() -> CursorMotion.Point)? = null
+    ): CursorMotion.Point? {
+        // Check before resetting or sampling trip settings: aim runs every frame,
+        // and repeating the same target must preserve its original landing time.
+        if (motion.targets(target)) return null
+        if (!motion.moving(now) && nativeIdlePosition != null) motion.reset(nativeIdlePosition())
+        return motion.position(now)
+    }
+
     /**
      * Retarget from the current sampled position. Clicks belong to AutoTerminal.
      *
@@ -521,17 +659,18 @@ object TerminalCursor {
     fun glideTo(targetX: Float, targetY: Float, clickNotBeforeMs: Long, isFirstClick: Boolean = false) {
         if (!positioned) seedFromMouse(targetX, targetY)
         val now = System.currentTimeMillis()
-        val from = if (Config.autoTerminalCursorStyle == 1 && !motion.moving(now)) {
-            val mc = Minecraft.getInstance()
-            val w = mc.window
-            CursorMotion.Point(
-                mc.mouseHandler.getScaledXPos(w).toFloat().coerceIn(0f, w.guiScaledWidth.toFloat()),
-                mc.mouseHandler.getScaledYPos(w).toFloat().coerceIn(0f, w.guiScaledHeight.toFloat())
-            )
-        } else {
-            motion.position(now)
-        }
-        motion.reset(from)
+        val target = CursorMotion.Point(targetX, targetY)
+        val nativeIdlePosition: (() -> CursorMotion.Point)? = if (Config.autoTerminalCursorStyle == 1) {
+            {
+                val mc = Minecraft.getInstance()
+                val w = mc.window
+                CursorMotion.Point(
+                    mc.mouseHandler.getScaledXPos(w).toFloat().coerceIn(0f, w.guiScaledWidth.toFloat()),
+                    mc.mouseHandler.getScaledYPos(w).toFloat().coerceIn(0f, w.guiScaledHeight.toFloat())
+                )
+            }
+        } else null
+        val from = prepareGlide(motion, target, now, nativeIdlePosition) ?: return
         val dist = hypot(targetX - from.x, targetY - from.y)
 
         val mode = Config.autoTerminalMode
@@ -609,7 +748,7 @@ object TerminalCursor {
         }
 
         motion.glideTo(
-            CursorMotion.Point(targetX, targetY), now, travel, bow,
+            target, now, travel, bow,
             ease, tremor, Random.nextFloat() * 6.283f, Random.nextFloat() * 6.283f,
             overshoot, settle, dwell
         )
@@ -640,6 +779,8 @@ object TerminalCursor {
     private fun seedFromMouse(targetX: Float, targetY: Float) {
         positioned = true
         val mc = Minecraft.getInstance()
+        activeScreen = mc.screen as? AbstractContainerScreen<*>
+        activeContainerId = activeScreen?.menu?.containerId ?: -1
         val w = mc.window
         val sx = mc.mouseHandler.getScaledXPos(w)
         val sy = mc.mouseHandler.getScaledYPos(w)
@@ -691,52 +832,82 @@ object TerminalCursor {
     }
 
     fun render(graphics: GuiGraphicsExtractor, now: Long = System.currentTimeMillis()) {
-        if (!Config.autoTerminalCursorGlide) {
-            syncOsCursor(false)
-            drawn = false
-            return
-        }
+        lastExtractAt = System.currentTimeMillis()
         val mc = Minecraft.getInstance()
+        val win = mc.window
         val screen = mc.screen as? AbstractContainerScreen<*>
-        if (screen == null || !TerminalSolver.isTerminalTitle(screen.title.string)) {
-            syncOsCursor(false)
-            drawn = false
-            return
-        }
-        if (!positioned) seedFromMouse(screen.width / 2f, screen.height / 2f)
-
-        if (Config.autoTerminalCursorStyle == 1) {
-            syncOsCursor(false)
-            drawn = false
-            val win = mc.window
-            val handle = win.handle()
-            if (motion.moving(now)) {
-                val pos = motion.position(now)
-                val rawX = rawFromScaled(pos.x, win.screenWidth, win.guiScaledWidth)
-                val rawY = rawFromScaled(pos.y, win.screenHeight, win.guiScaledHeight)
-                GLFW.glfwSetCursorPos(handle, rawX, rawY)
-                x = pos.x
-                y = pos.y
-                tipKnown = true
-            } else {
-                x = mc.mouseHandler.getScaledXPos(win).toFloat()
-                y = mc.mouseHandler.getScaledYPos(win).toFloat()
-                tipKnown = true
+        try {
+            val terminal = screen != null && TerminalSolver.isTerminalTitle(screen.title.string)
+            val completedPractice = com.asthoonlite.dungeon.simulator.TerminalSimulator.isCompleted(screen)
+            val nativeWarp = supportsNativeWarp(currentPlatform())
+            val mode = presentation(Config.autoTerminalCursorGlide, terminal,
+                mc.isWindowActive && win.isFocused, win.isIconified, mc.mouseHandler.isMouseGrabbed,
+                win.screenWidth > 0 && win.screenHeight > 0 && win.guiScaledWidth > 0 && win.guiScaledHeight > 0,
+                Config.autoTerminalCursorStyle, nativeWarp, motion.moving(now), completedPractice)
+            if (mode == Presentation.INACTIVE || screen == null) {
+                lastOutcome = if (completedPractice) "practice-completed" else
+                    "inactive(glide=${Config.autoTerminalCursorGlide},terminal=$terminal,focused=${win.isFocused},iconified=${win.isIconified},grabbed=${mc.mouseHandler.isMouseGrabbed})"
+                release(if (completedPractice) "practice-completed" else "frame-inactive")
+                return
             }
-            return
+            activeScreen = screen
+            activeContainerId = screen.menu.containerId
+            if (!positioned) seedFromMouse(screen.width / 2f, screen.height / 2f)
+
+            if (mode == Presentation.NATIVE) {
+                release("native-presentation")
+                nativePresentation = true
+                if (motion.moving(now) && nativeWarp) {
+                    val pos = motion.position(now)
+                    GLFW.glfwSetCursorPos(win.handle(),
+                        rawFromScaled(pos.x, win.screenWidth, win.guiScaledWidth),
+                        rawFromScaled(pos.y, win.screenHeight, win.guiScaledHeight))
+                    nativeWarpRequests++
+                    x = pos.x
+                    y = pos.y
+                } else {
+                    x = mc.mouseHandler.getScaledXPos(win).toFloat()
+                    y = mc.mouseHandler.getScaledYPos(win).toFloat()
+                }
+                tipKnown = true
+                lastOutcome = if (moving) "native-glide" else "native-idle"
+                return
+            }
+
+            if (mode == Presentation.ARROW && !waylandFallbackLogged) {
+                AsthoonLite.LOGGER.info("[AsthoonLite] Default terminal cursor uses a software arrow on GLFW platform {}; normal GUI cursor warping is unavailable", platformName(currentPlatform()))
+                waylandFallbackLogged = true
+            }
+            val pos = positionNow(now) ?: (x to y)
+            require(pos.first.isFinite() && pos.second.isFinite()) { "non-finite terminal pointer position" }
+            if (!graphics.containsPointInScissor(pos.first.toInt(), pos.second.toInt())) {
+                lastOutcome = "scissor-excludes-tip"
+                release("software-pointer-clipped")
+                return
+            }
+            nativePresentation = false
+            if (mode == Presentation.OSU && moving) pushTrail(pos.first, pos.second, now)
+            // Extraction is the observable guarantee available in this hook.
+            // Queue the replacement first; never hide in advance of this call.
+            val primitive = drawPointer(graphics, pos.first, pos.second, 1f, now)
+            softwareEnqueues++
+            if (!pointerIntersectsViewport(pos.first, pos.second, win.guiScaledWidth, win.guiScaledHeight,
+                    primitive == "osu-texture")) {
+                lastOutcome = "queued-$primitive-outside-viewport"
+                release("software-pointer-offscreen")
+                return
+            }
+            x = pos.first
+            y = pos.second
+            tipKnown = true
+            syncOsCursor(true)
+            drawn = true
+            lastOutcome = "queued-$primitive"
+        } catch (t: Throwable) {
+            lastOutcome = "extraction-error"
+            nativeFailure("extract", t)
+            release("extraction-error")
         }
-
-        // While the terminal container is open, keep the custom pointer visible
-        // even between clicks or during the initial start delay.
-        val pos = positionNow(now) ?: (x to y)
-
-        syncOsCursor(true)
-        drawn = true
-        if (moving) pushTrail(pos.first, pos.second, now)
-        drawPointer(graphics, pos.first, pos.second, 1f, now)
-        x = pos.first
-        y = pos.second
-        tipKnown = true
     }
 
     // A pointer that parks dead still reads as a sprite, not as a mouse — and
@@ -876,7 +1047,7 @@ object TerminalCursor {
         tipY: Float,
         alpha: Float,
         now: Long
-    ) {
+    ): String {
         graphics.nextStratum()
         if (Config.autoTerminalCursorStyle == 0 && !spriteBroken) {
             try {
@@ -886,7 +1057,7 @@ object TerminalCursor {
                     POINTER_SIZE, CURSOR_TEX_SIZE,
                     ((255f * alpha).toInt().coerceIn(0, 255) shl 24) or 0x00FFFFFF
                 )
-                return
+                return "osu-texture"
             } catch (t: Throwable) {
                 // Same contract as the map's marker: a rejected pipeline drops
                 // to the hand-built shape rather than leaving the frame short
@@ -894,9 +1065,11 @@ object TerminalCursor {
                 // dots would look stranger than an arrow with nothing behind.
                 spriteBroken = true
                 trail.clear()
+                AsthoonLite.LOGGER.warn("[AsthoonLite] Terminal cursor texture extraction failed; using the software arrow", t)
             }
         }
         drawArrowPointer(graphics, tipX, tipY, alpha)
+        return "arrow"
     }
 
     /** The standard default arrow pointer: pixel-exact Windows cursor with crisp outline, fill and drop shadow. */
@@ -932,15 +1105,39 @@ object TerminalCursor {
      */
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { mc ->
-            if (mc.screen !is AbstractContainerScreen<*>) {
-                // Screen went away mid-flight: release the visual pointer.
-                if (moving || positioned) reset()
+            val screen = mc.screen as? AbstractContainerScreen<*>
+            val terminal = screen != null && TerminalSolver.isTerminalTitle(screen.title.string)
+            val reason = when {
+                !terminal -> "terminal-closed"
+                com.asthoonlite.dungeon.simulator.TerminalSimulator.isCompleted(screen) -> "practice-completed"
+                !Config.autoTerminalCursorGlide -> "glide-disabled"
+                !mc.isWindowActive || !mc.window.isFocused || mc.window.isIconified -> "window-inactive"
+                mc.mouseHandler.isMouseGrabbed -> "gameplay-grab"
+                activeScreen != null && (screen !== activeScreen || screen.menu.containerId != activeContainerId) -> "menu-replaced"
+                else -> null
+            }
+            if (reason != null && (positioned || moving || osCursorHidden)) {
+                reset()
+                lastRelease = reason
+                activeScreen = null
+                activeContainerId = -1
             }
         }
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> reset() }
+        ClientLifecycleEvents.CLIENT_STOPPING.register { close() }
 
         ScreenEvents.AFTER_INIT.register { _, screen, _, _ ->
             if (screen !is AbstractContainerScreen<*>) return@register
+            ScreenEvents.remove(screen).register { removed ->
+                if (removed === activeScreen) {
+                    reset()
+                    lastRelease = "screen-removed"
+                    activeScreen = null
+                    activeContainerId = -1
+                }
+            }
             ScreenEvents.afterExtract(screen).register { _, graphics, _, _, _ ->
+                extractCallbacks++
                 // Drive the terminal's clock per frame as well as per tick.
                 // END_CLIENT_TICK runs at 20 Hz, so a click that comes due
                 // between two ticks waits up to 50 ms to leave — a third of a
@@ -959,10 +1156,42 @@ object TerminalCursor {
     }
 
     fun close() {
-        if (blankCursor != 0L) {
-            runCatching { GLFW.glfwDestroyCursor(blankCursor) }
-            blankCursor = 0L
-        }
+        reset()
+        lastRelease = "client-stopping"
+        activeScreen = null
+        activeContainerId = -1
+    }
+
+    private fun platformName(platform: Int): String = when (platform) {
+        GLFW.GLFW_PLATFORM_WIN32 -> "win32"
+        GLFW.GLFW_PLATFORM_COCOA -> "cocoa"
+        GLFW.GLFW_PLATFORM_X11 -> "x11 (including XWayland)"
+        GLFW.GLFW_PLATFORM_WAYLAND -> "native-wayland"
+        GLFW.GLFW_PLATFORM_NULL -> "null"
+        else -> "unknown($platform)"
+    }
+
+    private fun cursorModeName(mode: Int): String = when (mode) {
+        GLFW.GLFW_CURSOR_NORMAL -> "normal"
+        GLFW.GLFW_CURSOR_HIDDEN -> "hidden"
+        GLFW.GLFW_CURSOR_DISABLED -> "disabled"
+        GLFW.GLFW_CURSOR_CAPTURED -> "captured"
+        else -> "unknown($mode)"
+    }
+
+    /** On-demand evidence. An extraction count is not proof of GPU presentation. */
+    fun diagnosticReport(): String {
+        val mc = Minecraft.getInstance()
+        val win = mc.window
+        val screen = mc.screen as? AbstractContainerScreen<*>
+        val kind = screen?.let { TerminalSolver.kindOf(it.title.string) }
+        val native = runCatching {
+            "platform=${platformName(currentPlatform())}, glfw=${GLFW.glfwGetVersionString()}, cursorMode=${cursorModeName(GLFW.glfwGetInputMode(win.handle(), GLFW.GLFW_CURSOR))}"
+        }.getOrElse { "native-unavailable=${it.javaClass.simpleName}: ${it.message}" }
+        return "cursor: glide=${Config.autoTerminalCursorGlide}, style=${Config.autoTerminalCursorStyle}, hideReal=${Config.autoTerminalCursorHideReal}, quietExempt=true, terminal=$kind, menu=${screen?.menu?.containerId}, focused=${win.isFocused}, iconified=${win.isIconified}, grabbed=${mc.mouseHandler.isMouseGrabbed}\n" +
+            "cursor native: $native, ownedHidden=$osCursorHidden, softwareQueued=$drawn, nativePresentation=$nativePresentation, moving=$moving\n" +
+            "cursor mode transitions: hideRequests=${modeTransitions.hideRequests}, hideSuccesses=${modeTransitions.hideSuccesses}, restoreRequests=${modeTransitions.restoreRequests}, restoreSuccesses=${modeTransitions.restoreSuccesses}, lastHideObserved=${modeTransitions.lastHideObservedMode ?: "none"}, lastHideReason=${modeTransitions.lastHideReason}\n" +
+            "cursor extraction: callbacks=$extractCallbacks, softwareEnqueues=$softwareEnqueues, nativeWarpRequests=$nativeWarpRequests, latestAt=$lastExtractAt, outcome=$lastOutcome, release=$lastRelease, tip=($x,$y), spriteFallback=$spriteBroken, error=${lastNativeFailure ?: "none"}"
     }
 
     /**

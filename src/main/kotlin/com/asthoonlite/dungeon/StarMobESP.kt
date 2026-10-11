@@ -52,6 +52,28 @@ object StarMobESP {
     private val playerMobMap = ConcurrentHashMap<UUID, MobCategory>()
     private var lastStandId: Int = 0
     private var fallbackScanTicks: Int = 0
+    private var tickCount = 0L
+    private var scanCount = 0L
+    private var namedPacketCount = 0L
+    private var starredPacketCount = 0L
+    private var queueCallbackCount = 0L
+    private var lastScanStands = 0
+    private var lastScanStarredStands = 0
+    private var lastQueuedMobs = 0
+    private var lastRejectedRoom = 0
+    private var lastRejectedSight = 0
+    private var lastRejectedCleared = 0
+    private var lastDetectionGate = "not_called"
+    private var lastQueueGate = "not_called"
+
+    fun diagnosticReport(): String =
+        "StarMob enabled=${Config.starMobEspEnabled} dungeon=${DungeonContext.inDungeon} " +
+            "quiet=${com.asthoonlite.QuietMode.suppressing()} detectionGate=$lastDetectionGate ticks=$tickCount " +
+            "scans=$scanCount scannedStands=$lastScanStands scannedStarred=$lastScanStarredStands " +
+            "namedPackets=$namedPacketCount starredPackets=$starredPacketCount tracked=${starMobs.size} " +
+            "queueCallbacks=$queueCallbackCount queueGate=$lastQueueGate queuedMobs=$lastQueuedMobs " +
+            "rejectedRoom=$lastRejectedRoom rejectedSight=$lastRejectedSight rejectedCleared=$lastRejectedCleared " +
+            "throughWalls=${Config.starMobEspThroughWalls} renderMode=${Config.starMobRenderMode}"
 
     fun register() {
         ClientTickEvents.END_CLIENT_TICK.register { tick() }
@@ -80,9 +102,11 @@ object StarMobESP {
         val nameItem = items.firstOrNull { it.id == 2 } ?: return
         val opt = nameItem.value as? Optional<*> ?: return
         val comp = opt.orElse(null) as? Component ?: return
+        namedPacketCount++
         val raw = comp.string
         val name = ChatFormatting.stripFormatting(raw) ?: raw
         if (!name.contains("✯")) return
+        starredPacketCount++
 
         val normalized = name.uppercase()
         val offset = if (normalized.contains("WITHERMANCER")) 3 else 1
@@ -101,9 +125,15 @@ object StarMobESP {
     }
 
     private fun tick() {
+        tickCount++
         val mc = Minecraft.getInstance()
         val level = mc.level
         if (!Config.starMobEspEnabled || !DungeonContext.inDungeon || level == null) {
+            lastDetectionGate = when {
+                !Config.starMobEspEnabled -> "disabled"
+                !DungeonContext.inDungeon -> "not_in_dungeon"
+                else -> "no_level"
+            }
             if (starMobs.isNotEmpty()) {
                 starMobs.clear()
                 extraBats.clear()
@@ -111,15 +141,21 @@ object StarMobESP {
             return
         }
 
-        val localPlayer = mc.player ?: return
+        val localPlayer = mc.player ?: run { lastDetectionGate = "no_player"; return }
+        lastDetectionGate = "active"
 
         // Throttle world entity search to every 5 ticks (packets handle instant adds)
         if (++fallbackScanTicks % 5 == 0) {
+            scanCount++
+            lastScanStands = 0
+            lastScanStarredStands = 0
             // Scan loaded armor stands continuously as a robust fallback
             for (stand in level.getEntitiesOfClass(ArmorStand::class.java, localPlayer.boundingBox.inflate(96.0))) {
+                lastScanStands++
                 val raw = stand.customName?.string ?: continue
                 val name = ChatFormatting.stripFormatting(raw) ?: continue
                 if (!name.contains("✯")) continue
+                lastScanStarredStands++
                 val normalized = name.uppercase()
                 val offset = if (normalized.contains("WITHERMANCER")) 3 else 1
                 val direct = level.getEntity(stand.id - offset)
@@ -269,10 +305,19 @@ object StarMobESP {
     }
 
     private fun queueBoxes() {
-        if (!Config.starMobEspEnabled || !DungeonContext.inDungeon) return
+        queueCallbackCount++
+        lastQueuedMobs = 0
+        lastRejectedRoom = 0
+        lastRejectedSight = 0
+        lastRejectedCleared = 0
+        if (!Config.starMobEspEnabled || !DungeonContext.inDungeon) {
+            lastQueueGate = if (!Config.starMobEspEnabled) "disabled" else "not_in_dungeon"
+            return
+        }
         val mc = Minecraft.getInstance()
-        val level = mc.level ?: return
-        val player = mc.player ?: return
+        val level = mc.level ?: run { lastQueueGate = "no_level"; return }
+        val player = mc.player ?: run { lastQueueGate = "no_player"; return }
+        lastQueueGate = if (starMobs.isEmpty()) "no_tracked_mobs" else "filtered"
 
         val phase = Config.starMobEspThroughWalls
 
@@ -281,11 +326,11 @@ object StarMobESP {
             val entity = level.getEntity(id) ?: continue
             if (entity.isRemoved || (entity is LivingEntity && (entity.isDeadOrDying || entity.health <= 0f))) continue
             val pos = entity.position()
-            if (isRoomCleared(pos)) continue
+            if (isRoomCleared(pos)) { lastRejectedCleared++; continue }
             // If through-walls is off, skip mobs blocked by geometry or outside the current room
             if (!phase) {
-                if (!isInSameRoom(pos, player.position())) continue
-                if (!player.hasLineOfSight(entity)) continue
+                if (!isInSameRoom(pos, player.position())) { lastRejectedRoom++; continue }
+                if (!player.hasLineOfSight(entity)) { lastRejectedSight++; continue }
             }
 
             val height = getHeight(entity, category)
@@ -308,7 +353,9 @@ object StarMobESP {
                 WorldBoxRenderer.queueFilled(minX, minY, minZ, maxX, maxY, maxZ, r, g, b, fillA, throughWalls = phase)
             }
             WorldBoxRenderer.queueOutline(minX, minY, minZ, maxX, maxY, maxZ, r, g, b, 0.95f, thickness = thickness, throughWalls = phase)
+            lastQueuedMobs++
         }
+        if (lastQueuedMobs > 0) lastQueueGate = if (com.asthoonlite.QuietMode.suppressing()) "quiet" else "queued"
     }
 
     internal fun renderBounds(mode: Int, hitbox: AABB, pos: Vec3, height: Double): AABB =

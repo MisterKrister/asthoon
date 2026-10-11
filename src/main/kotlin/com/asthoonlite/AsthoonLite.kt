@@ -45,6 +45,8 @@ object AsthoonLite : ClientModInitializer {
     override fun onInitializeClient() {
         LOGGER.info("[AsthoonLite] Loaded")
 
+        // This must precede the first AWT query; the regression JVM never runs client initialization.
+        com.asthoonlite.overlay.MapOverlayWindow.bootstrapDesktop()
         Config.load()
         AslCommand.register()
         DungeonContext.register()

@@ -52,6 +52,9 @@ internal class CursorMotion {
 
     fun reset(point: Point) { resting = point; flight = null }
 
+    /** The target stays known after landing so a repeated aim remains idle. */
+    fun targets(point: Point): Boolean = flight?.to == point
+
     fun moving(now: Long): Boolean = flight?.let { now - it.start < it.duration } == true
 
     fun position(now: Long): Point {
@@ -95,7 +98,7 @@ internal class CursorMotion {
         settleMs: Long = 0L,
         dwellMs: Long = 0L
     ): Boolean {
-        if (flight?.to == target) return false
+        if (targets(target)) return false
         val from = position(now)
         val dx = target.x - from.x
         val dy = target.y - from.y

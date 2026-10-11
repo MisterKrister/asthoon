@@ -140,7 +140,11 @@ object AutoTerminal {
         if (!Config.autoTerminalEnabled ||
             (simulation && !com.asthoonlite.dungeon.simulator.TerminalSimulator.allowsAutomation(practiceScreen)) ||
             (!simulation && !DungeonContext.inDungeon && !Config.autoTerminalAnywhere)) {
-            reset()
+            // Presentation has its own screen/focus/completion gates. Resetting
+            // its pointer here would restore and hide it again every frame in
+            // manual practice and the completed board's one-second display.
+            resetAutomationState()
+            TerminalCursor.followMouse()
             return
         }
         val mc = Minecraft.getInstance()
@@ -808,6 +812,10 @@ object AutoTerminal {
 
     internal fun reset() {
         TerminalCursor.reset()
+        resetAutomationState()
+    }
+
+    private fun resetAutomationState() {
         TerminalSensing.reset()
         resetSolver()
     }

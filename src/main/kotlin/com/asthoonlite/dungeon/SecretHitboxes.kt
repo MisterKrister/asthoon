@@ -74,6 +74,20 @@ object SecretHitboxes {
      *  and its vanilla base depend on them. */
     private val shapeCache = HashMap<Long, VoxelShape>()
     private var shapeCacheSignature = -1L
+    private var tickCount = 0L
+    private var extractionCount = 0L
+    private var lastTickGate = "not_called"
+    private var lastRenderGate = "not_called"
+    private var lastQueuedControls = 0
+    private var lastQueuedPressed = 0
+
+    fun diagnosticReport(): String =
+        "SecretHitbox enabled=${Config.secretHitboxesEnabled} display=${Config.moddedHitboxDisplayEnabled} " +
+            "pressed=${Config.pressedHitboxEnabled} dungeon=${DungeonContext.inDungeon} anywhere=${Config.secretHitboxAnywhere} " +
+            "quiet=${QuietMode.suppressing()} ticks=$tickCount tickGate=$lastTickGate tracked=${tracked.size} " +
+            "extractions=$extractionCount renderGate=$lastRenderGate queuedControls=$lastQueuedControls " +
+            "queuedPressed=$lastQueuedPressed throughWalls=${Config.secretHitboxThroughWalls} " +
+            "vanillaOutline=${Config.secretHitboxVanillaOutline} hideOutline=${Config.secretHitboxHideOutline}"
 
     private fun shapeKey(state: BlockState, sizePercent: Int): Long =
         (state.hashCode().toLong() and 0xFFFFFFFFL) shl 10 or (sizePercent.toLong() and 0x3FF)
@@ -405,8 +419,10 @@ object SecretHitboxes {
     }
 
     private fun tick() {
+        tickCount++
         if ((!DungeonContext.inDungeon && !Config.secretHitboxAnywhere) ||
             (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled)) {
+            lastTickGate = if (!DungeonContext.inDungeon && !Config.secretHitboxAnywhere) "not_in_dungeon" else "disabled"
             if (tracked.isNotEmpty() || pressedUntil.isNotEmpty() || previousPowered.isNotEmpty()) {
                 pressedUntil.clear()
                 previousPowered.clear()
@@ -423,8 +439,9 @@ object SecretHitboxes {
         }
 
         val mc = Minecraft.getInstance()
-        val level = mc.level ?: return
-        val player = mc.player ?: return
+        val level = mc.level ?: run { lastTickGate = "no_level"; return }
+        val player = mc.player ?: run { lastTickGate = "no_player"; return }
+        lastTickGate = "scanned"
         val radius = 8
 
         val floor = player.y.toInt()
@@ -480,10 +497,16 @@ object SecretHitboxes {
     }
 
     private fun render() {
-        if (!DungeonContext.inDungeon && !Config.secretHitboxAnywhere) return
-        if (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled) return
+        extractionCount++
+        lastQueuedControls = 0
+        lastQueuedPressed = 0
+        if (!DungeonContext.inDungeon && !Config.secretHitboxAnywhere) { lastRenderGate = "not_in_dungeon"; return }
+        if (!Config.secretHitboxesEnabled && !Config.moddedHitboxDisplayEnabled && !Config.pressedHitboxEnabled) {
+            lastRenderGate = "disabled"; return
+        }
         val mc = Minecraft.getInstance()
-        val level = mc.level ?: return
+        val level = mc.level ?: run { lastRenderGate = "no_level"; return }
+        lastRenderGate = if (QuietMode.suppressing()) "quiet" else "no_visuals"
 
         // Visualised boxes come from the tick-built list — no world scan here.
         // They are the *same* value the picker uses, so what is drawn is
@@ -504,8 +527,10 @@ object SecretHitboxes {
                     0.12f, 0.70f, 1f, 0.08f,
                     throughWalls = Config.secretHitboxThroughWalls
                 )
+                lastQueuedControls++
             }
         }
+        if (lastQueuedControls > 0 && !QuietMode.suppressing()) lastRenderGate = "queued"
 
         if (!Config.pressedHitboxEnabled || pressedUntil.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -522,7 +547,9 @@ object SecretHitboxes {
                 1f, 0.82f, 0.1f, 1f,
                 throughWalls = Config.secretHitboxThroughWalls
             )
+            lastQueuedPressed++
         }
+        if (lastQueuedPressed > 0 && !QuietMode.suppressing()) lastRenderGate = "queued"
     }
 
     /**

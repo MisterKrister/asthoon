@@ -24,6 +24,15 @@ object TermGui {
     private const val CLICK_FLASH_MS = 220L
     private var cachedRubixTarget: Int? = null
     private var lastRubixContainerId: Int = -1
+    private var gateChecks = 0L
+    private var renderAttempts = 0L
+    private var renderEnqueues = 0L
+    private var lastGate = "not-checked"
+    private var lastGateDetails = "none"
+    private var lastRenderAt = 0L
+    private var lastTiles = 0
+    private var lastGrid = "none"
+    private var lastRenderError: String? = null
 
     data class Tile(val slot: Int, val x: Int, val y: Int)
 
@@ -139,14 +148,41 @@ object TermGui {
         slotCount >= requiredSlots(kind, melodyRows)
 
     fun active(screen: AbstractContainerScreen<*>): Boolean {
-        if (!Config.termGuiEnabled || QuietMode.suppressing()) return false
-        val kind = TerminalSolver.kindOf(screen.title.string) ?: return false
+        val kind = TerminalSolver.kindOf(screen.title.string)
         val slots = screen.menu.slots.size
-        return renderGate(Config.termGuiEnabled, QuietMode.suppressing(), kind, slots, requiredSlotsFor(kind, items(screen, kind)))
+        val required = kind?.let { requiredSlotsFor(it, items(screen, it)) } ?: 0
+        val enabled = Config.termGuiEnabled
+        val quiet = QuietMode.suppressing()
+        gateChecks++
+        lastGate = gateReason(enabled, quiet, kind, slots, required)
+        lastGateDetails = "kind=$kind, menu=${screen.menu.containerId}, slots=$slots, required=$required, screen=${screen.width}x${screen.height}"
+        return lastGate == "ready"
     }
 
     internal fun renderGate(enabled: Boolean, quiet: Boolean, kind: Kind?, slots: Int, required: Int): Boolean =
-        enabled && !quiet && kind != null && slots >= required
+        gateReason(enabled, quiet, kind, slots, required) == "ready"
+
+    internal fun gateReason(enabled: Boolean, quiet: Boolean, kind: Kind?, slots: Int, required: Int): String = when {
+        !enabled -> "custom-gui-disabled"
+        quiet -> "quiet-mode"
+        kind == null -> "unrecognized-title"
+        slots < required -> "menu-incomplete"
+        else -> "ready"
+    }
+
+    /** Choice terminals need their items even without solver hints, over the same neutral tiles. */
+    internal fun drawItems(kind: Kind, simulation: Boolean, solver: Boolean, empty: Boolean): Boolean =
+        !empty && (kind == Kind.SELECT || kind == Kind.STARTS || (simulation && !solver))
+
+    internal fun tileBackground(hintColor: Int?): Int = hintColor ?: NEUTRAL
+
+    /** On-demand gate and extraction evidence, independent of solver colours. */
+    fun diagnosticReport(): String {
+        val screen = Minecraft.getInstance().screen as? AbstractContainerScreen<*>
+        if (screen != null) active(screen)
+        return "terminal gui: enabled=${Config.termGuiEnabled}, solver=${Config.terminalSolverEnabled}, quiet=${QuietMode.suppressing()}, currentContainer=${screen != null}, gate=${if (screen == null) "no-container" else lastGate}, lastGateDetails=($lastGateDetails)\n" +
+            "terminal gui extraction: gateChecks=$gateChecks, attempts=$renderAttempts, gridsEnqueued=$renderEnqueues, latestAt=$lastRenderAt, tiles=$lastTiles, grid=$lastGrid, error=${lastRenderError ?: "none"}"
+    }
 
     /** Melody's rows as the menu currently shows them; nothing else asks. */
     private fun liveMelodyRows(screen: AbstractContainerScreen<*>, kind: Kind): List<Int> =
@@ -167,6 +203,23 @@ object TermGui {
     private fun items(screen: AbstractContainerScreen<*>, kind: Kind) = screen.menu.slots.take(kind.slotCount).map { it.item }
 
     fun render(screen: AbstractContainerScreen<*>, graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
+        renderAttempts++
+        lastTiles = 0
+        try {
+            renderGrid(screen, graphics, mouseX, mouseY)
+            if (lastTiles > 0) {
+                renderEnqueues++
+                lastRenderAt = System.currentTimeMillis()
+                lastRenderError = null
+            }
+        } catch (t: Throwable) {
+            lastRenderError = "${t.javaClass.simpleName}: ${t.message}"
+            TerminalCursor.release("terminal-grid-extraction-error")
+            throw t
+        }
+    }
+
+    private fun renderGrid(screen: AbstractContainerScreen<*>, graphics: GuiGraphicsExtractor, mouseX: Int, mouseY: Int) {
         val grid = gridFor(screen) ?: return
         // MixinScreen owns the background once, before the grid and screen events.
         val kind = TerminalSolver.kindOf(screen.title.string) ?: return
@@ -195,6 +248,7 @@ object TermGui {
         val originY = grid.originY
         val scale = grid.scale
         val roundness = Config.termGuiRoundness.coerceIn(0, 8)
+        lastGrid = "origin=(${grid.originX},${grid.originY}), size=${grid.width}x${grid.height}, scale=${grid.scale}"
 
         // Background panel rendered in true screen pixels
         val bgPad = (4 * scale).toInt()
@@ -234,17 +288,20 @@ object TermGui {
                 fillRoundedRect(graphics, sx0 - borderThickness, sy0 - borderThickness,
                     sx1 + borderThickness, sy1 + borderThickness, borderCol, bRadius)
             }
-            fillRoundedRect(graphics, sx0, sy0, sx1, sy1, color ?: NEUTRAL, tileRadius)
+            fillRoundedRect(graphics, sx0, sy0, sx1, sy1, tileBackground(color), tileRadius)
 
-            if (simulation && kind != Kind.SELECT && kind != Kind.STARTS && !Config.terminalSolverEnabled && !stack.isEmpty) {
+            val showItem = drawItems(kind, simulation, Config.terminalSolverEnabled, stack.isEmpty)
+            if (showItem) {
                 graphics.pose().pushMatrix()
-                graphics.pose().translate(sx0.toFloat(), sy0.toFloat())
-                graphics.pose().scale(scale, scale)
-                graphics.item(stack, 1, 1)
-                graphics.pose().popMatrix()
+                try {
+                    graphics.pose().translate(sx0.toFloat(), sy0.toFloat())
+                    graphics.pose().scale(scale, scale)
+                    graphics.item(stack, 1, 1)
+                } finally {
+                    graphics.pose().popMatrix()
+                }
             }
-            if (simulation && tile.slot == hovered && !stack.isEmpty &&
-                (kind == Kind.SELECT || kind == Kind.STARTS || !Config.terminalSolverEnabled)) {
+            if (showItem && tile.slot == hovered) {
                 graphics.setTooltipForNextFrame(font, stack.hoverName, curX.toInt(), curY.toInt())
             }
 
@@ -290,6 +347,7 @@ object TermGui {
                 }
             }
         }
+        lastTiles = grid.tiles.size
     }
 
     /** Both live and practice clicks take the shortest direction (positive or negative). */

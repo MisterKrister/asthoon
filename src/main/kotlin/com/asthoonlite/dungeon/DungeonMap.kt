@@ -12,6 +12,9 @@ import com.asthoonlite.overlay.MapOverlayWindow
 import com.asthoonlite.render.HudMapCanvas
 import com.asthoonlite.render.MapCanvas
 import com.asthoonlite.render.RecordMapCanvas
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry
 import net.minecraft.client.DeltaTracker
@@ -22,6 +25,44 @@ import net.minecraft.resources.Identifier
 import net.minecraft.world.entity.player.PlayerSkin
 
 object DungeonMap : HudElement {
+    internal enum class VisibilityGate(val description: String) {
+        VISIBLE("visible"), QUIET("quiet mode suppresses gameplay drawing"),
+        DISABLED("dungeon map disabled"), OUTSIDE_DUNGEON("dungeon not detected"),
+        NO_PLAYER("no local player"), BOSS("hidden in boss"),
+        MAP_NOT_HELD("requires a map in either hand"), HIDDEN_HUD("HUD hidden with F1"),
+        EDITOR("editor owns the map preview")
+    }
+
+    internal fun visibilityGate(quiet: Boolean, enabled: Boolean, inDungeon: Boolean,
+                                playerPresent: Boolean, hideInBoss: Boolean, inBoss: Boolean,
+                                alwaysShow: Boolean, holdingMap: Boolean, hiddenHud: Boolean,
+                                editing: Boolean): VisibilityGate = when {
+        quiet -> VisibilityGate.QUIET
+        !enabled -> VisibilityGate.DISABLED
+        !inDungeon -> VisibilityGate.OUTSIDE_DUNGEON
+        !playerPresent -> VisibilityGate.NO_PLAYER
+        hideInBoss && inBoss -> VisibilityGate.BOSS
+        !alwaysShow && !holdingMap -> VisibilityGate.MAP_NOT_HELD
+        hiddenHud -> VisibilityGate.HIDDEN_HUD
+        editing -> VisibilityGate.EDITOR
+        else -> VisibilityGate.VISIBLE
+    }
+
+    internal data class RenderRoute(val hudAdvanced: Boolean, val external: Boolean)
+
+    /** Full Map Overlay owns the second layer; the older external-window key stays serialized. */
+    internal fun renderRoute(fullGrid: Boolean, overlayAvailable: Boolean): RenderRoute =
+        RenderRoute(fullGrid && !overlayAvailable, fullGrid && overlayAvailable)
+
+    private var registered = false
+    private var extractions = 0L
+    private var hudFrames = 0L
+    private var externalFrames = 0L
+    private var lastExtractionNanos = 0L
+    private var lastGate = VisibilityGate.NO_PLAYER
+    private var lastRoute: RenderRoute? = null
+    private var lastRect: Rect? = null
+
     data class Rect(val x: Int, val y: Int, val size: Int) {
         fun contains(px: Double, py: Double) = px >= x && py >= y && px < x + size && py < y + size
     }
@@ -37,6 +78,35 @@ object DungeonMap : HudElement {
 
     fun register() {
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(AsthoonLite.MOD_ID, "dungeon_map"), this)
+        registered = true
+        // A skipped HUD callback (F1/loading) must not leave the last desktop frame up.
+        ClientTickEvents.END_CLIENT_TICK.register { mc ->
+            if (currentGate(mc) != VisibilityGate.VISIBLE) MapOverlayWindow.hide()
+        }
+        ClientPlayConnectionEvents.DISCONNECT.register { _, _ -> MapOverlayWindow.hide() }
+        ClientLifecycleEvents.CLIENT_STOPPING.register { MapOverlayWindow.close() }
+    }
+
+    private fun currentGate(mc: Minecraft): VisibilityGate = visibilityGate(
+        QuietMode.suppressing(), Config.dungeonMapEnabled, DungeonContext.inDungeon,
+        mc.player != null, Config.dungeonMapHideInBoss, DungeonContext.inBoss,
+        Config.dungeonMapAlwaysShow, mc.player?.let(::isHoldingMap) == true,
+        mc.options.hideGui, mc.screen is DungeonMapEditorScreen)
+
+    /** Counts extraction/submission, not proof that the GPU or desktop displayed a frame. */
+    fun diagnosticReport(): String {
+        val mc = Minecraft.getInstance()
+        val age = if (lastExtractionNanos == 0L) "never" else
+            "${(System.nanoTime() - lastExtractionNanos) / 1_000_000}ms"
+        val colors = DungeonMapScanner.mapColors
+        return "Map: registered=$registered, gate=${currentGate(mc).description}, " +
+            "lastGate=${lastGate.description}, extractionAge=$age, extractions=$extractions, " +
+            "hudFrames=$hudFrames, externalFrames=$externalFrames, route=$lastRoute, rect=$lastRect, " +
+            "style=${Config.dungeonMapStyle}, fullGrid=${Config.dungeonMapFullGrid}, " +
+            "floor=${DungeonContext.floor.shortName}, mapBytes=${colors?.size ?: 0}, " +
+            "nonzeroPixels=${colors?.count { it != 0.toByte() } ?: 0}, " +
+            "roomSize=${DungeonMapScanner.roomSize}, origin=${DungeonMapScanner.mapOffsetX},${DungeonMapScanner.mapOffsetZ}, " +
+            "rooms=${DungeonScanner.rooms.count { it != null }}, doors=${DungeonScanner.doors.count { it != null }}"
     }
 
     fun resetRun() {
@@ -47,22 +117,25 @@ object DungeonMap : HudElement {
 
     override fun extractRenderState(context: net.minecraft.client.gui.GuiGraphicsExtractor, deltaTracker: DeltaTracker) {
         val mc = Minecraft.getInstance()
-        val player = mc.player
-        if (QuietMode.suppressing() || !Config.dungeonMapEnabled || !DungeonContext.inDungeon || player == null ||
-            Config.dungeonMapHideInBoss && DungeonContext.inBoss ||
-            !Config.dungeonMapAlwaysShow && !isHoldingMap(player)) {
+        extractions++
+        lastExtractionNanos = System.nanoTime()
+        lastGate = currentGate(mc)
+        if (lastGate != VisibilityGate.VISIBLE) {
             MapOverlayWindow.hide()
             return
         }
         val rect = screenRect(mc.window.guiScaledWidth, mc.window.guiScaledHeight)
-        val renderExternal = Config.dungeonMapExternalWindow && MapOverlayWindow.isAvailable
-        val hudAdvanced = Config.dungeonMapFullGrid && !renderExternal
-        drawMap(HudMapCanvas(context), mc, rect, advanced = hudAdvanced)
-        if (renderExternal && Config.dungeonMapFullGrid && !Config.dungeonMapEditMode) {
+        val route = renderRoute(Config.dungeonMapFullGrid, MapOverlayWindow.isAvailable)
+        lastRect = rect
+        lastRoute = route
+        drawMap(HudMapCanvas(context), mc, rect, advanced = route.hudAdvanced)
+        hudFrames++
+        if (route.external) {
             val record = RecordMapCanvas()
             drawMap(record, mc, Rect(0, 0, rect.size), advanced = true)
             MapOverlayWindow.publish(record.ops.toList(), rect.size,
                 MapOverlayWindow.placement(mc.window, rect.x, rect.y, rect.size))
+            externalFrames++
         } else MapOverlayWindow.hide()
     }
 

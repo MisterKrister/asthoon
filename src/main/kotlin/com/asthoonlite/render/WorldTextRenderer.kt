@@ -19,12 +19,24 @@ object WorldTextRenderer {
     )
 
     private val queue = ArrayList<TextEntry>()
+    private var extractionCount = 0L
+    private var drawCallbackCount = 0L
+    private var queuedCount = 0L
+    private var flushedCount = 0L
+    private var lastDrawEntries = 0
+    private var lastDrawGate = "not_called"
 
     fun register() {
+        LevelRenderEvents.END_EXTRACTION.register { extractionCount++ }
         LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register { context ->
             render(context)
         }
     }
+
+    fun diagnosticReport(): String =
+        "WorldText extraction=$extractionCount drawCallbacks=$drawCallbackCount gate=$lastDrawGate " +
+            "quiet=${QuietMode.suppressing()} queued=${queue.size} queuedTotal=$queuedCount " +
+            "lastDrawEntries=$lastDrawEntries flushedTotal=$flushedCount"
 
     fun queueText(
         text: String,
@@ -37,16 +49,21 @@ object WorldTextRenderer {
     ) {
         if (QuietMode.suppressing()) return
         queue.add(TextEntry(text, x, y, z, scale, color, throughWalls))
+        queuedCount++
     }
 
     private fun render(context: LevelRenderContext) {
+        drawCallbackCount++
+        lastDrawEntries = queue.size
         // Quiet mode can flip mid-frame; drop anything already queued rather
         // than drawing a label the capture would have seen last frame.
         if (QuietMode.suppressing()) {
+            lastDrawGate = "quiet"
             queue.clear()
             return
         }
-        if (queue.isEmpty()) return
+        if (queue.isEmpty()) { lastDrawGate = "empty_queue"; return }
+        lastDrawGate = "buffering"
         val mc = Minecraft.getInstance()
         val camera = mc.gameRenderer.mainCamera
         val camPos = camera.position()
@@ -87,5 +104,7 @@ object WorldTextRenderer {
         }
         queue.clear()
         bufferSource.endBatch()
+        flushedCount += lastDrawEntries
+        lastDrawGate = "flushed"
     }
 }

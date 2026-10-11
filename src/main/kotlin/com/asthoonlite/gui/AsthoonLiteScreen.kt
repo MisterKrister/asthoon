@@ -3,6 +3,8 @@ package com.asthoonlite.gui
 import com.asthoonlite.QuietMode
 import com.asthoonlite.config.Config
 import com.asthoonlite.config.TerminalMode
+import com.asthoonlite.mixin.GuiGraphicsExtractorAccessor
+import com.asthoonlite.mixin.IMEPreeditOverlayAccessor
 import com.asthoonlite.pathfinding.RouteCategory
 import com.asthoonlite.pathfinding.RouteSubcategory
 import com.asthoonlite.pathfinding.PathPreset
@@ -16,12 +18,18 @@ import com.mojang.blaze3d.platform.InputConstants
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphicsExtractor
 import net.minecraft.client.gui.components.AbstractWidget
+import net.minecraft.client.gui.components.events.GuiEventListener
+import net.minecraft.client.gui.navigation.ScreenRectangle
 import net.minecraft.client.gui.components.EditBox
+import net.minecraft.client.gui.components.IMEPreeditOverlay
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.KeyEvent
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
 import org.lwjgl.glfw.GLFW
+import org.joml.Matrix3x2f
+import java.util.Optional
+import kotlin.math.floor
 
 /**
  * Modern, clean, user-friendly settings GUI for AsthoonLite.
@@ -71,7 +79,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         private const val DUNGEON_BAR_H = 26
         private const val ROW_H = 30
         private const val ROW_GAP = 4
-        private const val FOOTER_H = 34
+        private const val FOOTER_H = 46
 
         // Color palette
         private const val COL_BACKDROP        = 0xB3050914.toInt() // 70% dark vignette
@@ -202,9 +210,29 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private var scrollDragStartOffset = 0
     private var scrollDragStartY = 0.0
 
-    private fun panelH() = (height - 24).coerceIn(360, 560)
-    private fun px() = (width - PANEL_W) / 2
-    private fun py() = (height - panelH()) / 2
+    private var viewport = GuiViewport.fit(PANEL_W + 24, 384, PANEL_W + 24, 384)
+
+    private fun panelH() = (viewport.logicalHeight - 24).coerceIn(360, 560)
+    private fun px() = (viewport.logicalWidth - PANEL_W) / 2
+    private fun py() = (viewport.logicalHeight - panelH()) / 2
+
+    private fun logicalEvent(event: MouseButtonEvent) = MouseButtonEvent(
+        viewport.logicalX(event.x()), viewport.logicalY(event.y()), event.buttonInfo()
+    )
+
+    private fun inContent(mouseX: Double, mouseY: Double): Boolean =
+        mouseX >= px() + 8 && mouseX < px() + PANEL_W - 8 &&
+            mouseY >= contentTop() && mouseY < contentBottom()
+
+    override fun getRectangle() = ScreenRectangle(0, 0, viewport.logicalWidth, viewport.logicalHeight)
+
+    // Native container dispatch receives the logical event from our input overrides.
+    // A partially scrolled widget must not accept clicks in the header/footer.
+    override fun getChildAt(mouseX: Double, mouseY: Double): Optional<GuiEventListener> =
+        Optional.ofNullable(children().firstOrNull { child ->
+            (inContent(mouseX, mouseY) || extraWidgets.none { it.first === child }) &&
+                child.isMouseOver(mouseX, mouseY)
+        })
 
     private fun contentTop(): Int {
         val base = py() + HEADER_H + TAB_BAR_H
@@ -215,6 +243,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     private fun contentBottom(): Int = py() + panelH() - FOOTER_H
 
     override fun init() {
+        viewport = GuiViewport.fit(width, height, PANEL_W + 24, 384)
+        isDraggingScrollbar = false
+        isDraggingNode = false
+        mouseDownNodeIdx = -1
+        draggingNodeFromIdx = -1
+        draggingNodeHoverIdx = -1
+        nodeItemBounds.clear()
         cachedSearchEntries = null
         val px = px()
         val py = py()
@@ -507,7 +542,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 ToggleRow("Pet Menu Highlight", "Glows active pet in Pets GUI",
                     { Config.petMenuHighlightEnabled }, { Config.petMenuHighlightEnabled = it }),
                 SectionHeader("Session"),
-                ToggleRow("Quiet Mode", "Draws nothing in-game so a window capture looks vanilla",
+                ToggleRow("Quiet Mode", "Hides map, terminal GUI, HUD and world highlights",
                     { Config.quietModeEnabled }, { QuietMode.setEnabled(it) }),
                 WidgetRow(run {
                     btnQuietModeKey = ModernButton(subX, 0, subW, 24, Component.literal(quietModeKeyLabel())) {
@@ -623,7 +658,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                     { Config.autoTerminalAnywhere }, { Config.autoTerminalAnywhere = it }),
                 WidgetRow(terminalModeButton(fullX, fullW)),
                 NoteRow(TerminalMode.description(Config.autoTerminalMode)),
-                ToggleRow("Terminal Solver", "Displays custom terminal GUI and highlights correct clicks",
+                ToggleRow("Terminal Solver", "Highlights the next terminal input",
                     { Config.terminalSolverEnabled }, { Config.terminalSolverEnabled = it }),
                 ToggleRow("Terminal Progress", "Shows the terminal's name and how far through it the clicker is, centred near the top while a terminal is open",
                     { Config.autoTerminalHudProgress }, { Config.autoTerminalHudProgress = it }),
@@ -1831,7 +1866,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return -1
     }
 
-    override fun mouseClicked(event: MouseButtonEvent, doubleClick: Boolean): Boolean {
+    override fun mouseClicked(screenEvent: MouseButtonEvent, doubleClick: Boolean): Boolean {
+        val event = logicalEvent(screenEvent)
         if (listeningForGoldorRouteKey && event.button() != 0) {
             Config.goldorRouteKey = event.button()
             listeningForGoldorRouteKey = false
@@ -1864,7 +1900,7 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         }
 
         // Track potential node drag start in Route Editor
-        if (event.button() == 0 && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+        if (event.button() == 0 && inContent(event.x(), event.y()) && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
             val idx = getNodeIndexAtY(event.y())
             if (idx >= 0) {
                 mouseDownNodeIdx = idx
@@ -1945,7 +1981,13 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return false
     }
 
-    override fun mouseScrolled(mouseX: Double, mouseY: Double, scrollX: Double, scrollY: Double): Boolean {
+    override fun mouseMoved(mouseX: Double, mouseY: Double) {
+        super.mouseMoved(viewport.logicalX(mouseX), viewport.logicalY(mouseY))
+    }
+
+    override fun mouseScrolled(screenMouseX: Double, screenMouseY: Double, scrollX: Double, scrollY: Double): Boolean {
+        val mouseX = viewport.logicalX(screenMouseX)
+        val mouseY = viewport.logicalY(screenMouseY)
         val px = px()
         val py = py()
         val pH = panelH()
@@ -1957,7 +1999,8 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)
     }
 
-    override fun mouseDragged(event: MouseButtonEvent, dragX: Double, dragY: Double): Boolean {
+    override fun mouseDragged(screenEvent: MouseButtonEvent, dragX: Double, dragY: Double): Boolean {
+        val event = logicalEvent(screenEvent)
         if (isDraggingScrollbar && maxScroll() > 0) {
             val top = contentTop()
             val bottom = contentBottom()
@@ -1979,10 +2022,11 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
             }
         }
 
-        return super.mouseDragged(event, dragX, dragY)
+        return super.mouseDragged(event, viewport.logicalDelta(dragX), viewport.logicalDelta(dragY))
     }
 
-    override fun mouseReleased(event: MouseButtonEvent): Boolean {
+    override fun mouseReleased(screenEvent: MouseButtonEvent): Boolean {
+        val event = logicalEvent(screenEvent)
         if (isDraggingNode && draggingNodeFromIdx >= 0) {
             val targetIdx = draggingNodeHoverIdx
             val preset = RouteEditor.activePreset
@@ -2002,17 +2046,192 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
     }
 
     override fun extractRenderState(context: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
+        context.fill(0, 0, width, height, COL_BACKDROP)
+        context.pose().pushMatrix()
+        context.pose().translate(viewport.offsetX.toFloat(), viewport.offsetY.toFloat())
+        context.pose().scale(viewport.scale.toFloat(), viewport.scale.toFloat())
+        try {
+            extractPanelRenderState(
+                context, floor(viewport.logicalX(mouseX.toDouble())).toInt(),
+                floor(viewport.logicalY(mouseY.toDouble())).toInt(), delta
+            )
+            fitDeferredPreedit(context)
+        } finally {
+            context.pose().popMatrix()
+        }
+    }
+
+    private fun fitDeferredPreedit(context: GuiGraphicsExtractor) {
+        if (viewport.scale == 1.0) return
+        val pending = (context as GuiGraphicsExtractorAccessor).preeditOverlay as? IMEPreeditOverlay ?: return
+        val anchor = pending as IMEPreeditOverlayAccessor
+        val fit = viewport
+        val fittedPose = Matrix3x2f(context.pose())
+        val nativeBounds = fit.screenBounds(preeditInputBounds(
+            anchor.inputLeft, anchor.inputTop, anchor.inputHeight, anchor.preEditTextWidth,
+            anchor.font.lineHeight, fit.logicalWidth, fit.logicalHeight
+        ))
+
+        // Screen renders preedit after this method's fit pose has been popped.
+        // Keep that deferred ordering, and let vanilla draw its text/caret using
+        // the same fitted pose and logical edge clamps as the settings panel.
+        context.setPreeditOverlay { deferredContext, screenMouseX, screenMouseY, frameDelta ->
+            val logicalMouseX = floor(fit.logicalX(screenMouseX.toDouble())).toInt()
+            val logicalMouseY = floor(fit.logicalY(screenMouseY.toDouble())).toInt()
+            val fittedContext = object : GuiGraphicsExtractor(
+                minecraft, (deferredContext as GuiGraphicsExtractorAccessor).guiRenderState,
+                logicalMouseX, logicalMouseY
+            ) {
+                override fun guiWidth() = fit.logicalWidth
+                override fun guiHeight() = fit.logicalHeight
+            }
+            fittedContext.pose().set(fittedPose)
+            pending.extractRenderState(fittedContext, logicalMouseX, logicalMouseY, frameDelta)
+            // Vanilla reports logical coordinates directly to the native IME.
+            // Convert once here; TextInputManager applies Minecraft's GUI scale.
+            minecraft.textInputManager().setTextInputArea(
+                nativeBounds.left, nativeBounds.top, nativeBounds.right, nativeBounds.bottom
+            )
+        }
+    }
+
+    private fun extractPanelRenderState(context: GuiGraphicsExtractor, mouseX: Int, mouseY: Int, delta: Float) {
         val px = px()
         val py = py()
         val pH = panelH()
 
         // ── Backdrop & Window Frame ──────────────────────────────────────────
-        context.fill(0, 0, width, height, COL_BACKDROP)
-
         // Drop shadow / glow
         context.fill(px - 3, py - 3, px + PANEL_W + 3, py + pH + 3, 0x33000000)
         // Main window background
         context.fill(px, py, px + PANEL_W, py + pH, COL_PANEL_BG)
+
+        // ── Feature Rows & Headers (Clipped Viewport) ─────────────────────────
+        val top = contentTop()
+        val bottom = contentBottom()
+        context.enableScissor(px + 8, top, px + PANEL_W - 8, bottom)
+        val widgetMouseX = if (inContent(mouseX.toDouble(), mouseY.toDouble())) mouseX else Int.MIN_VALUE
+        val widgetMouseY = if (inContent(mouseX.toDouble(), mouseY.toDouble())) mouseY else Int.MIN_VALUE
+
+        if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+            nodeItemBounds.clear()
+        }
+
+        var curRelY = 0
+        for (item in currentItems) {
+            val itemY = top - scrollOffset + curRelY
+            val itemH = item.height
+            if (itemY + itemH >= top && itemY <= bottom) {
+                when (item) {
+                    is SectionHeader -> {
+                        val hx = px + 16
+                        val hw = PANEL_W - 32
+                        val hovered = searchQuery.isEmpty() &&
+                            mouseX in hx..(hx + hw) && mouseY in itemY..(itemY + itemH)
+                        drawSectionHeader(context, hx, itemY, hw, itemH, item.title, hovered)
+                    }
+                    is ToggleRow -> {
+                        val isSub2 = item.label.startsWith("    ↳ ")
+                        val isSub1 = !isSub2 && item.label.startsWith("  ↳ ")
+                        val indent = if (isSub2) 24 else (if (isSub1) 12 else 0)
+                        val cardX = px + 16 + indent
+                        val cardW = PANEL_W - 32 - indent
+                        val hovered = mouseX in cardX..(cardX + cardW) && mouseY in itemY..(itemY + itemH)
+                        drawFeatureRow(context, cardX, itemY, cardW, itemH, item.label, item.subtitle, item.get(), hovered)
+                    }
+                    is WidgetRow -> {
+                        // Minecraft tests widget hover against screen-space scissors.
+                        // Extract with no scissor so the logical pointer stays aligned;
+                        // the panel masks below clip any vertical overhang instead.
+                        context.disableScissor()
+                        item.widget.extractRenderState(context, widgetMouseX, widgetMouseY, delta)
+                        context.enableScissor(px + 8, top, px + PANEL_W - 8, bottom)
+                    }
+                    is MultiWidgetRow -> {
+                        context.disableScissor()
+                        for (w in item.widgets) {
+                            w.extractRenderState(context, widgetMouseX, widgetMouseY, delta)
+                        }
+                        context.enableScissor(px + 8, top, px + PANEL_W - 8, bottom)
+                        if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+                            val firstWidget = item.widgets.firstOrNull() as? ModernButton
+                            if (firstWidget != null) {
+                                val str = firstWidget.message.string
+                                if (str.startsWith("#") || str.startsWith("▶ #")) {
+                                    val hashIdx = str.indexOf('#')
+                                    val spaceIdx = str.indexOf(' ', hashIdx)
+                                    val numStr = if (spaceIdx > hashIdx) str.substring(hashIdx + 1, spaceIdx) else ""
+                                    val nodeNum = numStr.toIntOrNull()
+                                    if (nodeNum != null) {
+                                        nodeItemBounds.add(Triple(nodeNum - 1, itemY, itemY + itemH))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    is NoteRow -> {
+                        context.text(font, item.text, px + 20, itemY + 3, COL_TEXT_SUB)
+                    }
+                }
+            }
+            curRelY += itemH + ROW_GAP
+        }
+
+        context.disableScissor()
+
+        // Cover the clipped portions of native widgets before drawing the header
+        // and footer, including when a row straddles the scroll viewport edge.
+        context.fill(px + 1, py + 1, px + PANEL_W - 1, top, COL_PANEL_BG)
+        context.fill(px + 1, bottom, px + PANEL_W - 1, py + pH - 1, COL_PANEL_BG)
+        extractPanelHeader(context)
+
+        // ── Route Node Drag-and-Drop Indicator & Tooltip ─────────────────────
+        if (isDraggingNode && draggingNodeFromIdx >= 0 && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
+            val hoverEntry = nodeItemBounds.firstOrNull { it.first == draggingNodeHoverIdx }
+            if (hoverEntry != null) {
+                val cardX = px + 28
+                val cardW = PANEL_W - 44
+                context.fill(cardX - 2, hoverEntry.second - 2, cardX + cardW + 2, hoverEntry.third + 2, 0x5538BDF8)
+                context.fill(cardX - 2, hoverEntry.second - 2, cardX + cardW + 2, hoverEntry.second, 0xFF38BDF8.toInt())
+            }
+            val tip = "Moving Node #${draggingNodeFromIdx + 1} ➔ #${draggingNodeHoverIdx + 1}"
+            val tipW = font.width(tip)
+            val tipX = mouseX + 12
+            val tipY = mouseY - 14
+            context.fill(tipX - 4, tipY - 3, tipX + tipW + 4, tipY + 11, 0xEE0C1322.toInt())
+            context.fill(tipX - 4, tipY - 3, tipX + tipW + 4, tipY - 2, 0xFF38BDF8.toInt())
+            context.text(font, tip, tipX, tipY, 0xFFFFFFFF.toInt())
+        }
+
+        // ── Scrollbar ────────────────────────────────────────────────────────
+        val maxScroll = maxScroll()
+        if (maxScroll > 0) {
+            val trackX = px + PANEL_W - 8
+            val trackTop = top
+            val trackBottom = bottom
+            val trackH = (trackBottom - trackTop).coerceAtLeast(1)
+            val thumbH = (trackH.toDouble() * trackH.toDouble() / (trackH + maxScroll)).toInt().coerceIn(20, trackH)
+            val thumbY = trackTop + ((trackH - thumbH) * (scrollOffset.toDouble() / maxScroll.toDouble())).toInt()
+
+            context.fill(trackX, trackTop, trackX + 2, trackBottom, 0x22FFFFFF)
+            val thumbCol = if (mouseX in (trackX - 2)..(trackX + 4) && mouseY in thumbY..(thumbY + thumbH)) COL_ACCENT else 0x8838BDF8.toInt()
+            context.fill(trackX, thumbY, trackX + 2, thumbY + thumbH, thumbCol)
+        }
+
+        // ── Footer hint ──────────────────────────────────────────────────────
+        val quiet = QuietMode.suppressing()
+        val hint = if (quiet) "Quiet Mode: map, terminal GUI and world highlights are hidden"
+            else "Click a header to fold • Click a row to toggle"
+        val hintW = font.width(hint)
+        context.text(font, hint, px + (PANEL_W - hintW) / 2, py + pH - 40, if (quiet) COL_ACCENT else COL_TEXT_MUTED)
+
+        super.extractRenderState(context, mouseX, mouseY, delta)
+    }
+
+    private fun extractPanelHeader(context: GuiGraphicsExtractor) {
+        val px = px()
+        val py = py()
+        val pH = panelH()
         // Window 1px border
         context.fill(px, py, px + PANEL_W, py + 1, COL_PANEL_BORDER)
         context.fill(px, py + pH - 1, px + PANEL_W, py + pH, COL_PANEL_BORDER)
@@ -2069,110 +2288,6 @@ class AsthoonLiteScreen : Screen(Component.literal("AsthoonLite")) {
                 context.fill(secX, secY + DUNGEON_BAR_H - 6, secX + secW - 4, secY + DUNGEON_BAR_H - 4, COL_ACCENT)
             }
         }
-
-        // ── Feature Rows & Headers (Clipped Viewport) ─────────────────────────
-        val top = contentTop()
-        val bottom = contentBottom()
-        context.enableScissor(px + 8, top, px + PANEL_W - 8, bottom)
-
-        if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
-            nodeItemBounds.clear()
-        }
-
-        var curRelY = 0
-        for (item in currentItems) {
-            val itemY = top - scrollOffset + curRelY
-            val itemH = item.height
-            if (itemY + itemH >= top && itemY <= bottom) {
-                when (item) {
-                    is SectionHeader -> {
-                        val hx = px + 16
-                        val hw = PANEL_W - 32
-                        val hovered = searchQuery.isEmpty() &&
-                            mouseX in hx..(hx + hw) && mouseY in itemY..(itemY + itemH)
-                        drawSectionHeader(context, hx, itemY, hw, itemH, item.title, hovered)
-                    }
-                    is ToggleRow -> {
-                        val isSub2 = item.label.startsWith("    ↳ ")
-                        val isSub1 = !isSub2 && item.label.startsWith("  ↳ ")
-                        val indent = if (isSub2) 24 else (if (isSub1) 12 else 0)
-                        val cardX = px + 16 + indent
-                        val cardW = PANEL_W - 32 - indent
-                        val hovered = mouseX in cardX..(cardX + cardW) && mouseY in itemY..(itemY + itemH)
-                        drawFeatureRow(context, cardX, itemY, cardW, itemH, item.label, item.subtitle, item.get(), hovered)
-                    }
-                    is WidgetRow -> {
-                        item.widget.extractRenderState(context, mouseX, mouseY, delta)
-                    }
-                    is MultiWidgetRow -> {
-                        for (w in item.widgets) {
-                            w.extractRenderState(context, mouseX, mouseY, delta)
-                        }
-                        if (activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
-                            val firstWidget = item.widgets.firstOrNull() as? ModernButton
-                            if (firstWidget != null) {
-                                val str = firstWidget.message.string
-                                if (str.startsWith("#") || str.startsWith("▶ #")) {
-                                    val hashIdx = str.indexOf('#')
-                                    val spaceIdx = str.indexOf(' ', hashIdx)
-                                    val numStr = if (spaceIdx > hashIdx) str.substring(hashIdx + 1, spaceIdx) else ""
-                                    val nodeNum = numStr.toIntOrNull()
-                                    if (nodeNum != null) {
-                                        nodeItemBounds.add(Triple(nodeNum - 1, itemY, itemY + itemH))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    is NoteRow -> {
-                        context.text(font, item.text, px + 20, itemY + 3, COL_TEXT_SUB)
-                    }
-                }
-            }
-            curRelY += itemH + ROW_GAP
-        }
-
-        context.disableScissor()
-
-        // ── Route Node Drag-and-Drop Indicator & Tooltip ─────────────────────
-        if (isDraggingNode && draggingNodeFromIdx >= 0 && activeTab == Tab.PATHFINDING && activePathfindingSection == PathfindingSection.ROUTE_EDITOR) {
-            val hoverEntry = nodeItemBounds.firstOrNull { it.first == draggingNodeHoverIdx }
-            if (hoverEntry != null) {
-                val cardX = px + 28
-                val cardW = PANEL_W - 44
-                context.fill(cardX - 2, hoverEntry.second - 2, cardX + cardW + 2, hoverEntry.third + 2, 0x5538BDF8)
-                context.fill(cardX - 2, hoverEntry.second - 2, cardX + cardW + 2, hoverEntry.second, 0xFF38BDF8.toInt())
-            }
-            val tip = "Moving Node #${draggingNodeFromIdx + 1} ➔ #${draggingNodeHoverIdx + 1}"
-            val tipW = font.width(tip)
-            val tipX = mouseX + 12
-            val tipY = mouseY - 14
-            context.fill(tipX - 4, tipY - 3, tipX + tipW + 4, tipY + 11, 0xEE0C1322.toInt())
-            context.fill(tipX - 4, tipY - 3, tipX + tipW + 4, tipY - 2, 0xFF38BDF8.toInt())
-            context.text(font, tip, tipX, tipY, 0xFFFFFFFF.toInt())
-        }
-
-        // ── Scrollbar ────────────────────────────────────────────────────────
-        val maxScroll = maxScroll()
-        if (maxScroll > 0) {
-            val trackX = px + PANEL_W - 8
-            val trackTop = top
-            val trackBottom = bottom
-            val trackH = (trackBottom - trackTop).coerceAtLeast(1)
-            val thumbH = (trackH.toDouble() * trackH.toDouble() / (trackH + maxScroll)).toInt().coerceIn(20, trackH)
-            val thumbY = trackTop + ((trackH - thumbH) * (scrollOffset.toDouble() / maxScroll.toDouble())).toInt()
-
-            context.fill(trackX, trackTop, trackX + 2, trackBottom, 0x22FFFFFF)
-            val thumbCol = if (mouseX in (trackX - 2)..(trackX + 4) && mouseY in thumbY..(thumbY + thumbH)) COL_ACCENT else 0x8838BDF8.toInt()
-            context.fill(trackX, thumbY, trackX + 2, thumbY + thumbH, thumbCol)
-        }
-
-        // ── Footer hint ──────────────────────────────────────────────────────
-        val hint = "Click a header to fold • Click a row to toggle"
-        val hintW = font.width(hint)
-        context.text(font, hint, px + (PANEL_W - hintW) / 2, py + pH - 10, COL_TEXT_MUTED)
-
-        super.extractRenderState(context, mouseX, mouseY, delta)
     }
 
     private fun drawSectionHeader(

@@ -22,7 +22,9 @@
     "MixinInputConstants",
     "MixinMouseButtonEvent",
     "MinecraftAccessor",
-    "AbstractContainerScreenAccessor"
+    "AbstractContainerScreenAccessor",
+    "GuiGraphicsExtractorAccessor",
+    "IMEPreeditOverlayAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

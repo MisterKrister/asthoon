@@ -29,6 +29,8 @@ object DungeonMapScanner {
     var mapOffsetZ = -1
     var mapWidth = -1
     var mapHeight = -1
+    private var dimensionsFloor: FloorType? = null
+    private var waitingForDimensions: FloorType? = null
     private val unscannedDoors = mutableSetOf<ComponentPosition>()
     private var lastMapId: MapId? = null
     private var scanTicks = 0
@@ -47,6 +49,8 @@ object DungeonMapScanner {
         mapOffsetZ = -1
         mapWidth = -1
         mapHeight = -1
+        dimensionsFloor = null
+        waitingForDimensions = null
         unscannedDoors.clear()
         for (x in 0..10) {
             for (z in (x and 1 xor 1)..10 step 2) {
@@ -81,10 +85,7 @@ object DungeonMapScanner {
 
     internal fun scanMapDimensions(colors: ByteArray, floor: FloorType): Boolean {
         val f = if (floor != FloorType.None) floor else FloorType.M7
-        if (colors.size < COLOR_SIZE) {
-            AsthoonLite.LOGGER.warn("[AsthoonLite-Debug] scanMapDimensions: colors.size (${colors.size}) < COLOR_SIZE ($COLOR_SIZE)")
-            return false
-        }
+        if (colors.size < COLOR_SIZE) return false
 
         // Use the entrance's edges; ignore small green checkmarks and interior symbols.
         for (idx in 0 until COLOR_SIZE) {
@@ -97,13 +98,9 @@ object DungeonMapScanner {
             var height = 0
             while (colorAt(colors, x + width, z) == MapColors.ROOM_ENTRANCE.color) width++
             while (colorAt(colors, x, z + height) == MapColors.ROOM_ENTRANCE.color) height++
-            if (width !in 8..32 || width != height) {
-                AsthoonLite.LOGGER.info("[AsthoonLite-Debug] scanMapDimensions: candidate at ($x,$z) rejected width=$width, height=$height (not in 8..32 or non-square)")
-                continue
-            }
+            if (width !in 8..32 || width != height) continue
             if ((width + ROOM_SPACING) * f.roomsW - ROOM_SPACING > SCAN ||
                 (width + ROOM_SPACING) * f.roomsH - ROOM_SPACING > SCAN) {
-                AsthoonLite.LOGGER.info("[AsthoonLite-Debug] scanMapDimensions: candidate at ($x,$z) size ($width) exceeded SCAN for floor ${f.shortName}")
                 continue
             }
             roomSize = width
@@ -114,10 +111,25 @@ object DungeonMapScanner {
             mapHeight = roomGap * (f.roomsH - 1) + roomSize
             if (SCAN - mapWidth >= roomGap * 2) mapOffsetX += roomGap
             if (SCAN - mapHeight >= roomGap * 2) mapOffsetZ += roomGap
+            dimensionsFloor = f
             AsthoonLite.LOGGER.info("[AsthoonLite-Debug] scanMapDimensions SUCCESS: roomSize=$roomSize, roomGap=$roomGap, offset=($mapOffsetX,$mapOffsetZ), size=($mapWidth,$mapHeight), floor=${f.shortName}")
             return true
         }
-        AsthoonLite.LOGGER.warn("[AsthoonLite-Debug] scanMapDimensions: entrance NOT found in ${colors.size} bytes (nonZero=${colors.count { it != 0.toByte() }}, floor=${f.shortName})")
+        return false
+    }
+
+    /** Incomplete packets stay pending; a later real entrance or floor can finish the scan. */
+    internal fun ensureMapDimensions(colors: ByteArray, floor: FloorType): Boolean {
+        val effectiveFloor = if (floor == FloorType.None) FloorType.M7 else floor
+        if (roomSize != -1 && dimensionsFloor == effectiveFloor) return true
+        if (scanMapDimensions(colors, effectiveFloor)) {
+            waitingForDimensions = null
+            return true
+        }
+        if (waitingForDimensions != effectiveFloor) {
+            waitingForDimensions = effectiveFloor
+            AsthoonLite.LOGGER.info("[AsthoonLite] Dungeon map is waiting for entrance pixels on {}", effectiveFloor.shortName)
+        }
         return false
     }
 
@@ -155,23 +167,7 @@ object DungeonMapScanner {
         mapColors = colors
 
         val floor = if (DungeonContext.floor != FloorType.None) DungeonContext.floor else FloorType.M7
-        if (roomSize == -1 && !scanMapDimensions(colors, floor)) {
-            AsthoonLite.LOGGER.warn("[AsthoonLite-Debug] DungeonMapScanner.updateMap: roomSize is -1 and scanMapDimensions failed, applying standard layout fallback")
-            roomSize = 16
-            roomGap = 20
-            mapOffsetX = when (floor.floorNum) {
-                0, 1 -> 22
-                2, 3 -> 11
-                else -> 5
-            }
-            mapOffsetZ = when (floor.floorNum) {
-                0 -> 22
-                1, 2, 3 -> 11
-                else -> 5
-            }
-            mapWidth = roomGap * (floor.roomsW - 1) + roomSize
-            mapHeight = roomGap * (floor.roomsH - 1) + roomSize
-        }
+        if (!ensureMapDimensions(colors, floor)) return
 
         updateRooms(colors)
         // The keyed map, not `mapState.decorations` (that getter throws the keys

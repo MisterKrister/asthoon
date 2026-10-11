@@ -126,6 +126,7 @@ object TerminalSimulator {
     }
 
     fun isSimulation(value: Any?): Boolean = value is TerminalSimulatorScreen
+    fun isCompleted(value: Any?): Boolean = (value as? TerminalSimulatorScreen)?.model?.completed == true
     fun allowsAutomation(value: Any?): Boolean = value === screen && useAutomation &&
         (value as? TerminalSimulatorScreen)?.model?.completed == false
     internal fun nowMs(): Long = System.nanoTime() / 1_000_000L

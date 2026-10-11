@@ -8,6 +8,8 @@ import org.lwjgl.glfw.GLFW
 import java.awt.*
 import java.awt.geom.AffineTransform
 import java.awt.image.BufferedImage
+import java.lang.management.ManagementFactory
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.imageio.ImageIO
 import javax.swing.JPanel
@@ -28,10 +30,72 @@ object MapOverlayWindow {
     private val warned = AtomicBoolean()
     private var window: OverlayWindow? = null // EDT only
     private var placementRejected = false // EDT only
+    @Volatile private var failure: String? = null
+    @Volatile private var windowReport = "not created"
+    @Volatile private var paints = 0L
+    @Volatile private var lastPaintNanos = 0L
+    private var publications = 0L // client render thread
+    private var bootstrapReport = "client bootstrap not run"
+    private var bootstrapComplete = false
+
+    internal fun desktopBootstrapAllowed(osName: String, display: String?, platform: Int? = null,
+                                         explicitlyHeadless: Boolean = false): Boolean {
+        if (explicitlyHeadless || platform == GLFW.GLFW_PLATFORM_WAYLAND) return false
+        val os = osName.lowercase(Locale.ROOT)
+        return os.startsWith("windows") && (platform == null || platform == GLFW.GLFW_PLATFORM_WIN32) ||
+            os.startsWith("mac") && (platform == null || platform == GLFW.GLFW_PLATFORM_COCOA) ||
+            os == "linux" && !display.isNullOrBlank() && platform == GLFW.GLFW_PLATFORM_X11
+    }
+
+    /** Minecraft Main forces headless=true; remove it before AWT caches the client setting. */
+    fun bootstrapDesktop(platform: Int? = null) {
+        if (bootstrapComplete) return
+        val os = System.getProperty("os.name", "")
+        if (platform == null && os.equals("linux", ignoreCase = true)) {
+            bootstrapReport = "waiting for GLFW backend before Linux desktop bootstrap"
+            return
+        }
+        val explicitlyHeadless = ManagementFactory.getRuntimeMXBean().inputArguments
+            .lastOrNull { it.startsWith("-Djava.awt.headless=") }
+            ?.substringAfter('=')?.equals("true", ignoreCase = true) == true
+        bootstrapComplete = true
+        if (!desktopBootstrapAllowed(os, System.getenv("DISPLAY"), platform, explicitlyHeadless)) {
+            bootstrapReport = if (explicitlyHeadless) "explicit JVM headless=true retained" else
+                "no supported desktop backend; headless property retained"
+            return
+        }
+        val previous = System.getProperty("java.awt.headless")
+        if (previous == "true") {
+            System.clearProperty("java.awt.headless") // Let the JDK detect real desktop availability.
+            bootstrapReport = "cleared Minecraft headless=true before ASL AWT access"
+        } else bootstrapReport = "headless property already $previous"
+    }
 
     val isAvailable: Boolean
-        get() = !GraphicsEnvironment.isHeadless() &&
-            GLFW.glfwGetPlatform() != GLFW.GLFW_PLATFORM_WAYLAND
+        get() = unavailableReason() == null
+
+    private fun unavailableReason(): String? {
+        failure?.let { return it }
+        val platform = GLFW.glfwGetPlatform()
+        if (!bootstrapComplete) bootstrapDesktop(platform)
+        return when {
+            platform == GLFW.GLFW_PLATFORM_WAYLAND ->
+                "native Wayland has no global game-window position; using HUD"
+            GraphicsEnvironment.isHeadless() -> "AWT headless (environment or prior initialization); using HUD"
+            else -> null
+        }
+    }
+
+    /** AWT state is copied on its own thread; callers never inspect a Swing window. */
+    fun diagnosticReport(): String {
+        val frame = pending
+        val age = if (lastPaintNanos == 0L) "never" else
+            "${(System.nanoTime() - lastPaintNanos) / 1_000_000}ms"
+        return "Map window: ${unavailableReason() ?: "available"}, publications=$publications, " +
+            "pendingOps=${frame?.ops?.size ?: 0}, queued=${queued.get()}, paints=$paints, " +
+            "paintAge=$age, state=$windowReport, bootstrap=$bootstrapReport, " +
+            "headlessProperty=${System.getProperty("java.awt.headless") ?: "automatic"}"
+    }
 
     internal fun desktopRect(clientX: Int, clientY: Int, windowWidth: Int, windowHeight: Int,
                              guiWidth: Int, guiHeight: Int, x: Int, y: Int, size: Int): Placement {
@@ -89,22 +153,37 @@ object MapOverlayWindow {
 
     fun publish(ops: List<MapOp>, size: Int, placement: Placement) {
         if (!isAvailable) return
+        publications++
         pending = Frame(ops, size, placement)
         schedule()
     }
 
     fun hide() {
-        if (!isAvailable || pending == null) return
+        if (pending == null) return
         pending = null
         schedule()
     }
 
+    fun close() {
+        if (publications == 0L) return // HUD-only sessions never need to initialize Swing.
+        pending = null
+        dispatch {
+            window?.dispose()
+            window = null
+            windowReport = "disposed"
+        }
+    }
+
     private fun schedule() {
         if (!queued.compareAndSet(false, true)) return
-        EventQueue.invokeLater {
+        dispatch {
             queued.set(false)
             val frame = pending
-            if (frame == null) { window?.isVisible = false; return@invokeLater }
+            if (frame == null) {
+                window?.isVisible = false
+                windowReport = if (window == null) "not created" else "hidden"
+                return@dispatch
+            }
             try {
                 val current = window ?: OverlayWindow().also { window = it }
                 val p = frame.placement
@@ -120,7 +199,7 @@ object MapOverlayWindow {
                 val followGame = p.positionAvailable && !placementRejected && current.isAlwaysOnTop
                 val location = if (followGame) Point(bounds.x, bounds.y) else defaultLocation(bounds.width, bounds.height)
                 current.setBounds(location.x, location.y, bounds.width, bounds.height)
-                if (pending !== frame) return@invokeLater
+                if (pending !== frame) return@dispatch
                 current.panel.frame = frame
                 current.isVisible = true
                 if (followGame && current.locationOnScreen != location) {
@@ -128,11 +207,49 @@ object MapOverlayWindow {
                     warn("The window manager refused the dungeon map position; using top-left placement")
                     current.location = defaultLocation(bounds.width, bounds.height)
                 }
+                windowReport = "visible=${current.isVisible}, bounds=${current.bounds}, " +
+                    "alwaysOnTop=${current.isAlwaysOnTop}, placementRejected=$placementRejected, " +
+                    "toolkit=${current.toolkit.javaClass.name}, dpi=${dpi.scaleX},${dpi.scaleY}"
                 current.panel.repaint()
             } catch (e: Exception) {
-                warn("Dungeon map overlay unavailable: " + e.javaClass.simpleName + ": " + e.message)
-                window?.isVisible = false
+                unavailable(e)
+            } catch (e: AWTError) {
+                unavailable(e)
+            } catch (e: UnsatisfiedLinkError) {
+                unavailable(e)
             }
+        }
+    }
+
+    private fun dispatch(action: () -> Unit) {
+        try {
+            EventQueue.invokeLater {
+                try { action() }
+                catch (e: Exception) { unavailable(e) }
+                catch (e: AWTError) { unavailable(e) }
+                catch (e: UnsatisfiedLinkError) { unavailable(e) }
+            }
+        } catch (e: Exception) {
+            unavailable(e, hideWindow = false)
+        } catch (e: AWTError) {
+            unavailable(e, hideWindow = false)
+        } catch (e: UnsatisfiedLinkError) {
+            unavailable(e, hideWindow = false)
+        }
+    }
+
+    private fun unavailable(e: Throwable, hideWindow: Boolean = true) {
+        failure = "${e.javaClass.simpleName}: ${e.message}; using HUD"
+        pending = null
+        queued.set(false)
+        windowReport = "failed: $failure"
+        // A failed desktop window must not keep owning the advanced layer.
+        AsthoonLite.LOGGER.warn("[AsthoonLite] Dungeon map window failed; using the HUD map", e)
+        if (hideWindow) {
+            try { window?.isVisible = false }
+            catch (cleanup: Exception) { AsthoonLite.LOGGER.warn("[AsthoonLite] Dungeon map window cleanup failed", cleanup) }
+            catch (cleanup: AWTError) { AsthoonLite.LOGGER.warn("[AsthoonLite] Dungeon map window cleanup failed", cleanup) }
+            catch (cleanup: UnsatisfiedLinkError) { AsthoonLite.LOGGER.warn("[AsthoonLite] Dungeon map window cleanup failed", cleanup) }
         }
     }
 
@@ -169,6 +286,14 @@ object MapOverlayWindow {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
                 replay(frame.ops, J2dMapCanvas(g2, g2.fontMetrics))
+                paints++
+                lastPaintNanos = System.nanoTime()
+            } catch (e: Exception) {
+                unavailable(e)
+            } catch (e: AWTError) {
+                unavailable(e)
+            } catch (e: UnsatisfiedLinkError) {
+                unavailable(e)
             } finally { g2.dispose() }
         }
     }

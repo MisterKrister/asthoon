@@ -40,7 +40,11 @@ into `check`, so plain `./gradlew build` runs the harness.
 
 `AsthoonLite.onInitializeClient()` does everything, in this order:
 
-1. `Config.load()` — must be first; every other `register()` may read config.
+1. `MapOverlayWindow.bootstrapDesktop()` clears Minecraft Main's forced AWT
+   headless flag on supported desktop environments before the first AWT query.
+   It does not read feature config or create a window; the regression JVM does
+   not invoke client initialization. Then `Config.load()` runs before every
+   module registration that may read config.
 2. `AslCommand.register()`
 3. `DungeonContext.register()` — scoreboard/sidebar-driven `inDungeon` flag.
    Almost every dungeon feature gates on `DungeonContext.inDungeon`.
@@ -81,13 +85,25 @@ Hud elements go through Fabric's `HudElementRegistry`. Menus are
 to `GuiGraphicsExtractor`; `drawString`/`drawCenteredString` are now
 `text`/`centeredText`). See `gui/AsthoonLiteScreen.kt` for the current shape.
 
+The settings screen keeps its 540-pixel panel in a logical viewport of at
+least 564×384, including margins. `gui/GuiViewport.kt` uniformly scales this
+layout down to fit smaller Minecraft GUI viewports, without enlarging it on
+larger screens. Rendering, hover, clicks, release, scrolling and drag distances
+share the same transform. Native content widgets use opaque header/footer
+masks rather than transformed scissors for hover; Minecraft checks widget
+hover against screen-space scissors. Resize rebuilds the layout and cancels
+an unfinished drag. A settings-only footer identifies Quiet Mode suppression;
+engaging Quiet Mode retains the existing screen-dismissal behavior.
+
 ### 3.3 Outside the game window: `render/MapCanvas.kt` + `overlay/MapOverlayWindow.kt`
 
 A window capture records exactly one window, so anything drawn in the game
 window is in the recording. The legit map always draws in the HUD. **Full
 Map Overlay** (`dungeonMapFullGrid`) adds a second, always-on-top window
-covering the HUD rectangle with the advanced map. The old
-`dungeonMapExternalWindow` key remains serialized for compatibility.
+covering the HUD rectangle with the advanced map where desktop placement is
+available. Native GLFW Wayland, headless AWT, or a failed desktop window keep
+the advanced content in the HUD instead. The old `dungeonMapExternalWindow`
+key remains serialized for compatibility but does not control this route.
 
 The map's layout is written once against `MapCanvas` and reaches one of two
 painters:
@@ -102,10 +118,19 @@ Contract:
   call goes through the canvas, or the two destinations drift apart.
 - The render thread only ever publishes a finished op list as a single
   reference write. All AWT state is touched on the EDT (`EventQueue.invokeLater`).
+- Minecraft Main sets `java.awt.headless=true`. The client bootstrap clears
+  that flag for Windows, macOS and Linux with an X11 GLFW backend and `DISPLAY`,
+  letting the JDK detect real desktop availability before it caches the result.
+  Linux waits for the actual GLFW backend before its first AWT query. Native
+  GLFW Wayland and an explicit JVM headless request retain their property and
+  use the HUD route. A JVM where AWT was already initialized headless
+  falls back and reports it rather than rewriting private JDK state.
 - The window is non-focusable and always-on-top. Its bounds come from the
   GLFW content origin and GUI-to-desktop scale, converted to AWT units on
-  the EDT. Native Wayland or a refused position logs once and uses top-left
-  placement. XWayland follows the normal X11 coordinate path.
+  the EDT. Native GLFW Wayland is unavailable for the desktop route because
+  global game-window coordinates cannot be obtained; it uses the HUD fallback.
+  On supported backends, a refused desktop position uses top-left placement.
+  XWayland reports the X11 GLFW backend and follows the X11 coordinate path.
 - Player skins cannot be read back from the GPU, so a face in the external
   window is a bordered box with the player's initial. Geometry and colours
   still match the in-game map exactly.
@@ -113,6 +138,27 @@ Contract:
   window. Editor mode uses `DungeonMapEditorScreen` and saves the clamped
   position on drop. One `dungeonMapStyle` selects Devonian or Noamm geometry
   for both layers; both use the existing scanner and room graph.
+
+### 3.4 On-demand rendering diagnostics
+
+`/asl diagnostics` (also `/asthoon diagnostics`) writes a snapshot to
+`logs/latest.log`: runtime and native backend, shared visibility gates, map
+data and route, AWT publications/paints, terminal grid gates, pointer mode and
+ownership, mob detection, hitbox queueing, and world draw submissions. Counters
+distinguish extraction from submission; neither proves visible pixels. The
+snapshot is requested explicitly and does not produce per-frame log spam.
+
+`/asl diagnostics fixture` installs real scoreboard, map-item, entity and block
+data in a dedicated local singleplayer Overworld named `ASL` or
+`ASL Rendering Test`. It modifies the fixture area near `-177,64,-181`, loads
+the needed chunks, and replaces tagged fixture entities on repeated requests.
+It does not enable features or force dungeon/client scanner state: normal
+packets and the F7 sidebar activate the existing code. Use a dedicated test
+world, clear Quiet Mode through settings, enable the feature being tested, and
+take snapshots before and after the interaction. `/asl termsim` separately
+provides the local terminal practice screen. See
+[`RENDERING_INVESTIGATION.md`](RENDERING_INVESTIGATION.md) for evidence and the
+cross-platform verification procedure.
 
 ## 4. State and lifecycle
 
@@ -179,7 +225,10 @@ load, not a warning. Always confirm the descriptor with `javap` first.
   default** (`termGuiEnabled` ships true, and the AutoTerm preset turns it on
   along with the pointer); size and gap are adjustable.
   Its pure layout supplies tile rendering, mouse hit tests, keyboard clicks
-  and `TerminalCursor.targetFor`. A screen is covered when its menu holds the
+  and `TerminalCursor.targetFor`. SELECT and STARTS draw their actual item
+  choices over the neutral/hint tile background in live and practice menus,
+  including with solver hints off; hover names follow the same icon policy.
+  A screen is covered when its menu holds the
   slots the *tiles* land on (`TermGui.covers` reads `requiredSlots`, counted
   from the layout, not `Kind.slotCount`), so the player's inventory below the
   terminal — and one row more than the grid draws — is never required; that is
@@ -270,7 +319,13 @@ via the `regressionCheck` task.
 It covers: sidebar/floor detection, terminal click timing, map dimension
 scanning, mob-category naming, Tic-Tac-Toe solver, secret-hitbox expansion
 geometry, and the map overlay canvas (record/replay round-trip, transform
-balance, Java2D fill convention).
+balance, Java2D fill convention). `MapRenderingRegressionCheck.kt` also checks
+gameplay visibility gates, desktop/HUD routing and delayed map calibration.
+`TerminalPresentationRegressionCheck.kt` checks GUI gates, item visibility,
+backend cursor policy, restoration ownership and viewport intersection.
+`gui/GuiViewportRegressionCheck.kt` checks settings fitting and inverse input
+transforms without requiring a game window. These are logic checks, not
+native-window or GPU presentation tests.
 
 `TerminalRegressionCheck.kt`, called by that harness, also checks CSS easing
 reference values and degenerate curves, retarget continuity, clicks during

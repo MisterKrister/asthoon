@@ -100,14 +100,32 @@ object WorldBoxRenderer {
     private val TEXTURE_MATRIX = org.joml.Matrix4f()
     private var buffer: BufferBuilder? = null
     private var vertexBuffer: MappableRingBuffer? = null
+    private var extractionCount = 0L
+    private var drawCallbackCount = 0L
+    private var submittedPassCount = 0L
+    private var lastDrawBoxes = 0
+    private var lastDrawQuads = 0
+    private var lastSubmittedVertices = 0
+    private var lastSubmittedIndices = 0
+    private var lastDrawGate = "not_called"
+    private var lastTargets = "not_submitted"
+    private var lastFailure: String? = null
 
     fun register() {
         LevelRenderEvents.END_EXTRACTION.register {
+            extractionCount++
             filledQueue.clear()
             quadQueue.clear()
         }
         LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register(::renderAndDraw)
     }
+
+    /** On-demand stage counts; submission alone does not establish visible pixels. */
+    fun diagnosticReport(): String =
+        "WorldBox extraction=$extractionCount drawCallbacks=$drawCallbackCount gate=$lastDrawGate " +
+            "quiet=${QuietMode.suppressing()} queuedBoxes=${filledQueue.size} queuedQuads=${quadQueue.size} " +
+            "lastDrawBoxes=$lastDrawBoxes lastDrawQuads=$lastDrawQuads submittedPasses=$submittedPassCount " +
+            "lastVertices=$lastSubmittedVertices lastIndices=$lastSubmittedIndices targets=$lastTargets failure=${lastFailure ?: "none"}"
 
     /** Call from MixinGameRenderer#close (see EtherwarpOverlay's original note). */
     fun close() {
@@ -201,16 +219,29 @@ object WorldBoxRenderer {
     }
 
     private fun renderAndDraw(context: LevelRenderContext) {
+        drawCallbackCount++
+        lastDrawBoxes = filledQueue.size
+        lastDrawQuads = quadQueue.size
+        lastSubmittedVertices = 0
+        lastSubmittedIndices = 0
         // Second gate: quiet mode can flip between the queue pass and here,
         // and a frame queued before it flipped must not be drawn.
-        if (QuietMode.suppressing()) return
-        if (filledQueue.isEmpty() && quadQueue.isEmpty()) return
+        if (QuietMode.suppressing()) { lastDrawGate = "quiet"; return }
+        if (filledQueue.isEmpty() && quadQueue.isEmpty()) { lastDrawGate = "empty_queue"; return }
 
-        renderBoxes(context, throughWalls = false)
-        drawBuffer(Minecraft.getInstance(), PIPELINE)
+        lastDrawGate = "preparing"
+        try {
+            renderBoxes(context, throughWalls = false)
+            drawBuffer(Minecraft.getInstance(), PIPELINE)
 
-        renderBoxes(context, throughWalls = true)
-        drawBuffer(Minecraft.getInstance(), THROUGH_WALLS_PIPELINE)
+            renderBoxes(context, throughWalls = true)
+            drawBuffer(Minecraft.getInstance(), THROUGH_WALLS_PIPELINE)
+            lastDrawGate = "submitted"
+        } catch (failure: Throwable) {
+            lastDrawGate = "failed"
+            lastFailure = "${failure.javaClass.simpleName}: ${failure.message}"
+            throw failure
+        }
     }
 
     private fun renderBoxes(context: LevelRenderContext, throughWalls: Boolean) {
@@ -348,6 +379,7 @@ object WorldBoxRenderer {
 
         val colorTarget = RenderSystem.outputColorTextureOverride ?: client.mainRenderTarget.colorTextureView!!
         val depthTarget = RenderSystem.outputDepthTextureOverride ?: client.mainRenderTarget.depthTextureView!!
+        lastTargets = "colorOverride=${RenderSystem.outputColorTextureOverride != null},depthOverride=${RenderSystem.outputDepthTextureOverride != null}"
 
         RenderSystem.getDevice().createCommandEncoder().createRenderPass(
             { "${AsthoonLite.MOD_ID} world box render pass" },
@@ -361,6 +393,10 @@ object WorldBoxRenderer {
             renderPass.setIndexBuffer(indices, indexType)
             renderPass.drawIndexed(0, 0, drawParameters.indexCount(), 1)
         }
+
+        submittedPassCount++
+        lastSubmittedVertices += drawParameters.vertexCount()
+        lastSubmittedIndices += drawParameters.indexCount()
 
         built.close()
     }

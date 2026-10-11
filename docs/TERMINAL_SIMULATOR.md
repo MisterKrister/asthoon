@@ -21,8 +21,8 @@ applies each click. The delay setting is fixed for each board. Inputs apply on
 the client tick, so records include both the scheduled time and actual apply
 time. The simulator owns its items and does not change the player's inventory.
 
-Starts-with and select-color practice use the same gray tile background as the
-same-color terminal. Hovering a tile shows its item name; solver hints still
+Starts-with and select-color terminals show their actual item icons over the
+same gray tile background as the same-color terminal. Hovering a tile shows its item name; solver hints still
 mark the correct choices. Wrong answers and repeated selections reach the
 simulator and are recorded.
 

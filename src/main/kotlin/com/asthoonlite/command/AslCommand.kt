@@ -35,6 +35,25 @@ object AslCommand {
                 dispatcher.register(
                     ClientCommands.literal(alias)
                         .then(
+                            ClientCommands.literal("diagnostics")
+                                .then(
+                                    ClientCommands.literal("fixture")
+                                        .executes { ctx ->
+                                            ctx.source.sendFeedback(Component.literal(
+                                                "§7[AsthoonLite] " + com.asthoonlite.dungeon.RenderingFixture.install()
+                                            ))
+                                            1
+                                        }
+                                )
+                                .executes { ctx ->
+                                    val reports = renderingDiagnostics()
+                                    reports.forEach { AsthoonLite.LOGGER.info("[ASL diagnostics] {}", it) }
+                                    ctx.source.sendFeedback(Component.literal("§a[AsthoonLite] Rendering diagnostics written to logs/latest.log"))
+                                    ctx.source.sendFeedback(Component.literal("§7" + reports[1]))
+                                    1
+                                }
+                        )
+                        .then(
                             ClientCommands.literal("termsim")
                                 .executes { _ ->
                                     com.asthoonlite.dungeon.simulator.TerminalSimulator.requestStart()
@@ -116,4 +135,21 @@ object AslCommand {
             }
         }
     }
+
+    private fun renderingDiagnostics(): List<String> = listOf(
+        "runtime os=${System.getProperty("os.name")} java=${System.getProperty("java.version")} " +
+            "glfw=${org.lwjgl.glfw.GLFW.glfwGetVersionString()} platform=${org.lwjgl.glfw.GLFW.glfwGetPlatform()} " +
+            "session=${System.getenv("XDG_SESSION_TYPE") ?: "unspecified"}",
+        "gates quiet=${com.asthoonlite.QuietMode.suppressing()} dungeon=${com.asthoonlite.dungeon.DungeonContext.inDungeon} " +
+            "boss=${com.asthoonlite.dungeon.DungeonContext.inBoss} screen=${Minecraft.getInstance().screen?.javaClass?.simpleName ?: "none"}",
+        com.asthoonlite.dungeon.DungeonMap.diagnosticReport(),
+        com.asthoonlite.overlay.MapOverlayWindow.diagnosticReport(),
+        com.asthoonlite.dungeon.TermGui.diagnosticReport(),
+        com.asthoonlite.dungeon.TerminalCursor.diagnosticReport(),
+        com.asthoonlite.dungeon.StarMobESP.diagnosticReport(),
+        com.asthoonlite.dungeon.SecretHitboxes.diagnosticReport(),
+        com.asthoonlite.render.WorldBoxRenderer.diagnosticReport(),
+        com.asthoonlite.render.WorldTextRenderer.diagnosticReport(),
+        com.asthoonlite.dungeon.RenderingFixture.diagnosticReport()
+    )
 }

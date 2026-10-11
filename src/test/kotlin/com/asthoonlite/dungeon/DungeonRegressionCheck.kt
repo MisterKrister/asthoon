@@ -914,8 +914,11 @@ fun main() {
         terminalSimulationChecks()
         terminalPracticeRegressionChecks()
         terminalCaptureRegressionChecks()
+        terminalPresentationRegressionChecks()
+        com.asthoonlite.gui.guiViewportRegressionChecks()
         simonDeviceRegressionChecks()
         mapStyleRegressionChecks()
+        mapRenderingRegressionChecks()
 
         val slow = TerminalCursor.travelDurationMs(120f, 100, 0f)
         val fast = TerminalCursor.travelDurationMs(120f, 400, 0f)
@@ -1305,21 +1308,6 @@ fun main() {
         )
         check(shouldJumpApproachGap) {
             "Must auto-gap-jump across chasms on approach runway to reach the Bonzo launch pad"
-        }
-    }
-
-    run {
-        val blankMap = ByteArray(16384)
-        check(!DungeonMapScanner.scanMapDimensions(blankMap, FloorType.F7)) {
-            "Blank map must reject entrance scan"
-        }
-        val f = FloorType.F7
-        val fallbackRoomSize = 16
-        val fallbackRoomGap = 20
-        val fallbackMapWidth = fallbackRoomGap * (f.roomsW - 1) + fallbackRoomSize
-        val fallbackMapHeight = fallbackRoomGap * (f.roomsH - 1) + fallbackRoomSize
-        check(fallbackMapWidth == 116 && fallbackMapHeight == 116) {
-            "F7 fallback dimensions must match 6x6 grid layout"
         }
     }
 

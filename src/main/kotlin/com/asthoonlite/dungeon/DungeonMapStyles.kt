@@ -185,18 +185,26 @@ internal object DungeonMapStyles {
             c.pop()
         } else if (labels.checks && !(labels.hideFairyCheck && room.type == RoomTypes.FAIRY)) {
             if (advanced && !room.explored && room.name != null) return
-            val art = when (room.checkmark) {
-                CheckmarkTypes.WHITE -> if (style == 1) "white_check" else "whiteCheck"
-                CheckmarkTypes.GREEN -> if (style == 1) "green_check" else "greenCheck"
-                CheckmarkTypes.FAILED -> if (style == 1) "cross" else "failedRoom"
-                CheckmarkTypes.UNEXPLORED -> if (style == 1) "question" else "questionMark"
-                else -> return
-            }
-            val size = (l.room * 0.55f).toInt().coerceAtLeast(1)
-            val textureSize = if (style == 1) 100 else if (art == "questionMark") 62 else 10
-            val directory = if (style == 1) "noamm" else "devonian"
-            c.image("textures/map/$directory/$art.png", (cx - size / 2).toInt(), (cy - size / 2).toInt(), size, textureSize)
+            drawCheckmark(c, style, room.checkmark, cx, cy, l.room)
         }
+    }
+
+    /** Both map backends consume these same lowercase resource paths. */
+    fun drawCheckmark(c: MapCanvas, style: Int, checkmark: CheckmarkTypes,
+                      cx: Float, cy: Float, roomSize: Float) {
+        val noamm = style(style) == 1
+        val art = when (checkmark) {
+            CheckmarkTypes.WHITE -> "white_check"
+            CheckmarkTypes.GREEN -> "green_check"
+            CheckmarkTypes.FAILED -> if (noamm) "cross" else "failed_room"
+            CheckmarkTypes.UNEXPLORED -> if (noamm) "question" else "question_mark"
+            CheckmarkTypes.NONE -> return
+        }
+        val size = (roomSize * 0.55f).toInt().coerceAtLeast(1)
+        val textureSize = if (noamm) 100 else if (checkmark == CheckmarkTypes.UNEXPLORED) 62 else 10
+        val directory = if (noamm) "noamm" else "devonian"
+        c.image("textures/map/$directory/$art.png", (cx - size / 2).toInt(),
+            (cy - size / 2).toInt(), size, textureSize)
     }
 
     private fun doorColor(door: DungeonDoor, style: Int): Int = when (door.type) {

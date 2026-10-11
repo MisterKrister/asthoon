@@ -2,13 +2,16 @@ package com.asthoonlite.dungeon
 
 import com.asthoonlite.config.Config
 import com.asthoonlite.dungeon.api.FloorType
+import com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes
 import com.asthoonlite.dungeon.api.mapEnums.RoomTypes
 import com.asthoonlite.dungeon.map.DungeonMapScanner
 import com.asthoonlite.overlay.J2dMapCanvas
 import com.asthoonlite.overlay.MapOverlayWindow
+import com.asthoonlite.render.MapOp
 import com.asthoonlite.render.RecordMapCanvas
 import com.asthoonlite.render.replay
 import com.google.gson.Gson
+import net.minecraft.resources.Identifier
 import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.Vec3
 import java.awt.image.BufferedImage
@@ -71,24 +74,45 @@ internal fun mapStyleRegressionChecks() {
     check(StarMobESP.renderBounds(1, hitbox, Vec3(11.0, 64.0, 21.0), 0.8) == hitbox) { "Box mode must preserve the entity's entire AABB" }
     check(StarMobESP.renderBounds(0, hitbox, Vec3(11.0, 64.0, 21.0), 0.8).maxY == 64.8) { "Fill geometry must remain backward compatible" }
 
-    // Every ported sprite must round-trip through recording and actually paint in Java2D.
-    val recording = RecordMapCanvas()
-    for ((directory, names, native) in listOf(
-        Triple("noamm", listOf("green_check", "white_check", "cross", "question", "marker"), 100),
-        Triple("devonian", listOf("greenCheck", "whiteCheck", "failedRoom", "questionMark"), 10))) {
-        for (name in names) {
-            val copy = RecordMapCanvas()
-            recording.ops.clear()
-            recording.image("textures/map/$directory/$name.png", 0, 0, 24,
-                if (name == "questionMark") 62 else if (name == "marker") 7 else native,
-                if (name == "marker") 0xFF00AAAA.toInt() else -1)
-            replay(recording.ops, copy)
-            check(copy.ops == recording.ops)
-            val image = BufferedImage(24, 24, BufferedImage.TYPE_INT_ARGB)
-            val graphics = image.createGraphics()
-            try { replay(copy.ops, J2dMapCanvas(graphics, graphics.fontMetrics)) }
-            finally { graphics.dispose() }
-            check((0 until 24).any { x -> (0 until 24).any { y -> image.getRGB(x, y) ushr 24 != 0 } }) { "Missing or empty map sprite $directory/$name" }
+    // Exercise the real checkmark draw output: Java2D accepts names that the HUD Identifier rejects.
+    val checkmarkPaths = mutableSetOf<String>()
+    fun verifyImages(recording: RecordMapCanvas) {
+        val copy = RecordMapCanvas()
+        replay(recording.ops, copy)
+        check(copy.ops == recording.ops)
+        for (op in recording.ops.filterIsInstance<MapOp.Image>()) {
+            check(Identifier.fromNamespaceAndPath("asthoonlite", op.path).path == op.path) {
+                "Map draw output must be a valid HUD resource path: ${op.path}"
+            }
+            check(DungeonMapStyles.javaClass.getResource("/assets/asthoonlite/${op.path}") != null) {
+                "Map draw output has no bundled texture: ${op.path}"
+            }
         }
+        val image = BufferedImage(24, 24, BufferedImage.TYPE_INT_ARGB)
+        val graphics = image.createGraphics()
+        try { replay(copy.ops, J2dMapCanvas(graphics, graphics.fontMetrics)) }
+        finally { graphics.dispose() }
+        check((0 until 24).any { x -> (0 until 24).any { y -> image.getRGB(x, y) ushr 24 != 0 } }) {
+            "Map draw output must paint its bundled sprite: ${recording.ops}"
+        }
+    }
+    for (style in 0..1) for (mark in CheckmarkTypes.entries) {
+        val recording = RecordMapCanvas()
+        DungeonMapStyles.drawCheckmark(recording, style, mark, 12f, 12f, 44f)
+        if (mark == CheckmarkTypes.NONE) {
+            check(recording.ops.isEmpty()) { "An absent checkmark must not emit a texture" }
+            continue
+        }
+        val output = recording.ops.single() as MapOp.Image
+        check(output.textureSize == if (style == 1) 100 else if (mark == CheckmarkTypes.UNEXPLORED) 62 else 10)
+        check(checkmarkPaths.add(output.path)) { "Each style/checkmark must use its own bundled sprite" }
+        verifyImages(recording)
+    }
+    check(checkmarkPaths.size == 8)
+    for ((path, native) in listOf("textures/map/noamm/marker.png" to 7,
+        "textures/map/marker_atlas.png" to 40)) {
+        val recording = RecordMapCanvas()
+        recording.image(path, 0, 0, 24, native, 0xFF00AAAA.toInt())
+        verifyImages(recording)
     }
 }
