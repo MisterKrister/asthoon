@@ -112,6 +112,37 @@ object KinematicTrajectory {
     )
 
     /**
+     * Calculates the optimal Bonzo blast launch pitch to guarantee covering the required horizontal
+     * distance [distH] and vertical rise [deltaY] under Minecraft air drag (0.91) and gravity (0.08).
+     * Clamps steep pitches that would physically fall short of the destination.
+     */
+    fun calculateOptimalBonzoPitch(
+        distH: Double,
+        deltaY: Double = 0.0,
+        recordedPitch: Float = 0f,
+        isRedirection: Boolean = false
+    ): Float {
+        val maxPitchForRange = when {
+            distH >= 17.0 -> if (deltaY > 0.0) 38.0f else 42.0f
+            distH >= 14.0 -> if (deltaY > 0.0) 44.0f else 48.0f
+            distH >= 11.0 -> if (deltaY > 0.0) 52.0f else 56.0f
+            distH >= 8.0 -> 64.0f
+            else -> 75.0f
+        }
+        val minPitch = if (isRedirection) 35.0f else 28.0f
+
+        // If recorded pitch is provided and physically covers the required distance, preserve it
+        if (recordedPitch in minPitch..maxPitchForRange) {
+            return recordedPitch
+        }
+        // If recorded pitch is too steep (falls short), clamp it down so it reaches
+        if (recordedPitch > maxPitchForRange) {
+            return maxPitchForRange
+        }
+        return maxPitchForRange.coerceIn(minPitch, 70.0f)
+    }
+
+    /**
      * Calculates the exact ground blast coordinate and look rotation needed to produce
      * the required knockback impulse to propel the player towards [destinationPos].
      */
@@ -123,7 +154,8 @@ object KinematicTrajectory {
         recordedPitch: Float = 0f,
         recordedYaw: Float = 0f,
         targetLaunchBps: Double = 24.0,
-        groundY: Double? = null
+        groundY: Double? = null,
+        hasLookNode: Boolean = false
     ): BonzoAimPlan {
         val destDx = destinationPos.x - playerPos.x
         val destDz = destinationPos.z - playerPos.z

@@ -38,6 +38,7 @@ import com.asthoonlite.pathfinding.PathExecutor
 import com.asthoonlite.pathfinding.KinematicTrajectory
 import net.minecraft.world.phys.Vec3
 import com.google.gson.Gson
+import kotlin.math.*
 
 /** Run with ./gradlew regressionCheck (also included in build). No game or server needed. */
 fun main() {
@@ -1200,6 +1201,17 @@ fun main() {
         check(planS2.shotYaw == 91.50f) {
             "Recorded yaw 91.50° must be preserved, got ${planS2.shotYaw}"
         }
+
+        // Test optimal pitch clamping for long/uphill ranges (e.g. niggap3 Node 2 -> Node 3 17.89m +1.0m rise)
+        val optPitchP3 = KinematicTrajectory.calculateOptimalBonzoPitch(distH = 17.89, deltaY = 1.0, recordedPitch = 63.78f)
+        check(optPitchP3 <= 38.0f) {
+            "Pitch for 17.89m uphill jump must be clamped to <= 38° to prevent undershooting, got $optPitchP3"
+        }
+        // Test optimal pitch for niggaS2 Node 1 -> Node 2 (18.01m downhill -1.5m)
+        val optPitchS2 = KinematicTrajectory.calculateOptimalBonzoPitch(distH = 18.01, deltaY = -1.5, recordedPitch = 61.05f)
+        check(optPitchS2 <= 42.0f) {
+            "Pitch for 18m downhill jump must be clamped to <= 42° to guarantee reach, got $optPitchS2"
+        }
     }
 
     // ── Pathfinding Waypoint Corridor & Stationary Deadzone Braking ──────
@@ -1225,14 +1237,14 @@ fun main() {
             "Final waypoint must not advance along-track without next destination"
         }
 
-        // 2. Stationary Deadzone: inside 0.35m deadzone, input is Vec3.ZERO to allow friction to stop
-        val deadzoneOffset = Vec3(0.2, 0.0, 0.1) // distH = 0.22m <= 0.35m
+        // 2. Stationary Deadzone: inside 0.40m deadzone, input is Vec3.ZERO to allow friction to stop
+        val deadzoneOffset = Vec3(0.2, 0.0, 0.1) // distH = 0.22m <= 0.40m
         val deadzoneMotion = PathExecutor.stationaryMovement(deadzoneOffset, Vec3(0.15, 0.0, 0.10), 0.0)
         check(deadzoneMotion == Vec3.ZERO) {
-            "Inside stationary deadzone (distH <= 0.35m), stationaryMovement must return Vec3.ZERO"
+            "Inside stationary deadzone (distH <= 0.40m), stationaryMovement must return Vec3.ZERO"
         }
 
-        // 3. Coasting zone: within 1.4m, if momentum naturally stops on node, return Vec3.ZERO
+        // 3. Coasting zone: within 1.5m, if momentum naturally stops on node, return Vec3.ZERO
         val coastOffset = Vec3(0.5, 0.0, 0.0) // distH = 0.5m
         val coastVelocity = Vec3(0.18, 0.0, 0.0) // moving toward target at 0.18 (stops in ~0.22m, landing at 0.28m)
         val coastMotion = PathExecutor.stationaryMovement(coastOffset, coastVelocity, 0.0)
@@ -1240,9 +1252,26 @@ fun main() {
             "Momentum naturally carrying player into deadzone must coast with Vec3.ZERO"
         }
 
-        // 4. Settled at node: inside 0.40m deadzone on ground is settled even with small residual drift
+        // 4. Settled at node: inside 0.45m deadzone on ground is settled even with small residual drift
         check(PathExecutor.isSettledAtNode(0.35, 0.2, true, 0.07)) {
             "Player in deadzone on ground must register as settled"
+        }
+
+        // 5. Jump suppression should not trigger when there is an actual gap/ledge ahead
+        val shouldJumpGap = PathExecutor.shouldAutoJump(
+            nodeType = com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
+            isStationaryDest = false,
+            onGround = true,
+            isLedge = true,
+            distH = 1.2,
+            isCrouchNode = false,
+            isObstacleCollision = false,
+            isElevationStep = false,
+            isMiningObstacle = false,
+            isExitingBreakDoorway = false
+        )
+        check(shouldJumpGap) {
+            "Approaching Bonzo staff must auto-jump across gap/ledge to reach platform"
         }
     }
 
