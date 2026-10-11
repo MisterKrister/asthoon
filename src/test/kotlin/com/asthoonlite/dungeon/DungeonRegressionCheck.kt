@@ -1178,7 +1178,8 @@ fun main() {
             playerEyeY = 117.4,
             destinationPos = Vec3(96.4, 120.0, 69.9),
             recordedPitch = 36.45f,
-            recordedYaw = 12.60f
+            recordedYaw = 12.60f,
+            hasLookNode = true
         )
         check(planP3.shotPitch == 36.45f) {
             "Recorded pitch 36.45° must be preserved, got ${planP3.shotPitch}"
@@ -1193,13 +1194,28 @@ fun main() {
             playerEyeY = 134.6,
             destinationPos = Vec3(31.6, 131.0, 138.6),
             recordedPitch = 54.15f,
-            recordedYaw = 91.50f
+            recordedYaw = 91.50f,
+            hasLookNode = true
         )
         check(planS2.shotPitch == 54.15f) {
             "Recorded pitch 54.15° must be preserved, got ${planS2.shotPitch}"
         }
         check(planS2.shotYaw == 91.50f) {
             "Recorded yaw 91.50° must be preserved, got ${planS2.shotYaw}"
+        }
+
+        // Test automatic destination flight yaw when hasLookNode == false (eliminates lateral drift)
+        val planAutoS2 = KinematicTrajectory.calculateBonzoAimPlan(
+            playerPos = Vec3(51.5, 132.5, 139.0),
+            playerVel = Vec3(-0.55, -0.23, 0.0),
+            playerEyeY = 134.12,
+            destinationPos = Vec3(33.5, 131.0, 138.5),
+            recordedPitch = 61.05f,
+            recordedYaw = 87.45f,
+            hasLookNode = false
+        )
+        check(abs(planAutoS2.shotYaw - planAutoS2.destYaw) < 0.01f) {
+            "Shot yaw without look node must align precisely with destination yaw (${planAutoS2.destYaw}°), got ${planAutoS2.shotYaw}"
         }
 
         // Test optimal pitch clamping for long/uphill ranges (e.g. niggap3 Node 2 -> Node 3 17.89m +1.0m rise)

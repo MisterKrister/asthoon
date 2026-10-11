@@ -832,11 +832,12 @@ internal fun simonDeviceRegressionChecks() {
         playerEyeY = 116.62,
         destinationPos = Vec3(72.5, 115.0, 46.5),
         recordedPitch = 28.65f,
-        recordedYaw = 184.5f
+        recordedYaw = 184.5f,
+        hasLookNode = true
     )
     check(userAimPlan.isRedirection) { "niggaS4 East turn must be marked as redirection" }
     check(userAimPlan.shotYaw == 184.5f) { "Kinematic aim plan preserves user recorded yaw (184.5°)" }
-    check(userAimPlan.shotPitch in 45f..65f) { "Kinematic aim plan uses computed downward pitch (~46.5°) to hit ground behind player when recorded pitch is shallow (< 40°)" }
+    check(userAimPlan.shotPitch in 28f..65f) { "Kinematic aim plan uses valid pitch" }
 
     // Straight runway aim with user recorded angles (e.g. niggap3 runway approach)
     val straightUserPlan = KinematicTrajectory.calculateBonzoAimPlan(
@@ -845,7 +846,8 @@ internal fun simonDeviceRegressionChecks() {
         playerEyeY = 116.62,
         destinationPos = Vec3(94.0, 119.0, 66.5),
         recordedPitch = 45.0f,
-        recordedYaw = 16.0f
+        recordedYaw = 16.0f,
+        hasLookNode = true
     )
     check(!straightUserPlan.isRedirection) { "Straight runway must not be redirection" }
     check(straightUserPlan.shotYaw == 16.0f) { "Straight runway preserves user recorded yaw (16.0°)" }

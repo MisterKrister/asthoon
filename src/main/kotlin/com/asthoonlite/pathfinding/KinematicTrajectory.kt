@@ -114,7 +114,7 @@ object KinematicTrajectory {
     /**
      * Calculates the optimal Bonzo blast launch pitch to guarantee covering the required horizontal
      * distance [distH] and vertical rise [deltaY] under Minecraft air drag (0.91) and gravity (0.08).
-     * Clamps steep pitches that would physically fall short of the destination.
+     * Uses discrete tick simulation of vertical motion and horizontal impulse kinematics.
      */
     fun calculateOptimalBonzoPitch(
         distH: Double,
@@ -122,6 +122,30 @@ object KinematicTrajectory {
         recordedPitch: Float = 0f,
         isRedirection: Boolean = false
     ): Float {
+        // Analytical trajectory simulation:
+        // Simulate flight duration T until player reaches destination elevation deltaY
+        var curY = 0.0
+        var curVy = 0.83 // jump boost (0.42) + bonzo knockback impulse (0.41)
+        var flightTicks = 20
+        for (t in 1..40) {
+            curY += curVy
+            curVy = (curVy - 0.08) * 0.98
+            if (curY <= deltaY && t >= 8) {
+                flightTicks = t
+                break
+            }
+        }
+        val tEff = flightTicks.coerceIn(12, 35)
+        val decaySum = (1.0 - Math.pow(0.91, tEff.toDouble())) / 0.09
+        val airSprintTravel = 0.288 * tEff
+        val neededImpulseDist = (distH - airSprintTravel).coerceAtLeast(1.0)
+        val reqV0 = (neededImpulseDist / decaySum).coerceIn(0.5, 2.2)
+
+        val vApproach = 0.55
+        val blastImpulse = 1.45
+        val cosTheta = ((reqV0 - vApproach) / blastImpulse).coerceIn(0.20, 0.95)
+        val calcPitch = Math.toDegrees(Math.acos(cosTheta)).toFloat()
+
         val maxPitchForRange = when {
             distH >= 17.0 -> if (deltaY > 0.0) 38.0f else 42.0f
             distH >= 14.0 -> if (deltaY > 0.0) 44.0f else 48.0f
@@ -130,16 +154,13 @@ object KinematicTrajectory {
             else -> 75.0f
         }
         val minPitch = if (isRedirection) 35.0f else 28.0f
+        val boundedPitch = calcPitch.coerceIn(minPitch, maxPitchForRange)
 
         // If recorded pitch is provided and physically covers the required distance, preserve it
         if (recordedPitch in minPitch..maxPitchForRange) {
             return recordedPitch
         }
-        // If recorded pitch is too steep (falls short), clamp it down so it reaches
-        if (recordedPitch > maxPitchForRange) {
-            return maxPitchForRange
-        }
-        return maxPitchForRange.coerceIn(minPitch, 70.0f)
+        return boundedPitch
     }
 
     /**
@@ -197,20 +218,30 @@ object KinematicTrajectory {
         val aimDz = blastImpactPos.z - playerPos.z
         val aimDistH = hypot(aimDx, aimDz)
         val aimDy = (groundImpactY - 0.1) - playerEyeY
-
         val computedYaw = (-Math.toDegrees(atan2(aimDx, aimDz))).toFloat()
         val computedPitch = (-Math.toDegrees(atan2(aimDy, aimDistH.coerceAtLeast(0.2)))).toFloat().coerceIn(45.0f, 75.0f)
 
-        // Prioritize explicit recorded node angles: >= 25° for straight runway shots, >= 40° for redirection shots
-        val finalPitch = if (!isRedirection && recordedPitch in 25.0f..88.0f) {
-            recordedPitch
-        } else if (recordedPitch in 40.0f..88.0f) {
-            recordedPitch
+        val deltaY = destinationPos.y - playerPos.y
+        val finalPitch = if (isRedirection) {
+            if (recordedPitch in 40.0f..88.0f) recordedPitch else computedPitch
+        } else if (recordedPitch in 25.0f..88.0f) {
+            if (destDistH >= 17.0 && deltaY >= 0.0 && recordedPitch > 38.0f) {
+                38.0f
+            } else if (destDistH >= 18.0 && deltaY < 0.0 && recordedPitch > 54.15f) {
+                54.15f
+            } else {
+                recordedPitch
+            }
         } else {
-            computedPitch
+            calculateOptimalBonzoPitch(
+                distH = destDistH,
+                deltaY = deltaY,
+                recordedPitch = recordedPitch,
+                isRedirection = false
+            )
         }
 
-        val finalYaw = if (recordedYaw != 0f) {
+        val finalYaw = if (hasLookNode && recordedYaw != 0f) {
             recordedYaw
         } else if (isRedirection) {
             computedYaw
@@ -261,7 +292,9 @@ object KinematicTrajectory {
             val probePos = BlockPos(floor(probeX).toInt(), floorY, floor(probeZ).toInt())
             val stateAtFloor = level.getBlockState(probePos)
             val stateBelow = level.getBlockState(probePos.below())
-            if (stateAtFloor.isAir && stateBelow.isAir) {
+            val shapeAtFloor = stateAtFloor.getCollisionShape(level, probePos)
+            val shapeBelow = stateBelow.getCollisionShape(level, probePos.below())
+            if (shapeAtFloor.isEmpty && (shapeBelow.isEmpty || stateAtFloor.isAir)) {
                 dropDetectedAtTick = step
                 break
             }
@@ -279,7 +312,7 @@ object KinematicTrajectory {
         val landingBlockPos = BlockPos(floor(projectedLand.x).toInt(), floorY, floor(projectedLand.z).toInt())
         val landingState = level.getBlockState(landingBlockPos)
 
-        return !landingState.isAir || dropDetectedAtTick <= 2
+        return !landingState.getCollisionShape(level, landingBlockPos).isEmpty || dropDetectedAtTick <= 2
     }
 
     data class AirControl(val forward: Double, val strafe: Double)

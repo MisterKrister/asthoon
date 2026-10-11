@@ -531,8 +531,10 @@ object PathExecutor {
                 val ldx = target.lookX - player.x
                 val ldz = target.lookZ - player.z
                 (-Math.toDegrees(atan2(ldx, ldz))).toFloat()
-            } else {
+            } else if (launchParams.isRedirection) {
                 launchParams.shotYaw
+            } else {
+                flightYaw
             }
 
             val baseLaunchPitch = if (target.hasLookNode && target.pitch in 20.0f..88.0f) {
@@ -564,7 +566,7 @@ object PathExecutor {
             val hasRunwayAlignment = lateralSpeed <= 0.35 || distH <= 0.5 || isAirborneBonzo
 
             // Reserve the jump only once on the launch platform, not while climbing its approach.
-            isBonzoRunway = player.onGround() && nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
+            isBonzoRunway = player.onGround() && nextTarget != null && distH <= 2.2 && !isGapAhead && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
             val canLaunch = !player.isInLava && !player.isInWater &&
                             isAtNodeElev && isArrivedOnPlatform && hasGroundImpact && hasRunwayAlignment
 
@@ -573,7 +575,7 @@ object PathExecutor {
                     shotPitch = effectiveLaunchPitch,
                     shotYaw = effectiveShotYaw,
                     destYaw = flightYaw,
-                    jumpOnFire = player.onGround()
+                    jumpOnFire = player.onGround() && !launchParams.isRedirection
                 )
                 initiateBonzoLaunch(points, isHighSpeed, finalLaunchParams)
                 return
@@ -906,9 +908,8 @@ object PathExecutor {
         }
 
         // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection
-        // Auto gap jump: trigger on WALK nodes or when crossing a gap towards a device platform!
-        // BONZO_STAFF nodes must NEVER auto-jump during approach — they must stay grounded for the staff blast!
-        val canAutoGapJump = (nodeType == RouteNodeType.WALK || isStationaryDest || (nodeType == RouteNodeType.BONZO_STAFF && distH > 1.8)) && player.onGround() && isLedge && distH > 0.8 && !isCrouchNode && !isDescending
+        // Auto gap jump: trigger on WALK nodes or when crossing a gap towards a destination platform!
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK || isStationaryDest || (nodeType == RouteNodeType.BONZO_STAFF && (distH > 1.8 || isLedge))) && player.onGround() && isLedge && distH > 0.4 && !isCrouchNode && !isDescending
         val isObstacleCollision = !isDescending && player.horizontalCollision && player.onGround() && nodeType != RouteNodeType.BREAK && !isApproachingBreak
         val isElevationStep = !isDescending && target.y > player.y + 0.35 && distH < 2.5 && player.onGround() && nodeType != RouteNodeType.BREAK && !isApproachingBreak
 
@@ -939,11 +940,11 @@ object PathExecutor {
             isDescending = isDescending
         )
 
-        if (!isApproaching || isBonzoRunway || (nodeType == RouteNodeType.BONZO_STAFF && distH <= 1.8 && !isLedge) || (isStationaryDest && landingSupport)) {
+        if (!isApproaching || (isBonzoRunway && !isLedge) || (nodeType == RouteNodeType.BONZO_STAFF && distH <= 1.8 && !isLedge) || (isStationaryDest && landingSupport)) {
             jumpTicksRemaining = 0
         } else {
-            jumpTicksRemaining = nextAutoJumpPulse(shouldAutoJump, jumpTicksRemaining, mc.options.keyJump.isDown)
-            if (shouldAutoJump && isCrossingGapToStationary && jumpTicksRemaining > 0) {
+            jumpTicksRemaining = nextAutoJumpPulse(shouldAutoJump, jumpTicksRemaining, mc.options.keyJump.isDown, isLedge)
+            if (shouldAutoJump && (isCrossingGapToStationary || isLedge) && jumpTicksRemaining > 0) {
                 jumpTicksRemaining = 3
             }
         }
@@ -1285,15 +1286,15 @@ object PathExecutor {
         if (isDescending || isCrouchNode) return false
         if (isMiningObstacle || isExitingBreakDoorway) return false
 
-        val canAutoGapJump = onGround && isLedge && distH >= 0.6
+        val canAutoGapJump = onGround && isLedge && distH >= 0.3
         if (nodeType == RouteNodeType.BONZO_STAFF && distH <= 1.8 && !isLedge) {
             return false
         }
         return canAutoGapJump || (onGround && (isObstacleCollision || isElevationStep))
     }
 
-    internal fun nextAutoJumpPulse(requested: Boolean, ticksRemaining: Int, wasJumpDown: Boolean): Int =
-        if (requested && ticksRemaining <= 0 && !wasJumpDown) 1 else ticksRemaining
+    internal fun nextAutoJumpPulse(requested: Boolean, ticksRemaining: Int, wasJumpDown: Boolean, isLedge: Boolean = false): Int =
+        if (requested && ticksRemaining <= 0 && !wasJumpDown) (if (isLedge) 3 else 1) else ticksRemaining
 
     private fun moveInDirection(player: LocalPlayer, motion: Vec3, sprint: Boolean, crouch: Boolean = false) {
         val options = Minecraft.getInstance().options
@@ -1655,9 +1656,12 @@ object PathExecutor {
 
             val stateAtFloor = level.getBlockState(probeBlockPos)
             val stateBelowFloor = level.getBlockState(probeBlockPos.below())
+            val shapeAtFloor = stateAtFloor.getCollisionShape(level, probeBlockPos)
+            val shapeBelowFloor = stateBelowFloor.getCollisionShape(level, probeBlockPos.below())
 
-            // If floor level AND 1 block below are air/lava/hazard, there is a drop/gap ahead!
-            if (isHazardOrAir(stateAtFloor) && isHazardOrAir(stateBelowFloor)) {
+            // If floor level has no solid collision AND 1 block below has no solid collision or is air/hazard, gap ahead!
+            if ((shapeAtFloor.isEmpty || isHazardOrAir(stateAtFloor)) &&
+                (shapeBelowFloor.isEmpty || isHazardOrAir(stateBelowFloor))) {
                 return true
             }
         }
