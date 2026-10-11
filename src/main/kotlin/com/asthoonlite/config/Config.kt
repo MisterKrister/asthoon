@@ -633,17 +633,15 @@ object Config {
         get() = data.terminalSolverEnabled
         set(v) {
             data.terminalSolverEnabled = v
-            data.termGuiEnabled = v
             save()
         }
 
     // ── Custom terminal GUI ─────────────────────────────────────────────────
 
     var termGuiEnabled: Boolean
-        get() = data.terminalSolverEnabled
+        get() = data.termGuiEnabled
         set(v) {
             data.termGuiEnabled = v
-            data.terminalSolverEnabled = v
             save()
         }
 

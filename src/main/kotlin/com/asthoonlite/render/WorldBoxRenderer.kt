@@ -346,10 +346,13 @@ object WorldBoxRenderer {
         val dynamicTransforms: GpuBufferSlice = RenderSystem.getDynamicUniforms()
             .writeTransform(RenderSystem.getModelViewMatrix(), COLOR_MODULATOR, MODEL_OFFSET, TEXTURE_MATRIX)
 
+        val colorTarget = RenderSystem.outputColorTextureOverride ?: client.mainRenderTarget.colorTextureView!!
+        val depthTarget = RenderSystem.outputDepthTextureOverride ?: client.mainRenderTarget.depthTextureView!!
+
         RenderSystem.getDevice().createCommandEncoder().createRenderPass(
             { "${AsthoonLite.MOD_ID} world box render pass" },
-            client.mainRenderTarget.colorTextureView!!, OptionalInt.empty(),
-            client.mainRenderTarget.depthTextureView!!, OptionalDouble.empty()
+            colorTarget, OptionalInt.empty(),
+            depthTarget, OptionalDouble.empty()
         ).use { renderPass: RenderPass ->
             renderPass.setPipeline(pipeline)
             RenderSystem.bindDefaultUniforms(renderPass)

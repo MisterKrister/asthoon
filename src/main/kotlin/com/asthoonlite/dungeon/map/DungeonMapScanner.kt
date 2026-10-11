@@ -156,8 +156,21 @@ object DungeonMapScanner {
 
         val floor = if (DungeonContext.floor != FloorType.None) DungeonContext.floor else FloorType.M7
         if (roomSize == -1 && !scanMapDimensions(colors, floor)) {
-            AsthoonLite.LOGGER.warn("[AsthoonLite-Debug] DungeonMapScanner.updateMap: roomSize is -1 and scanMapDimensions failed")
-            return
+            AsthoonLite.LOGGER.warn("[AsthoonLite-Debug] DungeonMapScanner.updateMap: roomSize is -1 and scanMapDimensions failed, applying standard layout fallback")
+            roomSize = 16
+            roomGap = 20
+            mapOffsetX = when (floor.floorNum) {
+                0, 1 -> 22
+                2, 3 -> 11
+                else -> 5
+            }
+            mapOffsetZ = when (floor.floorNum) {
+                0 -> 22
+                1, 2, 3 -> 11
+                else -> 5
+            }
+            mapWidth = roomGap * (floor.roomsW - 1) + roomSize
+            mapHeight = roomGap * (floor.roomsH - 1) + roomSize
         }
 
         updateRooms(colors)

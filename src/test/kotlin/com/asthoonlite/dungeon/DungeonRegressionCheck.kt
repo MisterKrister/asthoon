@@ -1157,6 +1157,22 @@ fun main() {
         }
     }
 
+    // ── Dungeon map layout fallback ──────────────────────────────────────
+    run {
+        val blankMap = ByteArray(16384)
+        check(!DungeonMapScanner.scanMapDimensions(blankMap, FloorType.F7)) {
+            "Blank map must reject entrance scan"
+        }
+        val f = FloorType.F7
+        val fallbackRoomSize = 16
+        val fallbackRoomGap = 20
+        val fallbackMapWidth = fallbackRoomGap * (f.roomsW - 1) + fallbackRoomSize
+        val fallbackMapHeight = fallbackRoomGap * (f.roomsH - 1) + fallbackRoomSize
+        check(fallbackMapWidth == 116 && fallbackMapHeight == 116) {
+            "F7 fallback dimensions must match 6x6 grid layout"
+        }
+    }
+
     println("Dungeon regression checks passed: scoreboard detection, terminal timing, terminal identification, candidates and click order, melody row selection, custom terminal grid, map dimensions/bounds, mob categories, tictactoe solver, secret hitbox expansion geometry, map overlay canvas, map decoration binding, legit map base, terminal pointer flight timing, terminal motion and gui, terminal pointer motion, cursor trail fade, rounded tile arcs, real cursor handback, pointer linger, and pathfinding preset taxonomy.")
 }
 

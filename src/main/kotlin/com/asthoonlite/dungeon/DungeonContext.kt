@@ -224,8 +224,9 @@ object DungeonContext {
     internal fun sidebarLines(scoreboard: Scoreboard, objective: Objective?): List<String> =
         objective?.let { scoreboard.listPlayerScores(it) }.orEmpty().filterNot { it.isHidden }.map { score ->
             val name = score.owner
+            val comp = score.display ?: score.ownerName()
             val line = PlayerTeam.formatNameForTeam(
-                scoreboard.getPlayersTeam(name), score.ownerName()
+                scoreboard.getPlayersTeam(name), comp
             ).string
             ChatFormatting.stripFormatting(line) ?: line
         }

@@ -496,6 +496,9 @@ internal fun terminalMotionAndGuiChecks() {
         "the pointer ships on for melody and Click Order ships on Human"
     }
     check(oldConfig.autoTerminalEaseX1 == 20 && oldConfig.autoTerminalEaseY2 == 100)
+    check(!oldConfig.terminalSolverEnabled && oldConfig.termGuiEnabled) {
+        "termGuiEnabled (true by default) must be decoupled from terminalSolverEnabled (false by default)"
+    }
 
     // ── Cursor pointer sprite geometry ───────────────────────────────────
     val pointerRuns = TerminalCursor.arrowRuns()

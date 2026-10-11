@@ -128,6 +128,22 @@ object TerminalCursor {
      * Tracks intent, not the window: one transition in, one out.
      */
     private var osCursorHidden = false
+    private var blankCursor: Long = 0L
+
+    private fun getOrCreateBlankCursor(): Long {
+        if (blankCursor != 0L) return blankCursor
+        try {
+            val buffer = org.lwjgl.system.MemoryUtil.memAlloc(16 * 16 * 4)
+            for (i in 0 until 16 * 16 * 4) buffer.put(i, 0)
+            val img = org.lwjgl.glfw.GLFWImage.malloc().set(16, 16, buffer)
+            blankCursor = GLFW.glfwCreateCursor(img, 0, 0)
+            img.free()
+            org.lwjgl.system.MemoryUtil.memFree(buffer)
+        } catch (t: Throwable) {
+            AsthoonLite.LOGGER.warn("[AsthoonLite] Failed to create blank GLFW cursor", t)
+        }
+        return blankCursor
+    }
 
     internal fun holdNormalCursor(style: Int, terminalOpen: Boolean, glide: Boolean): Boolean =
         style == 1 && terminalOpen && glide
@@ -201,31 +217,35 @@ object TerminalCursor {
             Config.autoTerminalCursorHideReal,
             Config.autoTerminalCursorGlide
         )
-        if (wanted == osCursorHidden) {
-            // A new screen may release the mouse between two Normal-cursor frames.
-            if (wanted && Config.autoTerminalCursorStyle == 1) {
-                GLFW.glfwSetInputMode(Minecraft.getInstance().window.handle(), GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_HIDDEN)
-            }
-            return
-        }
-        osCursorHidden = wanted
 
-        val mc = Minecraft.getInstance()
+        if (!wanted && !osCursorHidden) return
+        val mc = runCatching { Minecraft.getInstance() }.getOrNull() ?: return
         val win = mc.window
         val handle = win.handle()
+
         if (wanted) {
+            val blank = getOrCreateBlankCursor()
+            if (blank != 0L) {
+                GLFW.glfwSetCursor(handle, blank)
+            }
             GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_HIDDEN)
+            osCursorHidden = true
             return
         }
-        if (tipKnown && Config.autoTerminalCursorStyle == 0) {
-            GLFW.glfwSetCursorPos(
-                handle,
-                rawFromScaled(x, win.screenWidth, win.guiScaledWidth),
-                rawFromScaled(y, win.screenHeight, win.guiScaledHeight)
-            )
-        }
-        if (mc.screen != null) {
-            GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL)
+
+        if (osCursorHidden) {
+            osCursorHidden = false
+            if (tipKnown && Config.autoTerminalCursorStyle == 0) {
+                GLFW.glfwSetCursorPos(
+                    handle,
+                    rawFromScaled(x, win.screenWidth, win.guiScaledWidth),
+                    rawFromScaled(y, win.screenHeight, win.guiScaledHeight)
+                )
+            }
+            GLFW.glfwSetCursor(handle, 0L)
+            if (mc.screen != null) {
+                GLFW.glfwSetInputMode(handle, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL)
+            }
         }
     }
 
@@ -661,15 +681,16 @@ object TerminalCursor {
             drawn = false
             return
         }
+        val mc = Minecraft.getInstance()
+        val screen = mc.screen as? AbstractContainerScreen<*>
+        if (screen == null || !TerminalSolver.isTerminalTitle(screen.title.string)) {
+            syncOsCursor(false)
+            drawn = false
+            return
+        }
+        if (!positioned) seedFromMouse(screen.width / 2f, screen.height / 2f)
+
         if (Config.autoTerminalCursorStyle == 1) {
-            val mc = Minecraft.getInstance()
-            val screen = mc.screen as? AbstractContainerScreen<*>
-            if (screen == null || !TerminalSolver.isTerminalTitle(screen.title.string)) {
-                syncOsCursor(false)
-                drawn = false
-                return
-            }
-            if (!positioned) seedFromMouse(screen.width / 2f, screen.height / 2f)
             val pos = positionNow(now) ?: (mc.mouseHandler.getScaledXPos(mc.window).toFloat() to
                 mc.mouseHandler.getScaledYPos(mc.window).toFloat())
             syncOsCursor(true)
@@ -680,26 +701,10 @@ object TerminalCursor {
             tipKnown = true
             return
         }
-        // While the pointer is armed it is drawn every frame and the real
-        // cursor stays hidden behind it — the two never share the screen, so
-        // no viewer sees one cursor hand over to the other, and never a frame
-        // with no cursor at all.
-        //
-        // positionNow goes null twice, and only twice: no pointer is armed,
-        // or a parked pointer has lingered past its 1.4s window with nothing
-        // left to click. Both mean get out of the way. The second case matters
-        // — `positioned` is still set after the final click, so anything that
-        // kept drawing on `positioned` alone would park an arrow over the
-        // player's inventory for the rest of the screen's life with the real
-        // cursor still hidden behind it. Handing back here is correct, and
-        // syncOsCursor warps on the way out, so even that lands on the same
-        // pixel rather than wherever the physical mouse drifted to.
-        val pos = positionNow(now)
-        if (pos == null) {
-            syncOsCursor(false)
-            drawn = false
-            return
-        }
+
+        // While the terminal container is open, keep the custom pointer visible
+        // even between clicks or during the initial start delay.
+        val pos = positionNow(now) ?: (x to y)
 
         syncOsCursor(true)
         drawn = true
@@ -924,6 +929,13 @@ object TerminalCursor {
                 AutoTerminal.tick()
                 render(graphics)
             }
+        }
+    }
+
+    fun close() {
+        if (blankCursor != 0L) {
+            runCatching { GLFW.glfwDestroyCursor(blankCursor) }
+            blankCursor = 0L
         }
     }
 

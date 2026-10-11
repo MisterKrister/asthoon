@@ -29,6 +29,10 @@ object MapOverlayWindow {
     private var window: OverlayWindow? = null // EDT only
     private var placementRejected = false // EDT only
 
+    val isAvailable: Boolean
+        get() = !GraphicsEnvironment.isHeadless() &&
+            GLFW.glfwGetPlatform() != GLFW.GLFW_PLATFORM_WAYLAND
+
     internal fun desktopRect(clientX: Int, clientY: Int, windowWidth: Int, windowHeight: Int,
                              guiWidth: Int, guiHeight: Int, x: Int, y: Int, size: Int): Placement {
         val sx = windowWidth.toDouble() / guiWidth.coerceAtLeast(1)
@@ -84,12 +88,13 @@ object MapOverlayWindow {
     }
 
     fun publish(ops: List<MapOp>, size: Int, placement: Placement) {
+        if (!isAvailable) return
         pending = Frame(ops, size, placement)
         schedule()
     }
 
     fun hide() {
-        if (pending == null) return
+        if (!isAvailable || pending == null) return
         pending = null
         schedule()
     }

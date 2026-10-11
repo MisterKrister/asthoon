@@ -55,8 +55,10 @@ object DungeonMap : HudElement {
             return
         }
         val rect = screenRect(mc.window.guiScaledWidth, mc.window.guiScaledHeight)
-        drawMap(HudMapCanvas(context), mc, rect, advanced = false)
-        if (Config.dungeonMapFullGrid && !Config.dungeonMapEditMode) {
+        val renderExternal = Config.dungeonMapExternalWindow && MapOverlayWindow.isAvailable
+        val hudAdvanced = Config.dungeonMapFullGrid && !renderExternal
+        drawMap(HudMapCanvas(context), mc, rect, advanced = hudAdvanced)
+        if (renderExternal && Config.dungeonMapFullGrid && !Config.dungeonMapEditMode) {
             val record = RecordMapCanvas()
             drawMap(record, mc, Rect(0, 0, rect.size), advanced = true)
             MapOverlayWindow.publish(record.ops.toList(), rect.size,
@@ -67,7 +69,7 @@ object DungeonMap : HudElement {
     /** The editor uses the same canvas and geometry, even outside a dungeon. */
     fun preview(canvas: MapCanvas, width: Int, height: Int) {
         MapOverlayWindow.hide()
-        drawMap(canvas, Minecraft.getInstance(), screenRect(width, height), advanced = false)
+        drawMap(canvas, Minecraft.getInstance(), screenRect(width, height), advanced = Config.dungeonMapFullGrid)
     }
 
     private fun drawMap(canvas: MapCanvas, mc: Minecraft, rect: Rect, advanced: Boolean) {

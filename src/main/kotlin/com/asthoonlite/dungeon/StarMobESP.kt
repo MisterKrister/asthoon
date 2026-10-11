@@ -219,14 +219,12 @@ object StarMobESP {
     private fun isRoomCleared(pos: net.minecraft.world.phys.Vec3): Boolean {
         val comp = com.asthoonlite.dungeon.api.WorldPosition(pos.x.toInt(), pos.z.toInt()).toComponent()
         val mobRoom = if (comp.isInBounds()) com.asthoonlite.dungeon.map.DungeonScanner.rooms.getOrNull(comp.getRoomIdx()) else null
-        if (mobRoom != null && (mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.WHITE ||
-                mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.GREEN ||
+        if (mobRoom != null && (mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.GREEN ||
                 mobRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.FAILED)) {
             return true
         }
         val currentRoom = com.asthoonlite.dungeon.map.DungeonScanner.currentRoom
-        if (currentRoom != null && (currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.WHITE ||
-                currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.GREEN ||
+        if (currentRoom != null && (currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.GREEN ||
                 currentRoom.checkmark == com.asthoonlite.dungeon.api.mapEnums.CheckmarkTypes.FAILED)) {
             val player = Minecraft.getInstance().player
             if (player != null && isInSameRoom(pos, player.position())) {
@@ -284,10 +282,11 @@ object StarMobESP {
             if (entity.isRemoved || (entity is LivingEntity && (entity.isDeadOrDying || entity.health <= 0f))) continue
             val pos = entity.position()
             if (isRoomCleared(pos)) continue
-            // Restrict ESP to only mobs in the current room as the player
-            if (!isInSameRoom(pos, player.position())) continue
-            // If through-walls is off, skip mobs blocked by geometry
-            if (!phase && !player.hasLineOfSight(entity)) continue
+            // If through-walls is off, skip mobs blocked by geometry or outside the current room
+            if (!phase) {
+                if (!isInSameRoom(pos, player.position())) continue
+                if (!player.hasLineOfSight(entity)) continue
+            }
 
             val height = getHeight(entity, category)
             val color = colorFor(category)
