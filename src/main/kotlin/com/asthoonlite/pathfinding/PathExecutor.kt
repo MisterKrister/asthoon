@@ -704,14 +704,14 @@ object PathExecutor {
 
         // 5. Waypoint Lookahead, Look Node Aiming & Smooth Natural Camera Control
         val isClimbingToNode = nodeType != RouteNodeType.BREAK && target.y > player.y + 0.4
-        val arrivalThreshold = if (isClimbingToNode) 1.5 else if (isHighSpeed) 2.5 else 1.5
+        val arrivalThreshold = if (isClimbingToNode) 1.5 else if (isHighSpeed) 2.5 else 1.8
 
         val isBreakNode = nodeType == RouteNodeType.BREAK
         val breakBlockPos = if (isBreakNode) BlockPos.containing(target.x, target.y, target.z) else null
         val isBreakBlockSolid = breakBlockPos != null && !isBlockBroken(level, target)
 
-        val lookaheadBlend = if (distH < 2.8 && nextTarget != null && (nodeType == RouteNodeType.WALK || (isBreakNode && !isBreakBlockSolid))) {
-            ((2.8 - distH) / 2.8 * 0.40).coerceIn(0.0, 0.40)
+        val lookaheadBlend = if (distH < 1.8 && nextTarget != null && (nodeType == RouteNodeType.WALK || (isBreakNode && !isBreakBlockSolid))) {
+            ((1.8 - distH) / 1.8 * 0.25).coerceIn(0.0, 0.25)
         } else {
             0.0
         }
@@ -813,7 +813,10 @@ object PathExecutor {
             !player.isInLava && !player.isInWater &&
             distH <= 2.5 && player.y >= target.y - 1.5 && player.y <= target.y + 2.5
 
-        if (stationaryMotion != null) {
+        if (isStationaryDest && distH <= 0.40 && player.onGround()) {
+            releaseAllMovementKeys()
+            player.setSprinting(false)
+        } else if (stationaryMotion != null) {
             // Steer and brake in world coordinates, even while the camera turns toward a device.
             moveInDirection(player, stationaryMotion, !isCrouchNode && isApproaching && (isAirborne || distH > 2.5), isCrouchNode && !isAirborne)
         } else if (isAirborne) {
@@ -877,13 +880,14 @@ object PathExecutor {
                     if (wantsSprint && !player.isSprinting) player.setSprinting(true)
                 }
             } else {
-                // Normal pathing: forward W dominates to eliminate sideways drift/crab-walking
-                val isSharpTurn = Math.abs(angleDiff) > 50.0
+                // Normal pathing: forward W dominates, with strafe assisting to track node line
+                val angleDiffAbs = Math.abs(angleDiff)
+                val isSharpTurn = angleDiffAbs > 50.0
                 mc.options.keyUp.setDown(forward > 0.1 || !isSharpTurn)
                 mc.options.keyDown.setDown(forward < -0.5)
-                // Only assist with strafe keys on very sharp corners (> 50°)
-                mc.options.keyLeft.setDown(isSharpTurn && strafe > 0.5)
-                mc.options.keyRight.setDown(isSharpTurn && strafe < -0.5)
+                val hasLateralDrift = angleDiffAbs > 15.0
+                mc.options.keyLeft.setDown(hasLateralDrift && strafe > 0.35)
+                mc.options.keyRight.setDown(hasLateralDrift && strafe < -0.35)
 
                 if (isCrouchNode) {
                     mc.options.keyShift.setDown(true)
@@ -1006,8 +1010,24 @@ object PathExecutor {
 
         val canAdvanceBreak = isBreakNode && !isBreakBlockSolid
         val arrivalDist = if (canAdvanceBreak) (if (isHighSpeed) 2.2 else 1.6) else arrivalThreshold
+
+        // If at final node and landed/settled on ground, complete route cleanly
+        if (currentNodeIndex == points.size - 1 && player.onGround() && canArriveElevation && (distH <= 0.55 || isSettled)) {
+            releaseAllMovementKeys()
+            finishRoute(preset)
+            return
+        }
+
+        val passedAlongTrack = hasPassedWaypointAlongRoute(
+            playerPos = Vec3(player.x, player.y, player.z),
+            current = target,
+            next = nextTarget,
+            arrivalDist = arrivalDist
+        )
+        val hasArrived = distH < arrivalDist || (passedAlongTrack && nodeType == RouteNodeType.WALK)
+
         if ((advancesOnArrival(nodeType) || canAdvanceBreak) &&
-            distH < arrivalDist && canArriveElevation &&
+            hasArrived && canArriveElevation &&
             (!requiresTouchdown || player.onGround()) &&
             (!isStationaryDest || isSettled)) {
             if (isBreakNode && nextTarget?.nodeType() != RouteNodeType.BREAK) {
@@ -1024,13 +1044,66 @@ object PathExecutor {
         }
     }
 
+    internal fun hasPassedWaypointAlongRoute(
+        playerPos: Vec3,
+        current: PathPoint,
+        next: PathPoint?,
+        arrivalDist: Double = 1.8
+    ): Boolean {
+        if (next == null) return false
+        val toNextX = next.x - current.x
+        val toNextZ = next.z - current.z
+        val segLen = hypot(toNextX, toNextZ)
+        if (segLen < 0.2) return false
+
+        val pastX = playerPos.x - current.x
+        val pastZ = playerPos.z - current.z
+        val distH = hypot(pastX, pastZ)
+
+        if (distH < arrivalDist) return true
+
+        val dirX = toNextX / segLen
+        val dirZ = toNextZ / segLen
+        val alongTrack = pastX * dirX + pastZ * dirZ
+        val crossTrack = abs(pastX * dirZ - pastZ * dirX)
+
+        val distToNext = hypot(next.x - playerPos.x, next.z - playerPos.z)
+
+        if (alongTrack >= -0.2 && crossTrack <= 2.2 && distH <= 3.2) {
+            return true
+        }
+
+        if (distToNext < distH && crossTrack <= 2.2 && distH <= 3.5) {
+            return true
+        }
+
+        return false
+    }
+
     internal fun stationaryMovement(offset: Vec3, velocity: Vec3, heightAboveTarget: Double, landingSupport: Boolean = true): Vec3 {
         val horizontalVelocity = Vec3(velocity.x, 0.0, velocity.z)
         if (heightAboveTarget < -0.6 || !landingSupport) return airborneMovement(offset, velocity)
-        if (offset.horizontalDistance() < 1.4) {
-            return if (horizontalVelocity.horizontalDistance() > 0.06) horizontalVelocity.scale(-1.0) else Vec3.ZERO
+        val distH = offset.horizontalDistance()
+        val speed = horizontalVelocity.horizontalDistance()
+
+        // 1. Deadzone: right on the node. Cut all movement inputs completely.
+        if (distH <= 0.35) {
+            return Vec3.ZERO
         }
-        // ponytail: fixed eight-tick braking lead; use surface drag if routes need ice support.
+
+        if (distH < 1.4) {
+            // Coasting deadband: small speed or coasting projected to land inside deadzone
+            val dir = offset.normalize()
+            val vToward = horizontalVelocity.dot(dir)
+            val coastDist = (vToward * 1.25).coerceAtLeast(0.0)
+            if (speed <= 0.06 || (vToward > 0.04 && distH - coastDist in 0.0..0.30)) {
+                return Vec3.ZERO
+            }
+            if (vToward > 0.06 || offset.dot(horizontalVelocity) <= 0.0) {
+                return horizontalVelocity.scale(-1.0)
+            }
+            return dir
+        }
         val correction = offset.subtract(horizontalVelocity.scale(8.0))
         return if (correction.horizontalDistance() < 0.1) Vec3.ZERO else correction
     }
@@ -1239,7 +1312,7 @@ object PathExecutor {
         onGround && distH < 1.4 && distY <= 0.6
 
     internal fun isSettledAtNode(distH: Double, distY: Double, onGround: Boolean, horizontalSpeed: Double): Boolean =
-        hasLandedAtNode(distH, distY, onGround) && horizontalSpeed <= 0.06
+        hasLandedAtNode(distH, distY, onGround) && (distH <= 0.40 || horizontalSpeed <= 0.08)
 
     private fun isSettledAtNode(player: LocalPlayer, node: PathPoint): Boolean =
         isSettledAtNode(hypot(node.x - player.x, node.z - player.z), abs(node.y - player.y),
@@ -1379,9 +1452,9 @@ object PathExecutor {
             else -> {
                 val isBreakNode = nodeType == RouteNodeType.BREAK
                 val breakAir = isBreakNode && level.getBlockState(BlockPos.containing(target.x, target.y, target.z)).isAir
-                val lookaheadBlend = if (distH < 2.8 && nextTarget != null && (nodeType == RouteNodeType.WALK || breakAir)) {
-                    val t = ((2.8 - distH) / 2.8).coerceIn(0.0, 1.0)
-                    t * t * (3.0 - 2.0 * t) * 0.40
+                val lookaheadBlend = if (distH < 1.8 && nextTarget != null && (nodeType == RouteNodeType.WALK || breakAir)) {
+                    val t = ((1.8 - distH) / 1.8).coerceIn(0.0, 1.0)
+                    t * t * (3.0 - 2.0 * t) * 0.25
                 } else {
                     0.0
                 }

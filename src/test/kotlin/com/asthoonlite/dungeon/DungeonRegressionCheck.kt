@@ -33,6 +33,7 @@ import java.util.stream.Stream
 import com.asthoonlite.pathfinding.RouteCategory
 import com.asthoonlite.pathfinding.PathPreset
 import com.asthoonlite.pathfinding.PathPoint
+import com.asthoonlite.pathfinding.PathExecutor
 import com.asthoonlite.pathfinding.KinematicTrajectory
 import net.minecraft.world.phys.Vec3
 import com.google.gson.Gson
@@ -1193,7 +1194,50 @@ fun main() {
         }
     }
 
-    // ── Dungeon map layout fallback ──────────────────────────────────────
+    // ── Pathfinding Waypoint Corridor & Stationary Deadzone Braking ──────
+    run {
+        val wpA = PathPoint(0.0, 100.0, 0.0, 0f, 0f, "WALK")
+        val wpB = PathPoint(10.0, 100.0, 0.0, 0f, 0f, "WALK")
+
+        // 1. Along-track progression: player slightly passes wpA along corridor towards wpB
+        // Player at (2.0, 100.0, 1.2): distH = 2.33m > 1.8m, but along-track = 2.0m, cross-track = 1.2m
+        val playerPassing = Vec3(2.0, 100.0, 1.2)
+        check(PathExecutor.hasPassedWaypointAlongRoute(playerPassing, wpA, wpB, arrivalDist = 1.8)) {
+            "Player passing waypoint along route corridor must advance without 180° slingshot"
+        }
+
+        // Player behind wpA: at (-3.0, 100.0, 0.0)
+        val playerBehind = Vec3(-3.0, 100.0, 0.0)
+        check(!PathExecutor.hasPassedWaypointAlongRoute(playerBehind, wpA, wpB, arrivalDist = 1.8)) {
+            "Player behind waypoint must not prematurely advance"
+        }
+
+        // Final waypoint has no next point: must not advance via along-track
+        check(!PathExecutor.hasPassedWaypointAlongRoute(playerPassing, wpA, null, arrivalDist = 1.8)) {
+            "Final waypoint must not advance along-track without next destination"
+        }
+
+        // 2. Stationary Deadzone: inside 0.35m deadzone, input is Vec3.ZERO to allow friction to stop
+        val deadzoneOffset = Vec3(0.2, 0.0, 0.1) // distH = 0.22m <= 0.35m
+        val deadzoneMotion = PathExecutor.stationaryMovement(deadzoneOffset, Vec3(0.15, 0.0, 0.10), 0.0)
+        check(deadzoneMotion == Vec3.ZERO) {
+            "Inside stationary deadzone (distH <= 0.35m), stationaryMovement must return Vec3.ZERO"
+        }
+
+        // 3. Coasting zone: within 1.4m, if momentum naturally stops on node, return Vec3.ZERO
+        val coastOffset = Vec3(0.5, 0.0, 0.0) // distH = 0.5m
+        val coastVelocity = Vec3(0.18, 0.0, 0.0) // moving toward target at 0.18 (stops in ~0.22m, landing at 0.28m)
+        val coastMotion = PathExecutor.stationaryMovement(coastOffset, coastVelocity, 0.0)
+        check(coastMotion == Vec3.ZERO) {
+            "Momentum naturally carrying player into deadzone must coast with Vec3.ZERO"
+        }
+
+        // 4. Settled at node: inside 0.40m deadzone on ground is settled even with small residual drift
+        check(PathExecutor.isSettledAtNode(0.35, 0.2, true, 0.07)) {
+            "Player in deadzone on ground must register as settled"
+        }
+    }
+
     run {
         val blankMap = ByteArray(16384)
         check(!DungeonMapScanner.scanMapDimensions(blankMap, FloorType.F7)) {
