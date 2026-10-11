@@ -400,16 +400,6 @@ object PathExecutor {
 
         val points = preset.points
 
-        // Fast-skip doorway blocks that are already broken/air
-        while (currentNodeIndex < points.size && points[currentNodeIndex].nodeType() == RouteNodeType.BREAK) {
-            if (isBlockBroken(level, points[currentNodeIndex])) {
-                currentNodeIndex++
-                resetSpecialNodeState()
-            } else {
-                break
-            }
-        }
-
         if (currentNodeIndex !in points.indices) {
             finishRoute(preset)
             return
@@ -558,11 +548,26 @@ object PathExecutor {
                 basePitch = baseLaunchPitch
             )
 
+            val flightDirX = if (nextTarget != null) nextTarget.x - target.x else 0.0
+            val flightDirZ = if (nextTarget != null) nextTarget.z - target.z else 0.0
+            val flightDirLen = hypot(flightDirX, flightDirZ)
+
+            val lateralSpeed = if (nextTarget != null && flightDirLen > 0.1) {
+                val hx = flightDirX / flightDirLen
+                val hz = flightDirZ / flightDirLen
+                val forwardV = player.deltaMovement.x * hx + player.deltaMovement.z * hz
+                val perpVx = player.deltaMovement.x - hx * forwardV
+                val perpVz = player.deltaMovement.z - hz * forwardV
+                hypot(perpVx, perpVz)
+            } else 0.0
+
+            val hasRunwayAlignment = lateralSpeed <= 0.25 || distH <= 0.35 || isAirborneBonzo
+
             // Reserve the jump only once on the launch platform, not while climbing its approach.
             isBonzoRunway = player.onGround() && nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
             val canLaunch = !player.isInLava && !player.isInWater &&
                             (!requiresGrounded || player.onGround()) &&
-                            isAtNodeElev && isArrivedOnPlatform && hasGroundImpact
+                            isAtNodeElev && isArrivedOnPlatform && hasGroundImpact && hasRunwayAlignment
 
             if (canLaunch) {
                 val finalLaunchParams = launchParams.copy(
@@ -801,7 +806,7 @@ object PathExecutor {
                 (s1.isAir || s1.`is`(Blocks.LAVA) || s1.`is`(Blocks.WATER)) && (s2.isAir || s2.`is`(Blocks.LAVA) || s2.`is`(Blocks.WATER))
             }
         }
-        val isCrossingGapToStationary = isStationaryDest && (isLedge || hasGapToTarget) && distH >= 0.4
+        val isCrossingGapToStationary = isStationaryDest && !landingSupport && (isLedge || hasGapToTarget) && distH >= 0.4
         val stationaryMotion = if (isStationaryDest && !isCrossingGapToStationary) {
             stationaryMovement(offset, player.deltaMovement, player.y - target.y, landingSupport)
         } else null
@@ -835,7 +840,7 @@ object PathExecutor {
             } else {
                 val motion = bonzoRunwayMotion(
                     Vec3(target.x - player.x, 0.0, target.z - player.z),
-                    if (nextTarget != null) Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z) else null,
+                    if (nextTarget != null) Vec3(nextTarget.x - target.x, 0.0, nextTarget.z - target.z) else null,
                     distH
                 )
                 moveInDirection(player, motion, true)
@@ -843,7 +848,7 @@ object PathExecutor {
         } else if (isBonzoRunway && nextTarget != null) {
             val motion = bonzoRunwayMotion(
                 Vec3(target.x - player.x, 0.0, target.z - player.z),
-                Vec3(nextTarget.x - player.x, 0.0, nextTarget.z - player.z),
+                Vec3(nextTarget.x - target.x, 0.0, nextTarget.z - target.z),
                 distH
             )
             moveInDirection(player, motion, true)
@@ -920,7 +925,7 @@ object PathExecutor {
             nodeType = nodeType,
             isStationaryDest = isStationaryDest,
             onGround = player.onGround(),
-            isLedge = isLedge,
+            isLedge = if (isStationaryDest && landingSupport) false else isLedge,
             distH = distH,
             isCrouchNode = isCrouchNode,
             isObstacleCollision = isObstacleCollision,
@@ -930,7 +935,7 @@ object PathExecutor {
             isDescending = isDescending
         )
 
-        if (!isApproaching || isBonzoRunway || (nodeType == RouteNodeType.BONZO_STAFF && distH <= 1.8)) {
+        if (!isApproaching || isBonzoRunway || (nodeType == RouteNodeType.BONZO_STAFF && distH <= 1.8) || (isStationaryDest && landingSupport)) {
             jumpTicksRemaining = 0
         } else {
             jumpTicksRemaining = nextAutoJumpPulse(shouldAutoJump, jumpTicksRemaining, mc.options.keyJump.isDown)
@@ -1015,14 +1020,6 @@ object PathExecutor {
             currentNodeIndex++
             resetSpecialNodeState()
             AsthoonLite.LOGGER.info("[ASL-ROUTE-OFFSET] Completed node $oldIdx(${points[oldIdx].action}) -> advanced to node $currentNodeIndex")
-            while (currentNodeIndex < points.size && points[currentNodeIndex].nodeType() == RouteNodeType.BREAK) {
-                if (isBlockBroken(level, points[currentNodeIndex])) {
-                    currentNodeIndex++
-                    resetSpecialNodeState()
-                } else {
-                    break
-                }
-            }
             if (currentNodeIndex >= points.size) {
                 finishRoute(preset)
             }
@@ -1174,8 +1171,18 @@ object PathExecutor {
         )
     }
 
-    internal fun bonzoRunwayMotion(targetOffset: Vec3, nextTargetOffset: Vec3?, distH: Double): Vec3 =
-        if (distH > 0.3 || nextTargetOffset == null) targetOffset else nextTargetOffset
+    internal fun bonzoRunwayMotion(targetOffset: Vec3, nextTargetOffset: Vec3?, distH: Double): Vec3 {
+        if (nextTargetOffset == null) return targetOffset
+        if (distH > 1.8) return targetOffset
+        val t = (distH / 1.8).coerceIn(0.0, 1.0)
+        val toLen = hypot(targetOffset.x, targetOffset.z)
+        val flightLen = hypot(nextTargetOffset.x, nextTargetOffset.z)
+        val toDir = if (toLen > 1e-4) Vec3(targetOffset.x / toLen, 0.0, targetOffset.z / toLen) else Vec3.ZERO
+        val flightDir = if (flightLen > 1e-4) Vec3(nextTargetOffset.x / flightLen, 0.0, nextTargetOffset.z / flightLen) else Vec3.ZERO
+        if (toDir == Vec3.ZERO) return flightDir
+        if (flightDir == Vec3.ZERO) return toDir
+        return toDir.scale(t).add(flightDir.scale(1.0 - t))
+    }
 
     internal fun shouldAutoJump(
         nodeType: RouteNodeType,
@@ -1257,16 +1264,6 @@ object PathExecutor {
         val player = mc.player ?: return
         val level = mc.level ?: return
         val points = preset.points
-        while (currentNodeIndex < points.size && points[currentNodeIndex].nodeType() == RouteNodeType.BREAK) {
-            val bp = points[currentNodeIndex]
-            val bPos = BlockPos.containing(bp.x, bp.y, bp.z)
-            if (level.getBlockState(bPos).isAir) {
-                currentNodeIndex++
-                resetSpecialNodeState()
-            } else {
-                break
-            }
-        }
         if (currentNodeIndex !in points.indices) return
 
         val target = points[currentNodeIndex]

@@ -728,9 +728,11 @@ internal fun simonDeviceRegressionChecks() {
     val targetOffset = Vec3(0.0, 0.0, -5.0)
     val nextTargetOffset = Vec3(-6.0, 0.0, -10.0)
     val runwayFar = PathExecutor.bonzoRunwayMotion(targetOffset, nextTargetOffset, distH = 2.0)
-    check(runwayFar.x == 0.0 && runwayFar.z == -5.0) { "Runway motion at distH > 0.3 must steer strictly toward target" }
-    val runwayNear = PathExecutor.bonzoRunwayMotion(targetOffset, nextTargetOffset, distH = 0.2)
-    check(runwayNear.x == -6.0 && runwayNear.z == -10.0) { "Runway motion at distH <= 0.3 must steer toward nextTarget" }
+    check(runwayFar.x == 0.0 && runwayFar.z == -5.0) { "Runway motion at distH > 1.8 must steer strictly toward target" }
+    val runwayNear = PathExecutor.bonzoRunwayMotion(targetOffset, nextTargetOffset, distH = 0.1)
+    val nearHeadingX = runwayNear.x / runwayNear.horizontalDistance()
+    val nextHeadingX = nextTargetOffset.x / nextTargetOffset.horizontalDistance()
+    check(Math.abs(nearHeadingX - nextHeadingX) < 0.1) { "Runway motion near the launch pad must align with nextTarget heading" }
 
     // 32. Auto-jump suppression while breaking blocks or stepping through doorways
     val jumpOnBreak = PathExecutor.shouldAutoJump(
@@ -936,6 +938,30 @@ internal fun simonDeviceRegressionChecks() {
         destZ = 47.0
     )
     check(strafeEast > 0.5) { "Drifting South when flying East must output positive strafe (keyLeft) to steer back North, got $strafeEast" }
+
+    // 38. Bonzo runway motion approach vector blending
+    // Player approaches launch pad at (0, 0) from South (targetOffset = (0, 2))
+    // Flight corridor is East (flightVector = (10, 0))
+    val motionFar = PathExecutor.bonzoRunwayMotion(
+        targetOffset = Vec3(0.0, 0.0, 2.0),
+        nextTargetOffset = Vec3(10.0, 0.0, 0.0),
+        distH = 2.5
+    )
+    check(motionFar.x == 0.0 && motionFar.z > 0.0) { "Far away from launch node, motion must head directly towards target pad" }
+
+    val motionMid = PathExecutor.bonzoRunwayMotion(
+        targetOffset = Vec3(0.0, 0.0, 0.9),
+        nextTargetOffset = Vec3(10.0, 0.0, 0.0),
+        distH = 0.9
+    )
+    check(motionMid.x > 0.3 && motionMid.z > 0.3) { "Within 1.8m runway, motion must steer smoothly into flight heading" }
+
+    val motionClose = PathExecutor.bonzoRunwayMotion(
+        targetOffset = Vec3(0.0, 0.0, 0.1),
+        nextTargetOffset = Vec3(10.0, 0.0, 0.0),
+        distH = 0.1
+    )
+    check(motionClose.x > 0.8 && motionClose.z < 0.2) { "Close to pad, motion must be aligned with flight heading" }
 }
 
 
