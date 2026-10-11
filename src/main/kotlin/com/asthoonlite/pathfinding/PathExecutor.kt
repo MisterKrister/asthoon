@@ -472,7 +472,7 @@ object PathExecutor {
 
             // Keep player firmly grounded during arrival at Bonzo launch point;
             // allows clean sprinting across the runway without jumping into the void
-            if (!isAirborneBonzo && bonzoState == BonzoState.IDLE && player.onGround()) {
+            if (!isAirborneBonzo && bonzoState == BonzoState.IDLE && player.onGround() && distH <= 1.8) {
                 jumpTicksRemaining = 0
                 mc.options.keyJump.setDown(false)
             }
@@ -571,7 +571,7 @@ object PathExecutor {
             }
 
             // Reserve the jump only once on the launch platform, not while climbing its approach.
-            isBonzoRunway = player.onGround() && nextTarget != null && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
+            isBonzoRunway = player.onGround() && nextTarget != null && distH <= 1.8 && canReserveBonzoJump(player.y - target.y, hasGroundImpact)
             val canLaunch = !player.isInLava && !player.isInWater &&
                             isAtNodeElev && isArrivedOnPlatform && hasGroundImpact && hasRunwayAlignment && hasSufficientSpeed
 
@@ -913,9 +913,8 @@ object PathExecutor {
         }
 
         // Jump handling: auto-jump on elevation step-up, obstacle collision, gap/ledge detection
-        // Auto gap jump: trigger on WALK nodes or when crossing a gap towards a destination platform!
-        // BONZO_STAFF nodes must NEVER auto-gap-jump during approach — they must stay grounded for the staff blast!
-        val canAutoGapJump = (nodeType == RouteNodeType.WALK || isStationaryDest) && player.onGround() && isLedge && distH > 0.4 && !isCrouchNode && !isDescending
+        // Auto gap jump: trigger on WALK nodes, destination platforms, or approach across chasms to Bonzo nodes!
+        val canAutoGapJump = (nodeType == RouteNodeType.WALK || isStationaryDest || (nodeType == RouteNodeType.BONZO_STAFF && distH > 1.8)) && player.onGround() && isLedge && distH > 0.4 && !isCrouchNode && !isDescending
         val isObstacleCollision = !isDescending && player.horizontalCollision && player.onGround() && nodeType != RouteNodeType.BREAK && !isApproachingBreak
         val isElevationStep = !isDescending && target.y > player.y + 0.35 && distH < 2.5 && player.onGround() && nodeType != RouteNodeType.BREAK && !isApproachingBreak
 
@@ -950,7 +949,7 @@ object PathExecutor {
             jumpTicksRemaining = 0
         } else {
             jumpTicksRemaining = nextAutoJumpPulse(shouldAutoJump, jumpTicksRemaining, mc.options.keyJump.isDown)
-            if (shouldAutoJump && isCrossingGapToStationary && jumpTicksRemaining > 0) {
+            if (shouldAutoJump && (isCrossingGapToStationary || (nodeType == RouteNodeType.BONZO_STAFF && distH > 1.8 && isLedge)) && jumpTicksRemaining > 0) {
                 jumpTicksRemaining = 3
             }
         }
@@ -1292,11 +1291,11 @@ object PathExecutor {
         if (isDescending || isCrouchNode) return false
         if (isMiningObstacle || isExitingBreakDoorway) return false
 
-        if (nodeType == RouteNodeType.BONZO_STAFF) {
+        if (nodeType == RouteNodeType.BONZO_STAFF && distH <= 1.8) {
             return onGround && (isObstacleCollision || isElevationStep)
         }
 
-        val canAutoGapJump = onGround && isLedge && distH >= 0.3
+        val canAutoGapJump = onGround && isLedge && distH >= 0.4
         return canAutoGapJump || (onGround && (isObstacleCollision || isElevationStep))
     }
 

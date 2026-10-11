@@ -1289,6 +1289,23 @@ fun main() {
         check(!shouldJumpGap) {
             "Approaching Bonzo staff must stay grounded on runway and not jump off ledge before launch"
         }
+
+        // Approach across intermediate chasms (distH > 1.8) must jump across to reach the launch pad
+        val shouldJumpApproachGap = PathExecutor.shouldAutoJump(
+            nodeType = com.asthoonlite.pathfinding.RouteNodeType.BONZO_STAFF,
+            isStationaryDest = false,
+            onGround = true,
+            isLedge = true,
+            distH = 6.9,
+            isCrouchNode = false,
+            isObstacleCollision = false,
+            isElevationStep = false,
+            isMiningObstacle = false,
+            isExitingBreakDoorway = false
+        )
+        check(shouldJumpApproachGap) {
+            "Must auto-gap-jump across chasms on approach runway to reach the Bonzo launch pad"
+        }
     }
 
     run {
